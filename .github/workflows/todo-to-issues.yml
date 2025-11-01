@@ -1,0 +1,82 @@
+name: Convert TODO.md to GitHub Issues
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'TODO.md'
+
+jobs:
+  create-issues-from-todo:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Check if TODO.md exists
+        id: check_todo
+        run: |
+          if [ -f "TODO.md" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Read and create issues from TODO.md
+        if: steps.check_todo.outputs.exists == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Initialize variables
+          context=""
+          body_text=""
+          
+          # Read TODO.md and process each item
+          while IFS= read -r line || [ -n "$line" ]; do
+            # Check if line starts with "- [ ]" or "- [x]" (markdown TODO item)
+            if [[ "$line" =~ ^-[[:space:]]*\[[[:space:]xX]\][[:space:]]+(.*) ]]; then
+              # Extract the TODO text (remove the checkbox)
+              todo_text="${BASH_REMATCH[1]}"
+              
+              # Skip if empty after removing checkbox
+              if [ -z "$todo_text" ]; then
+                continue
+              fi
+              
+              # Create issue body with context
+              if [ -n "$context" ]; then
+                issue_body="Context: $context"$'\n\n'"This issue was automatically created from TODO.md"
+              else
+                issue_body="This issue was automatically created from TODO.md"
+              fi
+              
+              # Create GitHub issue
+              echo "Creating issue: $todo_text"
+              gh issue create \
+                --title "$todo_text" \
+                --body "$issue_body" \
+                --label "todo" || echo "Failed to create issue for: $todo_text"
+                
+            elif [[ "$line" =~ ^#+[[:space:]]+(.*) ]]; then
+              # This is a header - use it as context for next items
+              context="${BASH_REMATCH[1]}"
+              echo "Found context: $context"
+            fi
+          done < TODO.md
+      
+      - name: Delete TODO.md and commit
+        if: steps.check_todo.outputs.exists == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git rm TODO.md
+          git commit -m "Delete TODO.md after creating issues [skip ci]"
+          git push
