@@ -1,0 +1,24 @@
+[package]
+name = "geostationary"
+version = "0.1.0"
+edition = "2024"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[profile.wasm-release]
+inherits = "release"
+# Optimize with size in mind (also try "z", sometimes it is better).
+opt-level = "s"
+strip = "debuginfo"
+
+[dependencies]
+bevy = "0.17"
+
