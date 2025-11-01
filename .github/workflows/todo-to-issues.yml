@@ -7,6 +7,11 @@ on:
     paths:
       - 'TODO.md'
 
+# Prevent concurrent runs to avoid duplicate issues
+concurrency:
+  group: process-todos
+  cancel-in-progress: false
+
 jobs:
   todo-to-issues:
     runs-on: ubuntu-latest
