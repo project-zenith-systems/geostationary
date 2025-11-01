@@ -69,8 +69,8 @@ jobs:
                 failed=1
               fi
                 
-            elif [[ "$line" =~ ^#+[[:space:]]+(.*) ]]; then
-              # This is a header - use it as context for next items
+            elif [[ "$line" =~ ^#{1,6}[[:space:]]+(.*) ]]; then
+              # This is a header (H1-H6) - use it as context for next items
               context="${BASH_REMATCH[1]}"
               echo "Found context: $context"
             fi
