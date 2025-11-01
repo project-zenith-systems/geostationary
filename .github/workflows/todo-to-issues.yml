@@ -1,0 +1,26 @@
+name: TODO to Issues
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'TODO.md'
+
+# Prevent concurrent runs to avoid duplicate issues
+concurrency:
+  group: process-todos
+  cancel-in-progress: false
+
+jobs:
+  todo-to-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Convert TODOs to Issues
+        uses: project-zenith-systems/actions/.github/actions/todo-to-issues@main
