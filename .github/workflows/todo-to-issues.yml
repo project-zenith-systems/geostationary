@@ -1,0 +1,16 @@
+name: TODO to Issues
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  todo-to-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Convert TODOs to Issues
+        uses: project-zenith-systems/actions/.github/actions/todo-to-issues@main
