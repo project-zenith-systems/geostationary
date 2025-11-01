@@ -1,0 +1,25 @@
+# Example TODO.md
+
+This file demonstrates the format expected by the `todo-to-issues.yml` workflow.
+
+When pushed to the `main` branch, this workflow will:
+1. Parse TODO items in markdown checkbox format
+2. Create GitHub issues for each item
+3. Include context from markdown headers in issue descriptions
+4. Delete this file and commit with `[skip ci]`
+
+## Usage Format
+
+Use markdown checkboxes for TODO items:
+
+# Feature Category
+
+- [ ] First task to do
+- [ ] Second task to do
+- [x] Completed task (will also create an issue)
+
+# Another Category
+
+- [ ] Task under different context
+
+Headers (using # or ##, etc.) are captured as context and included in the issue body.
