@@ -17,6 +17,7 @@ Use markdown checkboxes for TODO items:
 - [ ] First task to do
 - [ ] Second task to do
 - [x] Completed task (will also create an issue)
+- [X] Also supports uppercase X for completed items
 
 # Another Category
 

@@ -38,6 +38,7 @@ jobs:
           # Initialize variables
           context=""
           body_text=""
+          failed=0
           
           # Read TODO.md and process each item
           while IFS= read -r line || [ -n "$line" ]; do
@@ -60,10 +61,13 @@ jobs:
               
               # Create GitHub issue
               echo "Creating issue: $todo_text"
-              gh issue create \
+              if ! gh issue create \
                 --title "$todo_text" \
                 --body "$issue_body" \
-                --label "todo" || echo "Failed to create issue for: $todo_text"
+                --label "todo"; then
+                echo "Failed to create issue for: $todo_text"
+                failed=1
+              fi
                 
             elif [[ "$line" =~ ^#+[[:space:]]+(.*) ]]; then
               # This is a header - use it as context for next items
@@ -71,6 +75,12 @@ jobs:
               echo "Found context: $context"
             fi
           done < TODO.md
+          
+          # Check if any issues failed to create
+          if [ "$failed" -eq 1 ]; then
+            echo "Some issues failed to create. TODO.md will not be deleted."
+            exit 1
+          fi
       
       - name: Delete TODO.md and commit
         if: steps.check_todo.outputs.exists == 'true'
