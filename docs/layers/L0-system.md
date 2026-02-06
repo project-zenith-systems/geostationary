@@ -1,7 +1,7 @@
 # L0 - System
 
 > **Horizon:** Compiled Substrate
-> **Depends on:** External libraries only
+> **Depends on:** Bevy
 > **Depended on by:** L1 and above
 
 ## Purpose

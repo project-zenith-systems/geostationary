@@ -34,25 +34,6 @@ they define how the simulation is *presented, controlled, and governed*.
 | `camera`         | Controls what the player's viewport shows. Camera positioning, following, panning, zoom - the spatial framing of the player's view of the world. Works with L0 `input` for player-driven camera control and with other L6 modules (like `fov`) to determine the final presented view. |
 | `fov`            | Field of view - the system that limits what the player can see. Not everything on the station is visible at once; fog of war, line of sight, darkness, and obstruction all constrain perception. FOV determines which tiles, things, and creatures are revealed to a given viewer, shaping information asymmetry and tension. |
 
-## Module Relationships
-
-```
-  L5 player ───────► admin    (admin permissions per player)
-  L5 player ───────► rounds   (players participate in rounds)
-  L5 roles ────────► rounds   (role assignment during round setup)
-  L5 comms ────────► menu     (chat UI surfaces comms)
-  L4 access ───────► admin    (admin as elevated access)
-  L4 souls ────────► camera   (camera follows the soul's creature)
-
-  L0 ui ───────────► menu     (rendering backend)
-  L0 input ────────► interactions, camera  (player input)
-
-  Intra-layer:
-
-  camera ──────────► fov      (viewport constrains FOV calculation)
-  rounds ──────────► admin    (admins can end/restart rounds)
-```
-
 ## Design Notes
 
 **Interface is not just UI.** The name is deliberate. This layer handles

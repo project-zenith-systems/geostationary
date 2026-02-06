@@ -5,7 +5,7 @@
 All dependencies flow downward. A module at layer N may depend on:
 
 1. Any module at layer 0 through N-1
-2. External crates and libraries, subject to the gravity principle below
+2. External crates and libraries, where needed
 
 A module may **never** depend on anything at layer N+1 or above.
 

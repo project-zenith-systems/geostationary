@@ -1,7 +1,7 @@
 # L2 - Structural
 
 > **Horizon:** Compiled Substrate
-> **Depends on:** L0, L1, external libraries
+> **Depends on:** L0, L1
 > **Depended on by:** L3 and above
 
 ## Purpose
@@ -36,23 +36,6 @@ of the game world that those higher systems operate on.
 | `gravity`       | A simple binary toggle: grounded or weightless. Entities either have floor contact and walk normally, or they are floating and must grab surfaces to manoeuvre. Not a physics simulation - just a property of a space that other systems can query. |
 | `atmospherics`  | A full fluid-dynamics simulation for gas behaviour on the station. Models pressure differentials, gas flow, mixture composition, and propagation across the tile grid. When a hull breach opens, atmospherics is what makes the air rush out. One of the most computationally demanding systems in the substrate. |
 | `abilities`     | The capability framework for characters. Defines what actions a character *can* perform, as a broadly extensible system. Specific abilities and their effects are defined at higher layers; L2 provides the structural scaffolding for registering, querying, and invoking them. L3 `creatures` use abilities to mediate what a body can do, and L4 `genetics` can modify them at a biological level. |
-
-## Module Relationships
-
-The modules at L2 split naturally along the L1 primitive they extend:
-
-```
-  L1 things ──► items
-  L1 things ──► abilities  (attached to living things)
-
-  L1 tiles  ──► structures
-  L1 tiles  ──► connectables  (behaviour of certain structures)
-  L1 tiles  ──► decals  (visual overlay on tiles)
-  L1 tiles  ──► locations  (spatial identity of tile regions)
-
-  L0 physics ──► gravity  (simplified force model)
-  L0 physics ──► atmospherics  (fluid simulation on the tile grid)
-```
 
 ## Design Notes
 

@@ -29,16 +29,6 @@ Technically optional. Practically essential.
 | `auth`          | Player authentication. Ties a human to an account so the game knows who they are across sessions. The foundation of accountability: you can only ban someone if you can identify them. Interfaces with L5 `player` to associate a session participant with a persistent identity. |
 | `preferences`   | Game settings, key bindings, visual options, accessibility configuration - anything the player wants to persist between sessions that is not character data. Preferences are per-account, restored on login, and entirely cosmetic to the simulation below. |
 
-## Module Relationships
-
-```
-  L5 player ───────► auth         (session player ↔ persistent account)
-  L5 player ───────► preferences  (settings belong to the player)
-  L4 souls ────────► saves        (character state to persist)
-  L3 creatures ────► saves        (creature data to serialise)
-  L6 admin ────────► auth         (bans tied to authenticated identity)
-```
-
 ## Design Notes
 
 **Optional by design.** L7 can be entirely absent and the game still works.

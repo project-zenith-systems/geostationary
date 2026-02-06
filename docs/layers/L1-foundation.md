@@ -1,7 +1,7 @@
 # L1 - Foundation
 
 > **Horizon:** Compiled Substrate
-> **Depends on:** L0, external libraries
+> **Depends on:** L0
 > **Depended on by:** L2 and above
 
 ## Purpose
@@ -55,41 +55,10 @@ They are related - every Thing has an entity - but the words never collide.
 ## Design Notes
 
 The things/tiles split is the most fundamental spatial distinction in the
-game world. Everything that exists in the world is one or the other. Now
-that the full layer stack is defined, the branching is clear:
-
-```
-  L1 Things  (free-positioned, mobile, independent)
-  ├── L2 items         non-living objects
-  ├── L2 abilities     capability framework
-  ├── L3 creatures     living entities (limbs, organs, parts)
-  │   ├── L4 souls         player binding
-  │   ├── L4 clothes       visual equipment
-  │   ├── L4 surgery       medical procedures
-  │   ├── L4 genetics      biological modification
-  │   ├── L4 weapons       damage-dealing items
-  │   ├── L4 consumables   food, drink, chemistry effects
-  │   ├── L4 implants      internal electronics
-  │   └── L4 cyborgs       mechanical creature archetype
-  └── ...
-
-  L1 Tiles  (grid-locked, spatial backbone)
-  ├── L2 structures    layered constructions
-  │   ├── L2 connectables  neighbour-aware visuals
-  │   ├── L3 construction  building procedures
-  │   ├── L3 electronics   functional behaviour, hacking
-  │   └── L4 machines      activated structures
-  ├── L2 decals        flat visual overlays
-  ├── L2 locations     spatial identity, areas, departments
-  │   ├── L3 station       station as gameplay entity
-  │   ├── L3 shuttles      mobile tile grids
-  │   └── L4 access        permissions and clearance
-  ├── L2 atmospherics  gas pressure simulation
-  └── L2 gravity       grounded vs. weightless
-```
-
-These two primitives carry the entire game world. Every module from L2
-through L4 ultimately traces back to one of them.
+game world. Everything that exists in the world is one or the other. These
+two primitives carry the entire game world - every module from L2 through L4
+ultimately traces back to one of them. Some modules (like magic at L4) are
+cross-cutting and don't root cleanly in either primitive.
 
 **Main menu and the session lifecycle.** `main_menu` bootstraps the game
 before any simulation systems are running. With the full picture visible,

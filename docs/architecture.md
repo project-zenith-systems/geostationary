@@ -113,7 +113,7 @@ Detailed documentation for each layer:
   L5  Meta         ╌╌╌  Players, comms, roles
   L4  Mechanics    ╌╌╌  Souls, surgery, weapons, machines, magic, access, ...
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  compile horizon  ━━━
-  L3  Core         ───  Creatures, construction, chemistry, electronics
+  L3  Core         ───  Creatures, construction, chemistry, electronics, ...
   L2  Structural   ───  Items, structures, atmos, gravity, abilities
   L1  Foundation   ───  Things, tiles, main menu bootstrap
   L0  System       ───  Network, physics, input, animation, UI, audio

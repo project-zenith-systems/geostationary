@@ -1,7 +1,7 @@
 # L4 - Mechanics
 
 > **Horizon:** Scripted Canopy (lowest scripted layer)
-> **Depends on:** L0-L3 (via scripting bridge), limited external libraries
+> **Depends on:** L0-L3 (via scripting bridge)
 > **Depended on by:** L5 and above
 
 ## Purpose
@@ -39,27 +39,8 @@ surface, and each one represents a distinct, self-contained gameplay system.
 | `consumables`   | Food and drink. Consumables are the player-facing expression of L3 `chemistry` - the module that decides what happens when a creature ingests a substance. Nutrition, intoxication, poisoning, healing, and other status effects originate here, making chemistry's reaction system tangible to the player. |
 | `implants`      | Electronics, but inside creatures. Implants are installed in the body (via `surgery`) and provide functionality analogous to what L3 `electronics` provides for structures: augmented abilities, internal tools, communication devices, tracking chips. Where electronics wire up structures, implants wire up bodies. |
 | `cyborgs`       | A specific creature archetype: a playable robot housing a biological brain (or similar organic core). Cyborgs bridge the creature and electronics systems in a unique way - they are L3 `creatures` whose body is largely mechanical, governed by L3 `electronics`, but piloted by a `soul`. A specialisation that is distinct enough to warrant its own module. |
-| `magic`         | Ritual-based supernatural effects. Magic operates through conditions and consequences: a ritual requires specific ingredients, locations, timing, or states of the world, and when satisfied, produces effects that can reach across many other systems. Deliberately broad in what it can touch - magic is the escape hatch for effects that don't fit neatly into physical simulation. Sits at L4 because it does not depend on any L3 modules to define its rules, only to invoke their effects. |
+| `magic`         | Ritual-based supernatural effects. Magic operates through conditions and consequences: a ritual requires specific ingredients, locations, timing, or states of the world, and when satisfied, produces effects that can reach across many other systems. Deliberately broad in what it can touch - magic is the escape hatch for effects that don't fit neatly into physical simulation. Sits at L4 because it does not depend on any L3 modules to define its rules, only to invoke their effects. Still loosely defined; the scope and boundaries of this module will solidify as the systems it touches are implemented. |
 | `access`        | Authorisation and permissions across the station. Departments have areas, machines have clearance requirements, doors have locks. Access defines who is allowed where and what they are allowed to use, tying together L2 `locations`, L3 `station`, L3 `electronics`, and `souls` into a coherent security model. The bureaucratic backbone of station life. |
-
-## Module Relationships
-
-```
-  Substrate dependencies (via L3 API):
-
-  L3 creatures ────► souls, clothes, surgery, genetics, weapons,
-                     consumables, implants, cyborgs
-  L3 construction ─► machines
-  L3 chemistry ────► consumables  (status effects from ingestion)
-  L3 electronics ──► machines, implants, cyborgs, access
-  L3 station ──────► access, objectives
-
-  L2 items ────────► clothes, weapons, consumables
-  L2 structures ───► machines
-  L2 abilities ────► genetics
-  L2 locations ────► access  (area permissions)
-
-```
 
 ## Scripting Environment
 

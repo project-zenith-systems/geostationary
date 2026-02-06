@@ -1,7 +1,7 @@
 # L3 - Core
 
 > **Horizon:** Compiled Substrate (topmost compiled layer)
-> **Depends on:** L0, L1, L2, external libraries
+> **Depends on:** L0, L1, L2
 > **Depended on by:** L4 and above (across the compile horizon)
 
 ## Purpose
@@ -38,23 +38,6 @@ binds against.
 | `electronics`   | The functional nervous system of structures and items. Radios, door controls, power distribution, airlocks, machinery - electronics give built objects their behaviour. Also encompasses hacking: the subversion of electronic systems by tampering with their logic. A module that bridges the gap between passive structures and active, interactive objects. |
 | `station`       | The station as a cohesive whole. While L2 `structures` and `locations` define the physical layout, this module manages the station as a gameplay entity: power grids, alert levels, departmental operations, overall station state. The organisational layer that makes a collection of rooms into a functioning station. |
 | `shuttles`      | Spacecraft that can move between locations. Shuttles are mobile collections of tiles - a small station that detaches, travels, and docks. They bridge the gap between the static tile grid and dynamic spatial movement, and are the primary means of transit between the station and the wider world. |
-
-## Module Relationships
-
-```
-  L2 items ──────────► construction  (materials consumed)
-  L2 structures ─────► construction  (what gets built)
-  L2 structures ─────► electronics   (functionality for built objects)
-  L2 abilities ──────► creatures     (what creatures can do)
-  L2 atmospherics ───► creatures     (breathing, pressure damage)
-  L2 locations ──────► station       (spatial organisation)
-  L2 locations ──────► shuttles      (transit between locations)
-
-  L1 things ─────────► creatures     (creatures are things)
-  L1 tiles ──────────► shuttles      (shuttles are mobile tile grids)
-
-  chemistry ────────► (broadly cross-cutting, touches many systems)
-```
 
 ## Compile Horizon Interface
 
