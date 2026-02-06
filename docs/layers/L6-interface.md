@@ -42,7 +42,6 @@ they define how the simulation is *presented, controlled, and governed*.
   L5 roles ────────► rounds   (role assignment during round setup)
   L5 comms ────────► menu     (chat UI surfaces comms)
   L4 access ───────► admin    (admin as elevated access)
-  L4 interactions across L4 ► menu  (UI for mechanics)
   L4 souls ────────► camera   (camera follows the soul's creature)
 
   L0 ui ───────────► menu     (rendering backend)

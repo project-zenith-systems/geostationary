@@ -39,6 +39,7 @@ surface, and each one represents a distinct, self-contained gameplay system.
 | `consumables`   | Food and drink. Consumables are the player-facing expression of L3 `chemistry` - the module that decides what happens when a creature ingests a substance. Nutrition, intoxication, poisoning, healing, and other status effects originate here, making chemistry's reaction system tangible to the player. |
 | `implants`      | Electronics, but inside creatures. Implants are installed in the body (via `surgery`) and provide functionality analogous to what L3 `electronics` provides for structures: augmented abilities, internal tools, communication devices, tracking chips. Where electronics wire up structures, implants wire up bodies. |
 | `cyborgs`       | A specific creature archetype: a playable robot housing a biological brain (or similar organic core). Cyborgs bridge the creature and electronics systems in a unique way - they are L3 `creatures` whose body is largely mechanical, governed by L3 `electronics`, but piloted by a `soul`. A specialisation that is distinct enough to warrant its own module. |
+| `magic`         | Ritual-based supernatural effects. Magic operates through conditions and consequences: a ritual requires specific ingredients, locations, timing, or states of the world, and when satisfied, produces effects that can reach across many other systems. Deliberately broad in what it can touch - magic is the escape hatch for effects that don't fit neatly into physical simulation. Sits at L4 because it does not depend on any L3 modules to define its rules, only to invoke their effects. |
 | `access`        | Authorisation and permissions across the station. Departments have areas, machines have clearance requirements, doors have locks. Access defines who is allowed where and what they are allowed to use, tying together L2 `locations`, L3 `station`, L3 `electronics`, and `souls` into a coherent security model. The bureaucratic backbone of station life. |
 
 ## Module Relationships
@@ -58,11 +59,6 @@ surface, and each one represents a distinct, self-contained gameplay system.
   L2 abilities ────► genetics
   L2 locations ────► access  (area permissions)
 
-  Intra-layer relationships:
-
-  souls ◄──────────► creatures (via L3)  (binding/unbinding)
-  surgery ──────────► implants  (installation procedure)
-  cyborgs ──────────► implants, souls  (mechanical body + organic pilot)
 ```
 
 ## Scripting Environment
@@ -76,9 +72,10 @@ properties are:
   scripting bridge defined at the compile horizon.
 - **Hot-reloadable.** Mechanics can be modified and reloaded without
   restarting the engine - critical for iteration speed.
-- **Sandboxed from each other.** Individual mechanics should not reach into
-  each other's internals; cross-mechanic interaction flows through the
-  substrate's shared state and event systems.
+- **Independent but not isolated.** Mechanics are separate modules with
+  natural interplay (surgery installs implants, cyborgs have souls) but
+  cross-mechanic interaction flows through the substrate's shared state
+  and event systems, not direct coupling.
 
 ## Design Notes
 

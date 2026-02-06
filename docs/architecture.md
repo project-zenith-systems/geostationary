@@ -27,7 +27,20 @@ The architecture is divided into **eight layers**, numbered L0 through L7. This
 numbering is deliberate: layers are referenced by number, not by name, to
 reinforce the hierarchy as a first-class concept in every design conversation.
 
-## The Two Horizons
+## Bevy and the Layer Model
+
+Geostationary is built on [Bevy](https://bevyengine.org/). Bevy provides the
+ECS, rendering pipeline, windowing, asset loading, and much of the
+infrastructure that a game engine needs. The eight-layer architecture described
+here represents **our code** - the game-specific systems built on top of Bevy,
+not a replacement for it. Bevy is the foundation beneath L0, not a layer
+within the model.
+
+Notably, **rendering is Bevy's responsibility**. The layers define what exists
+and how it behaves; Bevy draws it. Asset management may warrant its own module
+in the future, but the rendering pipeline itself is not ours to architect.
+
+## The Compile Horizon
 
 The eight layers are divided across a fundamental boundary - the **compile
 horizon** - which separates the engine into two distinct halves:
@@ -41,10 +54,10 @@ change infrequently and are validated at compile time.
 
 | Layer | Name         | Role |
 |-------|--------------|------|
-| L0    | System       | System backends: network, physics, input, animation, UI |
+| L0    | System       | System backends: network, physics, input, animation, UI, audio |
 | L1    | Foundation   | World primitives: things, tiles, bootstrapping |
 | L2    | Structural   | World structure: items, structures, atmos, gravity, abilities |
-| L3    | Core         | Simulation: creatures, construction, chemistry, electronics, magic |
+| L3    | Core         | Simulation: creatures, construction, chemistry, electronics, station, shuttles |
 
 ### The Scripted Canopy (L4 - L7)
 
@@ -56,7 +69,7 @@ prioritise expressiveness, iteration speed, and moddability.
 
 | Layer | Name         | Role |
 |-------|--------------|------|
-| L4    | Mechanics    | Player mechanics: souls, surgery, weapons, machines, access |
+| L4    | Mechanics    | Player mechanics: souls, surgery, weapons, machines, magic, access |
 | L5    | Meta         | Players, comms, roles (jobs and antagonists) |
 | L6    | Interface    | Admin, rounds, menus, interactions, camera, FOV |
 | L7    | Cloud        | Persistence: saves, auth, preferences (optional layer) |
@@ -73,13 +86,11 @@ This rule is absolute. There are no exceptions, no "just this once" escape
 hatches. Upward communication is achieved exclusively through events, trait
 objects, or callback registration - never through direct dependency.
 
-### External Library Policy
+### External Libraries
 
-External crate and library dependencies should concentrate at the **lower
-layers** of the stack. As you ascend the layer hierarchy, the code should
-increasingly depend on the engine's own abstractions rather than reaching
-out to third-party implementations directly. The substrate insulates the
-canopy from the outside world.
+Most modules will not need external dependencies beyond Bevy itself.
+Where an external crate is needed, it should sit as low in the stack as
+practical so the layers above don't need to know about it.
 
 ## Layer Index
 
@@ -100,12 +111,12 @@ Detailed documentation for each layer:
   L7  Cloud        ╌╌╌  Saves, auth, preferences (optional)
   L6  Interface    ╌╌╌  Admin, rounds, menus, interactions, camera, FOV
   L5  Meta         ╌╌╌  Players, comms, roles
-  L4  Mechanics    ╌╌╌  Souls, surgery, weapons, machines, access, ...
+  L4  Mechanics    ╌╌╌  Souls, surgery, weapons, machines, magic, access, ...
  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  compile horizon  ━━━
-  L3  Core         ───  Creatures, construction, chemistry, electronics, magic
+  L3  Core         ───  Creatures, construction, chemistry, electronics
   L2  Structural   ───  Items, structures, atmos, gravity, abilities
   L1  Foundation   ───  Things, tiles, main menu bootstrap
-  L0  System       ───  Network, physics, input, animation, UI
+  L0  System       ───  Network, physics, input, animation, UI, audio
 ```
 
 *Dashed lines (╌) denote scripted layers. Solid lines (─) denote compiled layers.*

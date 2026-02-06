@@ -44,12 +44,6 @@ in front of you?
 ECS baggage. A Thing is a game-world object. An entity is an ECS identifier.
 They are related - every Thing has an entity - but the words never collide.
 
-## External Dependencies
-
-| Crate | Purpose |
-|-------|---------|
-| *TBD* | *To be selected during implementation* |
-
 ## Open Questions
 
 - **`metadata`** - Prior design notes reference a metadata module at this

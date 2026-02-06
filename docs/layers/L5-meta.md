@@ -34,8 +34,8 @@ structure of the game.
 ```
   L4 souls ────────► player   (the soul is the player's presence in-world;
                                the player exists beyond it)
-  L4 access ───────► roles    (roles determine access levels)
-  L4 objectives ───► roles    (roles determine objectives)
+  L4 access ◄────── roles    (roles configure access levels)
+  L4 objectives ◄── roles    (roles assign objectives)
   L3 electronics ──► comms    (radio channels via in-world devices)
   L3 station ──────► roles    (station departments map to job roles)
 

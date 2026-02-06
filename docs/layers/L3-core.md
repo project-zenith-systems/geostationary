@@ -36,7 +36,6 @@ binds against.
 | `construction`  | The procedural layer on top of L2 `structures`. Where structures define what *can* exist on a tile, construction defines *how* it gets built: what tools are required, what materials are consumed, what steps must be followed, and what skill or role is needed. Turns raw structural definitions into player-driven building. |
 | `chemistry`     | A reaction system for liquids and compounds. Chemicals can react with each other to produce new substances, and can apply status effects to their containers or anything they contact - intoxication, combustion, healing, corrosion, explosions. The system is combinatorial: the interesting behaviour emerges from mixing, not from individual substances in isolation. |
 | `electronics`   | The functional nervous system of structures and items. Radios, door controls, power distribution, airlocks, machinery - electronics give built objects their behaviour. Also encompasses hacking: the subversion of electronic systems by tampering with their logic. A module that bridges the gap between passive structures and active, interactive objects. |
-| `magic`         | Ritual-based supernatural effects. Magic operates through conditions and consequences: a ritual requires specific ingredients, locations, timing, or states of the world, and when satisfied, produces effects that can reach across many other systems. Deliberately broad in what it can touch - magic is the escape hatch for effects that don't fit neatly into physical simulation. |
 | `station`       | The station as a cohesive whole. While L2 `structures` and `locations` define the physical layout, this module manages the station as a gameplay entity: power grids, alert levels, departmental operations, overall station state. The organisational layer that makes a collection of rooms into a functioning station. |
 | `shuttles`      | Spacecraft that can move between locations. Shuttles are mobile collections of tiles - a small station that detaches, travels, and docks. They bridge the gap between the static tile grid and dynamic spatial movement, and are the primary means of transit between the station and the wider world. |
 
@@ -54,14 +53,8 @@ binds against.
   L1 things ─────────► creatures     (creatures are things)
   L1 tiles ──────────► shuttles      (shuttles are mobile tile grids)
 
-  chemistry, magic ───► (broadly cross-cutting, touch many systems)
+  chemistry ────────► (broadly cross-cutting, touches many systems)
 ```
-
-## External Dependencies
-
-| Crate | Purpose |
-|-------|---------|
-| *TBD* | *To be selected during implementation* |
 
 ## Compile Horizon Interface
 
@@ -74,8 +67,9 @@ The four scripted layers place specific demands on this surface:
 
 - **L4 (Mechanics)** needs to manipulate creatures (equip clothes, perform
   surgery, install implants, apply weapon damage), operate machines, query
-  chemistry reactions, and check electronics state. This is the heaviest
-  consumer - 11 modules all reaching down through this boundary.
+  chemistry reactions, check electronics state, and invoke ritual effects.
+  This is the heaviest consumer - 12 modules all reaching down through
+  this boundary.
 - **L5 (Meta)** needs to read station department structure for role assignment,
   access electronics for radio channels, and query creature state for soul
   binding.
@@ -107,12 +101,6 @@ single codebase in the substrate and warrants careful internal decomposition.
 emergent behaviour of mixing. The module must be designed around reaction
 rules and substance properties, not hard-coded recipes, so that the
 possibility space grows with the number of substances rather than linearly.
-
-**Magic as a cross-cutting wildcard.** Magic rituals can produce effects that
-touch creatures, chemistry, atmospherics, station state, and more. The ritual
-system needs to be able to reach broadly across L2 and L3 without creating
-tangled dependencies - likely through an effect/event system rather than
-direct module coupling.
 
 **Shuttles as mobile tile grids.** A shuttle is conceptually a small,
 self-contained station that can move. This has deep implications: the tile

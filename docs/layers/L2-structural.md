@@ -33,7 +33,7 @@ of the game world that those higher systems operate on.
 | `connectables`  | A tile behaviour system for structures that need visual continuity with their neighbours. Walls, pipes, cables, conveyors - anything where the sprite or mesh must adapt based on what is adjacent. Handles neighbour detection and graphic variant selection. |
 | `locations`     | Spatial identity and area definition. Provides the means to name and reference points and regions of the station: raw coordinates, GPS beacons, room boundaries, department zones, sections. Anything that answers the question "where is this?" or "what area does this belong to?" lives here. Locations are the spatial foundation that L3 `station` organises into a functioning whole, that L4 `access` gates with permissions, and that L5 `roles` maps to departments. |
 | `decals`        | Flat visual entities that sit on top of tiles. Drawings, bloodstains, scorch marks, liquid puddles, warning labels. Primarily a graphical concern - decals add visual detail to the tilemap without altering the structural composition of the tile beneath. |
-| `gravity`       | A deceptively simple system: the toggle between grounded and weightless. Unlike conventional game gravity that applies a constant downward force, this is a binary state - entities either have floor contact and walk normally, or they are floating and must grab walls and surfaces to manoeuvre. The presence or absence of gravity fundamentally changes movement and interaction. |
+| `gravity`       | A simple binary toggle: grounded or weightless. Entities either have floor contact and walk normally, or they are floating and must grab surfaces to manoeuvre. Not a physics simulation - just a property of a space that other systems can query. |
 | `atmospherics`  | A full fluid-dynamics simulation for gas behaviour on the station. Models pressure differentials, gas flow, mixture composition, and propagation across the tile grid. When a hull breach opens, atmospherics is what makes the air rush out. One of the most computationally demanding systems in the substrate. |
 | `abilities`     | The capability framework for characters. Defines what actions a character *can* perform, as a broadly extensible system. Specific abilities and their effects are defined at higher layers; L2 provides the structural scaffolding for registering, querying, and invoking them. L3 `creatures` use abilities to mediate what a body can do, and L4 `genetics` can modify them at a biological level. |
 
@@ -53,12 +53,6 @@ The modules at L2 split naturally along the L1 primitive they extend:
   L0 physics ──► gravity  (simplified force model)
   L0 physics ──► atmospherics  (fluid simulation on the tile grid)
 ```
-
-## External Dependencies
-
-| Crate | Purpose |
-|-------|---------|
-| *TBD* | *To be selected during implementation* |
 
 ## Design Notes
 
