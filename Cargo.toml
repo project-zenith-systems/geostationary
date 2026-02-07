@@ -20,5 +20,4 @@ opt-level = "s"
 strip = "debuginfo"
 
 [dependencies]
-bevy = "0.17"
-
+bevy = { version = "0.18" }
