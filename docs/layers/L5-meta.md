@@ -25,7 +25,7 @@ structure of the game.
 
 | Module    | Description |
 |-----------|-------------|
-| `player`  | The human behind the screen, as a game participant. Distinct from the L4 `soul` (which binds to a creature) and from the creature itself - the player exists whether they are in a round, spectating, or sitting in chat. This module tracks the player as a person: their session, their identity, their participation state. The player is present in chat before they are ever present in the world. |
+| `player`  | The human behind the screen, as a game participant. Distinct from the L4 `souls` (which binds to a creature) and from the creature itself - the player exists whether they are in a round, spectating, or sitting in chat. This module tracks the player as a person: their session, their identity, their participation state. The player is present in chat before they are ever present in the world. |
 | `comms`   | The communication system, woven into the world but reaching beyond it. Channels are tied to in-world systems: radio frequencies carried by L3 `electronics`, proximity-based local chat, department channels gated by L4 `access`. But comms also spans the out-of-world: OOC (out of character) chat, LOOC (local out of character), and admin channels. A single system that handles both the diegetic and the meta. |
 | `roles`   | What part you play. Roles define a player's job on the station - engineer, doctor, security officer - which in turn determines their L4 `access` permissions and `objectives`. But roles also encompass the hidden layer: antagonist assignments like vampires, secret agents, and impostors. A role is the narrative seed that shapes a player's entire round, whether they are crew or threat. |
 
