@@ -31,4 +31,3 @@ strip = "debuginfo"
 bevy = { version = "0.18" }
 ui = { path = "modules/ui" }
 network = { path = "modules/network" }
-things = { path = "modules/things" }
