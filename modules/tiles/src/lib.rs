@@ -78,7 +78,7 @@ impl Tilemap {
         (0..self.height).flat_map(move |y| {
             (0..self.width).map(move |x| {
                 let pos = IVec2::new(x as i32, y as i32);
-                let kind = self.get(pos).unwrap();
+                let kind = self.get(pos).expect("iterator should only visit valid positions");
                 (pos, kind)
             })
         })
@@ -159,7 +159,6 @@ fn spawn_tile_meshes(
         match kind {
             TileKind::Floor => {
                 commands.spawn((
-                    // Handle::clone is cheap (reference-counted), used for asset sharing
                     Mesh3d(tile_meshes.floor_mesh.clone()),
                     MeshMaterial3d(tile_meshes.floor_material.clone()),
                     Transform::from_xyz(world_x, 0.0, world_z),
@@ -168,7 +167,6 @@ fn spawn_tile_meshes(
             }
             TileKind::Wall => {
                 commands.spawn((
-                    // Handle::clone is cheap (reference-counted), used for asset sharing
                     Mesh3d(tile_meshes.wall_mesh.clone()),
                     MeshMaterial3d(tile_meshes.wall_material.clone()),
                     Transform::from_xyz(world_x, 0.5, world_z),
