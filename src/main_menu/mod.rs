@@ -1,4 +1,5 @@
 use bevy::{app::AppExit, prelude::*, state::state_scoped::DespawnOnExit};
+use network::NetCommand;
 use ui::*;
 
 use crate::app_state::AppState;
@@ -31,6 +32,7 @@ pub enum MenuState {
 pub enum MenuEvent {
     Title,
     Settings,
+    Play,
     Hide,
     Quit,
 }
@@ -71,6 +73,7 @@ fn menu_message_reader(
     theme: Res<UiTheme>,
     mut messages: MessageReader<MenuEvent>,
     mut exit: MessageWriter<AppExit>,
+    mut net_commands: MessageWriter<NetCommand>,
 ) {
     let Ok(menu_root_entity) = query.single() else {
         return;
@@ -81,8 +84,13 @@ fn menu_message_reader(
             MenuEvent::Title => {
                 MenuEventResult::ReplaceChildren(title_screen::spawn(&mut commands, theme.as_ref()))
             }
-            MenuEvent::Settings => {
-                MenuEventResult::ReplaceChildren(settings_screen::spawn(&mut commands, theme.as_ref()))
+            MenuEvent::Settings => MenuEventResult::ReplaceChildren(settings_screen::spawn(
+                &mut commands,
+                theme.as_ref(),
+            )),
+            MenuEvent::Play => {
+                net_commands.write(NetCommand::HostLocal { port: 7777 });
+                MenuEventResult::CloseMenu
             }
             MenuEvent::Hide => MenuEventResult::CloseMenu,
             MenuEvent::Quit => {

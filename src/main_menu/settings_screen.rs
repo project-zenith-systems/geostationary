@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use ui::{build_button, UiTheme};
+use ui::{UiTheme, build_button};
 
 use super::MenuEvent;
 
@@ -41,5 +41,11 @@ pub fn spawn(commands: &mut Commands, theme: &UiTheme) -> Vec<Entity> {
         .with_event(MenuEvent::Title)
         .build(commands);
 
-    vec![heading, audio_label, video_label, controls_label, back_button]
+    vec![
+        heading,
+        audio_label,
+        video_label,
+        controls_label,
+        back_button,
+    ]
 }

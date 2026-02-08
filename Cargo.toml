@@ -7,6 +7,7 @@ edition = "2024"
 resolver = "3"
 members = [
     "modules/ui",
+    "modules/network",
 ]
 
 [profile.dev]
@@ -28,3 +29,4 @@ strip = "debuginfo"
 [dependencies]
 bevy = { version = "0.18" }
 ui = { path = "modules/ui" }
+network = { path = "modules/network" }

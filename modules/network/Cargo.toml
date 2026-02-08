@@ -1,0 +1,12 @@
+[package]
+name = "network"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = "0.18"
+quinn = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+bytes = "1"
