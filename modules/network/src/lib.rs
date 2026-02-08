@@ -10,10 +10,21 @@ mod server;
 
 use runtime::{NetEventReceiver, NetEventSender, NetworkRuntime};
 
+/// System set for network systems. Game code should read `NetEvent` messages
+/// after `NetworkSet::Receive` and write `NetCommand` messages before
+/// `NetworkSet::Send`.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NetworkSet {
+    /// Drains async events into Bevy messages.
+    Receive,
+    /// Processes commands and dispatches them to async tasks.
+    Send,
+}
+
 /// Commands sent by game code to control the network layer.
 #[derive(Message, Clone, Debug)]
 pub enum NetCommand {
-    HostLocal { port: u16 },
+    Host { port: u16 },
     Connect { addr: SocketAddr },
 }
 
@@ -38,7 +49,15 @@ impl Plugin for NetworkPlugin {
         app.insert_resource(NetEventReceiver(event_rx));
         app.add_message::<NetCommand>();
         app.add_message::<NetEvent>();
-        app.add_systems(PreUpdate, (drain_net_events, process_net_commands));
+        app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
+        app.add_systems(
+            PreUpdate,
+            drain_net_events.in_set(NetworkSet::Receive),
+        );
+        app.add_systems(
+            PreUpdate,
+            process_net_commands.in_set(NetworkSet::Send),
+        );
     }
 }
 
@@ -57,7 +76,7 @@ fn process_net_commands(
 ) {
     for command in commands_reader.read() {
         match command {
-            NetCommand::HostLocal { port } => {
+            NetCommand::Host { port } => {
                 let tx = event_tx.0.clone();
                 runtime.spawn(server::run_server(*port, tx));
             }

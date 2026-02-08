@@ -83,7 +83,7 @@ fn menu_message_reader(
                 theme.as_ref(),
             )),
             MenuEvent::Play => {
-                net_commands.write(NetCommand::HostLocal { port: DEFAULT_PORT });
+                net_commands.write(NetCommand::Host { port: DEFAULT_PORT });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,
                     theme.as_ref(),

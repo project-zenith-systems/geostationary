@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use main_menu::{MainMenuPlugin, MenuEvent};
-use network::{NetCommand, NetEvent, NetworkPlugin};
+use network::{NetCommand, NetEvent, NetworkPlugin, NetworkSet};
 use ui::UiPlugin;
 
 mod app_state;
@@ -22,7 +22,12 @@ fn main() {
         .add_plugins(NetworkPlugin)
         .init_state::<app_state::AppState>()
         .add_systems(Startup, spawn_camera)
-        .add_systems(PreUpdate, handle_net_events)
+        .add_systems(
+            PreUpdate,
+            handle_net_events
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send),
+        )
         .run();
 }
 
