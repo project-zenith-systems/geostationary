@@ -8,6 +8,7 @@ resolver = "3"
 members = [
     "modules/ui",
     "modules/network",
+    "modules/things",
 ]
 
 [profile.dev]
