@@ -18,7 +18,11 @@ async fn run_client_inner(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client_config = config::build_client_config()?;
 
-    let mut endpoint = quinn::Endpoint::client(([0, 0, 0, 0], 0u16).into())?;
+    let bind_addr = match addr {
+        SocketAddr::V4(_) => ([0, 0, 0, 0], 0u16).into(),
+        SocketAddr::V6(_) => ([0u16; 8], 0u16).into(),
+    };
+    let mut endpoint = quinn::Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(client_config);
 
     log::info!("Connecting to {addr}...");
