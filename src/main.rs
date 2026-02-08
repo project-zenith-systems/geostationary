@@ -33,6 +33,7 @@ fn spawn_camera(mut commands: Commands) {
 fn handle_net_events(
     mut messages: MessageReader<NetEvent>,
     mut net_commands: MessageWriter<NetCommand>,
+    mut menu_events: MessageWriter<MenuEvent>,
     mut next_state: ResMut<NextState<app_state::AppState>>,
 ) {
     for event in messages.read() {
@@ -46,6 +47,7 @@ fn handle_net_events(
             }
             NetEvent::Error(msg) => {
                 warn!("Network error: {msg}");
+                menu_events.write(MenuEvent::Title);
             }
             _ => {}
         }

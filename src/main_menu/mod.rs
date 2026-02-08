@@ -6,6 +6,7 @@ use crate::app_state::AppState;
 
 const DEFAULT_PORT: u16 = 7777;
 
+mod loading_screen;
 mod settings_screen;
 mod title_screen;
 
@@ -82,7 +83,10 @@ fn menu_message_reader(
             )),
             MenuEvent::Play => {
                 net_commands.write(NetCommand::HostLocal { port: DEFAULT_PORT });
-                MenuEventResult::CloseMenu
+                MenuEventResult::ReplaceChildren(loading_screen::spawn(
+                    &mut commands,
+                    theme.as_ref(),
+                ))
             }
             MenuEvent::Quit => {
                 exit.write(AppExit::Success);
