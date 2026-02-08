@@ -9,6 +9,7 @@ members = [
     "modules/ui",
     "modules/network",
     "modules/tiles",
+    "modules/things",
 ]
 
 [profile.dev]
