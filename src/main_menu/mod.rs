@@ -11,7 +11,6 @@ pub struct MainMenuPlugin;
 
 impl Plugin for MainMenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_sub_state::<MenuState>();
         app.add_systems(OnEnter(AppState::MainMenu), (menu_setup, menu_init));
         app.add_systems(
             PreUpdate,
@@ -20,20 +19,11 @@ impl Plugin for MainMenuPlugin {
     }
 }
 
-#[derive(SubStates, Clone, PartialEq, Eq, Hash, Debug, Default)]
-#[source(AppState = AppState::MainMenu)]
-pub enum MenuState {
-    #[default]
-    Title,
-    Settings,
-}
-
 #[derive(Message, Clone, Debug)]
 pub enum MenuEvent {
     Title,
     Settings,
     Play,
-    Hide,
     Quit,
 }
 
@@ -92,7 +82,6 @@ fn menu_message_reader(
                 net_commands.write(NetCommand::HostLocal { port: 7777 });
                 MenuEventResult::CloseMenu
             }
-            MenuEvent::Hide => MenuEventResult::CloseMenu,
             MenuEvent::Quit => {
                 exit.write(AppExit::Success);
                 MenuEventResult::CloseMenu
