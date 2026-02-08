@@ -3,6 +3,13 @@ name = "geostationary"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+resolver = "3"
+members = [
+    "modules/ui",
+    "modules/network",
+]
+
 [profile.dev]
 opt-level = 1
 
@@ -21,3 +28,5 @@ strip = "debuginfo"
 
 [dependencies]
 bevy = { version = "0.18" }
+ui = { path = "modules/ui" }
+network = { path = "modules/network" }
