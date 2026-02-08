@@ -5,7 +5,8 @@ use bevy::prelude::*;
 /// This is the L1 convention that establishes the base category for entities
 /// that exist in the world but are not bound to the grid itself. Higher layers
 /// (creatures, items) build on top of this marker.
-#[derive(Component, Debug, Clone, Copy, Default)]
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
 pub struct Thing;
 
 /// Grid-aware position component that stores both tile coordinate and sub-tile offset.
@@ -15,7 +16,8 @@ pub struct Thing;
 ///
 /// This allows entities to move smoothly within the grid while maintaining
 /// awareness of their discrete tile location.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
 pub struct WorldPosition {
     pub tile: IVec2,
     pub offset: Vec2,
