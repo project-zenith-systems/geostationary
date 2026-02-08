@@ -10,4 +10,8 @@ Add a configuration system to manage game settings (network port, graphics optio
 
 ## Network task cancellation and lifecycle management
 
-The network layer spawns long-lived server/client tasks but keeps no handles or cancellation tokens. Once `HostLocal` is issued the server loops forever, keeping the port bound even after state transitions. Track `JoinHandle`s and/or `CancellationToken`s in a resource and add `NetCommand` variants like `StopHosting` / `Disconnect` to cleanly shut down endpoints.
+The network layer spawns long-lived server/client tasks but keeps no handles or cancellation tokens. Once `HostLocal` is issued the server loops forever, keeping the port bound even after state transitions. Track `JoinHandle`s and/or `CancellationToken`s in a resource and add `NetCommand` variants like `StopHosting` / `Disconnect` to cleanly shut down endpoints. This also prevents duplicate hosting if the user triggers Play multiple times.
+
+## Configurable TLS server name for non-local connections
+
+`NetCommand::Connect` hard-codes the TLS SNI to `"localhost"`. Once non-local connections and proper certificate verification are added, include a `server_name` field in the connect command and pass it to `endpoint.connect()`.
