@@ -92,7 +92,42 @@ impl Plugin for TilesPlugin {
         app.register_type::<TileKind>();
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
+        app.init_resource::<TileMeshes>();
         app.add_systems(Update, spawn_tile_meshes);
+    }
+}
+
+#[derive(Resource)]
+struct TileMeshes {
+    floor_mesh: Handle<Mesh>,
+    wall_mesh: Handle<Mesh>,
+    floor_material: Handle<StandardMaterial>,
+    wall_material: Handle<StandardMaterial>,
+}
+
+impl FromWorld for TileMeshes {
+    fn from_world(world: &mut World) -> Self {
+        let mut meshes = world.resource_mut::<Assets<Mesh>>();
+        let floor_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
+        let wall_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+
+        let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
+        // Dark grey for floors, lighter grey for walls
+        let floor_material = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.3, 0.3, 0.3),
+            ..default()
+        });
+        let wall_material = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.6, 0.6, 0.6),
+            ..default()
+        });
+
+        Self {
+            floor_mesh,
+            wall_mesh,
+            floor_material,
+            wall_material,
+        }
     }
 }
 
@@ -100,8 +135,7 @@ fn spawn_tile_meshes(
     mut commands: Commands,
     tilemap: Option<Res<Tilemap>>,
     existing_tiles: Query<Entity, With<Tile>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    tile_meshes: Res<TileMeshes>,
 ) {
     let Some(tilemap) = tilemap else {
         return;
@@ -117,20 +151,6 @@ fn spawn_tile_meshes(
         commands.entity(entity).despawn();
     }
 
-    // Create shared meshes and materials
-    let floor_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
-    let wall_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    
-    // Dark grey for floors, lighter grey for walls
-    let floor_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.3, 0.3, 0.3),
-        ..default()
-    });
-    let wall_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.6, 0.6, 0.6),
-        ..default()
-    });
-
     // Spawn tile entities
     for (pos, kind) in tilemap.iter() {
         let world_x = pos.x as f32;
@@ -139,16 +159,18 @@ fn spawn_tile_meshes(
         match kind {
             TileKind::Floor => {
                 commands.spawn((
-                    Mesh3d(floor_mesh.clone()),
-                    MeshMaterial3d(floor_material.clone()),
+                    // Handle::clone is cheap (reference-counted), used for asset sharing
+                    Mesh3d(tile_meshes.floor_mesh.clone()),
+                    MeshMaterial3d(tile_meshes.floor_material.clone()),
                     Transform::from_xyz(world_x, 0.0, world_z),
                     Tile { position: pos },
                 ));
             }
             TileKind::Wall => {
                 commands.spawn((
-                    Mesh3d(wall_mesh.clone()),
-                    MeshMaterial3d(wall_material.clone()),
+                    // Handle::clone is cheap (reference-counted), used for asset sharing
+                    Mesh3d(tile_meshes.wall_mesh.clone()),
+                    MeshMaterial3d(tile_meshes.wall_material.clone()),
                     Transform::from_xyz(world_x, 0.5, world_z),
                     Tile { position: pos },
                 ));
