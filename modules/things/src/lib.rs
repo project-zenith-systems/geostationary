@@ -75,7 +75,7 @@ mod tests {
         pos.normalize();
         assert_eq!(pos.tile, IVec2::new(6, 5));
         assert!((pos.offset.x - 0.5).abs() < f32::EPSILON);
-        assert!((pos.offset.y - 0.3).abs() < 0.0001);
+        assert!((pos.offset.y - 0.3).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -87,7 +87,7 @@ mod tests {
         pos.normalize();
         assert_eq!(pos.tile, IVec2::new(4, 1));
         assert!((pos.offset.x - 0.5).abs() < f32::EPSILON);
-        assert!((pos.offset.y - 0.8).abs() < 0.0001);
+        assert!((pos.offset.y - 0.8).abs() < f32::EPSILON);
     }
 
     #[test]
