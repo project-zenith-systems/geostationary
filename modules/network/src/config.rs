@@ -23,16 +23,24 @@ pub(crate) fn build_server_config() -> Result<ServerConfig, Box<dyn std::error::
 }
 
 pub(crate) fn build_client_config() -> Result<ClientConfig, Box<dyn std::error::Error>> {
-    let crypto = rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(SkipServerVerification::new())
-        .with_no_client_auth();
+    #[cfg(not(debug_assertions))]
+    {
+        return Err("Production TLS not yet implemented — use a debug build for development.".into());
+    }
 
-    let mut client_config = ClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?,
-    ));
-    client_config.transport_config(Arc::new(transport_config()));
-    Ok(client_config)
+    #[cfg(debug_assertions)]
+    {
+        let crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(SkipServerVerification::new())
+            .with_no_client_auth();
+
+        let mut client_config = ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?,
+        ));
+        client_config.transport_config(Arc::new(transport_config()));
+        Ok(client_config)
+    }
 }
 
 fn transport_config() -> TransportConfig {
@@ -46,15 +54,18 @@ fn transport_config() -> TransportConfig {
 }
 
 /// Dev-only: accepts any server certificate without validation.
+#[cfg(debug_assertions)]
 #[derive(Debug)]
 struct SkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
 
+#[cfg(debug_assertions)]
 impl SkipServerVerification {
     fn new() -> Arc<Self> {
         Arc::new(Self(Arc::new(rustls::crypto::ring::default_provider())))
     }
 }
 
+#[cfg(debug_assertions)]
 impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     fn verify_server_cert(
         &self,

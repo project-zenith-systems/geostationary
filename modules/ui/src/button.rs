@@ -53,7 +53,7 @@ impl ButtonBuilder {
         ButtonBuilderWithMessage {
             inner: self,
             message: ButtonMessage {
-                on_press: Box::new(message),
+                on_press: message,
             },
         }
     }
@@ -121,7 +121,7 @@ pub struct ButtonColors {
 
 #[derive(Component, Clone)]
 pub(crate) struct ButtonMessage<T: Message + Clone> {
-    pub(crate) on_press: Box<T>,
+    pub(crate) on_press: T,
 }
 
 pub(crate) fn change_button_colors(
@@ -142,7 +142,7 @@ pub(crate) fn process_button_messages<T: Message + Clone>(
 ) {
     for (interaction, button_msg) in &query {
         if *interaction == Interaction::Pressed {
-            writer.write(button_msg.on_press.as_ref().clone());
+            writer.write(button_msg.on_press.clone());
         }
     }
 }

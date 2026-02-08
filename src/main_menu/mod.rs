@@ -4,6 +4,8 @@ use ui::*;
 
 use crate::app_state::AppState;
 
+const DEFAULT_PORT: u16 = 7777;
+
 mod settings_screen;
 mod title_screen;
 
@@ -79,7 +81,7 @@ fn menu_message_reader(
                 theme.as_ref(),
             )),
             MenuEvent::Play => {
-                net_commands.write(NetCommand::HostLocal { port: 7777 });
+                net_commands.write(NetCommand::HostLocal { port: DEFAULT_PORT });
                 MenuEventResult::CloseMenu
             }
             MenuEvent::Quit => {
