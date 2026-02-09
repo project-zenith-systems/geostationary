@@ -38,6 +38,7 @@ async fn run_server_inner(
                 };
 
                 let event_tx = event_tx.clone();
+                let cancel_token_clone = cancel_token.clone();
                 tokio::spawn(async move {
                     match incoming.await {
                         Ok(connection) => {
@@ -46,9 +47,16 @@ async fn run_server_inner(
                                 addr: connection.remote_address(),
                             });
 
-                            // Hold the connection open until it closes
-                            connection.closed().await;
-                            log::info!("Client disconnected: {}", connection.remote_address());
+                            // Wait for either connection close or server shutdown
+                            tokio::select! {
+                                _ = connection.closed() => {
+                                    log::info!("Client disconnected: {}", connection.remote_address());
+                                }
+                                _ = cancel_token_clone.cancelled() => {
+                                    log::info!("Closing connection to {} due to server shutdown", connection.remote_address());
+                                    connection.close(0u32.into(), b"server shutdown");
+                                }
+                            }
                         }
                         Err(e) => {
                             log::warn!("Failed to accept connection: {e}");

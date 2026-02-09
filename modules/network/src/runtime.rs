@@ -42,25 +42,54 @@ pub(crate) struct NetworkTasks {
 }
 
 impl NetworkTasks {
+    /// Returns true if a server task is running or shutting down.
+    /// Checks if the handle exists and is not finished.
     pub(crate) fn is_hosting(&self) -> bool {
-        self.server_task.is_some()
+        self.server_task
+            .as_ref()
+            .map(|(handle, _)| !handle.is_finished())
+            .unwrap_or(false)
     }
 
+    /// Returns true if a client task is running or disconnecting.
+    /// Checks if the handle exists and is not finished.
     pub(crate) fn is_connected(&self) -> bool {
-        self.client_task.is_some()
+        self.client_task
+            .as_ref()
+            .map(|(handle, _)| !handle.is_finished())
+            .unwrap_or(false)
     }
 
+    /// Initiates graceful server shutdown via cancellation token.
+    /// The task remains tracked until it finishes to prevent port conflicts.
     pub(crate) fn stop_hosting(&mut self) {
-        if let Some((_handle, token)) = self.server_task.take() {
+        if let Some((_handle, token)) = &self.server_task {
             token.cancel();
-            // Don't abort - let the task exit gracefully via cancellation
+            // Keep the handle so is_hosting() remains true until task exits
         }
     }
 
+    /// Initiates graceful client disconnect via cancellation token.
+    /// The task remains tracked until it finishes to prevent overlapping connections.
     pub(crate) fn disconnect(&mut self) {
-        if let Some((_handle, token)) = self.client_task.take() {
+        if let Some((_handle, token)) = &self.client_task {
             token.cancel();
-            // Don't abort - let the task exit gracefully via cancellation
+            // Keep the handle so is_connected() remains true until task exits
+        }
+    }
+
+    /// Removes finished tasks to free up state for new connections.
+    /// Should be called regularly to clean up completed tasks.
+    pub(crate) fn cleanup_finished(&mut self) {
+        if let Some((handle, _)) = &self.server_task {
+            if handle.is_finished() {
+                self.server_task = None;
+            }
+        }
+        if let Some((handle, _)) = &self.client_task {
+            if handle.is_finished() {
+                self.client_task = None;
+            }
         }
     }
 }
@@ -106,30 +135,50 @@ mod tests {
     fn test_stop_hosting() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
-        let handle = rt.spawn(async {});
+        // Create a task that waits for cancellation
+        let token_clone = cancel_token.clone();
+        let handle = rt.spawn(async move {
+            token_clone.cancelled().await;
+        });
         
         let mut tasks = NetworkTasks::default();
         tasks.server_task = Some((handle, cancel_token.clone()));
         
         assert!(tasks.is_hosting());
         tasks.stop_hosting();
-        assert!(!tasks.is_hosting());
+        // Task is still tracked (not finished yet) but cancellation is requested
+        assert!(tasks.is_hosting());
         assert!(cancel_token.is_cancelled());
+        
+        // After cleanup, the finished task should be removed
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        tasks.cleanup_finished();
+        assert!(!tasks.is_hosting());
     }
 
     #[test]
     fn test_disconnect() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
-        let handle = rt.spawn(async {});
+        // Create a task that waits for cancellation
+        let token_clone = cancel_token.clone();
+        let handle = rt.spawn(async move {
+            token_clone.cancelled().await;
+        });
         
         let mut tasks = NetworkTasks::default();
         tasks.client_task = Some((handle, cancel_token.clone()));
         
         assert!(tasks.is_connected());
         tasks.disconnect();
-        assert!(!tasks.is_connected());
+        // Task is still tracked (not finished yet) but cancellation is requested
+        assert!(tasks.is_connected());
         assert!(cancel_token.is_cancelled());
+        
+        // After cleanup, the finished task should be removed
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        tasks.cleanup_finished();
+        assert!(!tasks.is_connected());
     }
 
     #[test]
@@ -145,6 +194,55 @@ mod tests {
         let mut tasks = NetworkTasks::default();
         // Should not panic
         tasks.disconnect();
+        assert!(!tasks.is_connected());
+    }
+
+    #[test]
+    fn test_cleanup_finished() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cancel_token = CancellationToken::new();
+        let handle = rt.spawn(async {});
+        
+        let mut tasks = NetworkTasks::default();
+        tasks.server_task = Some((handle, cancel_token));
+        
+        // Give the task time to finish
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        // Cleanup should remove finished tasks
+        tasks.cleanup_finished();
+        assert!(!tasks.is_hosting());
+    }
+
+    #[test]
+    fn test_is_hosting_detects_finished_task() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cancel_token = CancellationToken::new();
+        let handle = rt.spawn(async {});
+        
+        let mut tasks = NetworkTasks::default();
+        tasks.server_task = Some((handle, cancel_token));
+        
+        // Give the task time to finish
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        // is_hosting should return false for finished tasks
+        assert!(!tasks.is_hosting());
+    }
+
+    #[test]
+    fn test_is_connected_detects_finished_task() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cancel_token = CancellationToken::new();
+        let handle = rt.spawn(async {});
+        
+        let mut tasks = NetworkTasks::default();
+        tasks.client_task = Some((handle, cancel_token));
+        
+        // Give the task time to finish
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        // is_connected should return false for finished tasks
         assert!(!tasks.is_connected());
     }
 }

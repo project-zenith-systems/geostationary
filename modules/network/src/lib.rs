@@ -73,6 +73,9 @@ fn process_net_commands(
     event_tx: Res<NetEventSender>,
     mut tasks: ResMut<NetworkTasks>,
 ) {
+    // Clean up any finished tasks before processing new commands
+    tasks.cleanup_finished();
+
     for command in commands_reader.read() {
         match command {
             NetCommand::Host { port } => {
