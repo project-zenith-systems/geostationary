@@ -9,6 +9,7 @@ use ui::UiPlugin;
 mod app_state;
 mod creatures;
 mod main_menu;
+mod world_setup;
 
 fn main() {
     App::new()
