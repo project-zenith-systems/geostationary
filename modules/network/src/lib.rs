@@ -80,7 +80,7 @@ fn drain_net_events(mut receiver: ResMut<NetEventReceiver>, mut writer: MessageW
         return;
     }
 
-    if !CAP_WARNING_LOGGED.swap(true, Ordering::Relaxed) {
+    if !CAP_WARNING_LOGGED.swap(true, Ordering::SeqCst) {
         log::warn!(
             "Hit MAX_NET_EVENTS_PER_FRAME limit of {MAX_NET_EVENTS_PER_FRAME}. \
             Additional events will be processed next frame. \
