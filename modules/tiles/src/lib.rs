@@ -142,7 +142,7 @@ fn spawn_tile_meshes(
     };
 
     // Only spawn if tilemap was just added or changed
-    if !tilemap.is_added() && !tilemap.is_changed() {
+    if !tilemap.is_changed() {
         return;
     }
 
