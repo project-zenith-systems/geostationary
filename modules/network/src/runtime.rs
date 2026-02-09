@@ -64,3 +64,87 @@ impl NetworkTasks {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_network_tasks_default() {
+        let tasks = NetworkTasks::default();
+        assert!(!tasks.is_hosting());
+        assert!(!tasks.is_connected());
+    }
+
+    #[test]
+    fn test_is_hosting() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cancel_token = CancellationToken::new();
+        let handle = rt.spawn(async {});
+        
+        let mut tasks = NetworkTasks::default();
+        assert!(!tasks.is_hosting());
+        
+        tasks.server_task = Some((handle, cancel_token));
+        assert!(tasks.is_hosting());
+    }
+
+    #[test]
+    fn test_is_connected() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cancel_token = CancellationToken::new();
+        let handle = rt.spawn(async {});
+        
+        let mut tasks = NetworkTasks::default();
+        assert!(!tasks.is_connected());
+        
+        tasks.client_task = Some((handle, cancel_token));
+        assert!(tasks.is_connected());
+    }
+
+    #[test]
+    fn test_stop_hosting() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cancel_token = CancellationToken::new();
+        let handle = rt.spawn(async {});
+        
+        let mut tasks = NetworkTasks::default();
+        tasks.server_task = Some((handle, cancel_token.clone()));
+        
+        assert!(tasks.is_hosting());
+        tasks.stop_hosting();
+        assert!(!tasks.is_hosting());
+        assert!(cancel_token.is_cancelled());
+    }
+
+    #[test]
+    fn test_disconnect() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cancel_token = CancellationToken::new();
+        let handle = rt.spawn(async {});
+        
+        let mut tasks = NetworkTasks::default();
+        tasks.client_task = Some((handle, cancel_token.clone()));
+        
+        assert!(tasks.is_connected());
+        tasks.disconnect();
+        assert!(!tasks.is_connected());
+        assert!(cancel_token.is_cancelled());
+    }
+
+    #[test]
+    fn test_stop_hosting_when_not_hosting() {
+        let mut tasks = NetworkTasks::default();
+        // Should not panic
+        tasks.stop_hosting();
+        assert!(!tasks.is_hosting());
+    }
+
+    #[test]
+    fn test_disconnect_when_not_connected() {
+        let mut tasks = NetworkTasks::default();
+        // Should not panic
+        tasks.disconnect();
+        assert!(!tasks.is_connected());
+    }
+}
