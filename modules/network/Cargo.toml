@@ -7,5 +7,6 @@ edition = "2024"
 bevy = "0.18"
 quinn = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-util = "0.7"
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
