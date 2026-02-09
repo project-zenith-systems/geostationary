@@ -88,7 +88,8 @@ impl Tilemap {
     }
 }
 
-/// Resource that stores which state should trigger tile despawn
+/// Resource that stores which state should trigger tile despawn.
+/// This is an internal implementation detail and is not exposed in the public API.
 #[derive(Resource)]
 struct TileDespawnState<S: States>(S);
 
