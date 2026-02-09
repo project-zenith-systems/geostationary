@@ -50,6 +50,11 @@ fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         Transform::from_translation(camera_pos).looking_at(look_target, Vec3::Y),
+        AmbientLight {
+            color: Color::WHITE,
+            brightness: 300.0,
+            affects_lightmapped_meshes: true,
+        },
         FollowCamera,
         DespawnOnExit(AppState::InGame),
     ));
