@@ -50,14 +50,8 @@ impl Plugin for NetworkPlugin {
         app.add_message::<NetCommand>();
         app.add_message::<NetEvent>();
         app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
-        app.add_systems(
-            PreUpdate,
-            drain_net_events.in_set(NetworkSet::Receive),
-        );
-        app.add_systems(
-            PreUpdate,
-            process_net_commands.in_set(NetworkSet::Send),
-        );
+        app.add_systems(PreUpdate, drain_net_events.in_set(NetworkSet::Receive));
+        app.add_systems(PreUpdate, process_net_commands.in_set(NetworkSet::Send));
     }
 }
 
