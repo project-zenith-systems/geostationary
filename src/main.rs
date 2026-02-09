@@ -9,15 +9,19 @@ use ui::UiPlugin;
 
 mod app_state;
 mod camera;
+mod config;
 mod creatures;
 mod main_menu;
 mod world_setup;
 
 fn main() {
+    let app_config = config::load_config();
+
     App::new()
+        .insert_resource(app_config.clone())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Geostationary".into(),
+                title: app_config.window.title.clone(),
                 ..default()
             }),
             ..default()

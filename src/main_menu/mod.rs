@@ -3,8 +3,7 @@ use network::NetCommand;
 use ui::*;
 
 use crate::app_state::AppState;
-
-const DEFAULT_PORT: u16 = 7777;
+use crate::config::AppConfig;
 
 mod loading_screen;
 mod settings_screen;
@@ -65,6 +64,7 @@ fn menu_message_reader(
     mut commands: Commands,
     query: Query<Entity, With<MenuRoot>>,
     theme: Res<UiTheme>,
+    config: Res<AppConfig>,
     mut messages: MessageReader<MenuEvent>,
     mut exit: MessageWriter<AppExit>,
     mut net_commands: MessageWriter<NetCommand>,
@@ -83,7 +83,9 @@ fn menu_message_reader(
                 theme.as_ref(),
             )),
             MenuEvent::Play => {
-                net_commands.write(NetCommand::Host { port: DEFAULT_PORT });
+                net_commands.write(NetCommand::Host {
+                    port: config.network.port,
+                });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,
                     theme.as_ref(),

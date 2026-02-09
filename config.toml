@@ -1,0 +1,5 @@
+[window]
+title = "Geostationary"
+
+[network]
+port = 7777
