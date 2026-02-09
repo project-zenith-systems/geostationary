@@ -78,7 +78,9 @@ impl Tilemap {
         (0..self.height).flat_map(move |y| {
             (0..self.width).map(move |x| {
                 let pos = IVec2::new(x as i32, y as i32);
-                let kind = self.get(pos).expect("iterator should only visit valid positions");
+                let kind = self
+                    .get(pos)
+                    .expect("iterator should only visit valid positions");
                 (pos, kind)
             })
         })
@@ -202,13 +204,13 @@ mod tests {
     #[test]
     fn test_tilemap_get_set() {
         let mut tilemap = Tilemap::new(5, 5, TileKind::Floor);
-        
+
         assert_eq!(tilemap.get(IVec2::new(0, 0)), Some(TileKind::Floor));
         assert_eq!(tilemap.get(IVec2::new(4, 4)), Some(TileKind::Floor));
-        
+
         assert!(tilemap.set(IVec2::new(2, 2), TileKind::Wall));
         assert_eq!(tilemap.get(IVec2::new(2, 2)), Some(TileKind::Wall));
-        
+
         assert_eq!(tilemap.get(IVec2::new(-1, 0)), None);
         assert_eq!(tilemap.get(IVec2::new(0, -1)), None);
         assert_eq!(tilemap.get(IVec2::new(5, 0)), None);
@@ -220,13 +222,13 @@ mod tests {
     #[test]
     fn test_tilemap_is_walkable() {
         let mut tilemap = Tilemap::new(5, 5, TileKind::Floor);
-        
+
         assert!(tilemap.is_walkable(IVec2::new(0, 0)));
         assert!(tilemap.is_walkable(IVec2::new(4, 4)));
-        
+
         tilemap.set(IVec2::new(2, 2), TileKind::Wall);
         assert!(!tilemap.is_walkable(IVec2::new(2, 2)));
-        
+
         assert!(!tilemap.is_walkable(IVec2::new(-1, 0)));
         assert!(!tilemap.is_walkable(IVec2::new(5, 0)));
         assert!(!tilemap.is_walkable(IVec2::new(0, 5)));
@@ -235,11 +237,11 @@ mod tests {
     #[test]
     fn test_tilemap_coordinates() {
         let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
-        
+
         tilemap.set(IVec2::new(0, 0), TileKind::Wall);
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         tilemap.set(IVec2::new(2, 2), TileKind::Wall);
-        
+
         assert_eq!(tilemap.get(IVec2::new(0, 0)), Some(TileKind::Wall));
         assert_eq!(tilemap.get(IVec2::new(1, 0)), Some(TileKind::Floor));
         assert_eq!(tilemap.get(IVec2::new(2, 0)), Some(TileKind::Floor));
@@ -258,7 +260,7 @@ mod tests {
 
         let tiles: Vec<_> = tilemap.iter().collect();
         assert_eq!(tiles.len(), 4);
-        
+
         assert_eq!(tiles[0], (IVec2::new(0, 0), TileKind::Floor));
         assert_eq!(tiles[1], (IVec2::new(1, 0), TileKind::Floor));
         assert_eq!(tiles[2], (IVec2::new(0, 1), TileKind::Floor));

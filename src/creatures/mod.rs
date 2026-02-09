@@ -27,7 +27,10 @@ impl Plugin for CreaturesPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Creature>();
         app.register_type::<MovementSpeed>();
-        app.add_systems(Update, creature_movement_system.run_if(in_state(AppState::InGame)));
+        app.add_systems(
+            Update,
+            creature_movement_system.run_if(in_state(AppState::InGame)),
+        );
     }
 }
 
@@ -74,7 +77,10 @@ fn creature_movement_system(
             }
 
             // Try Z axis
-            let tile_z = IVec2::new(transform.translation.x.floor() as i32, target_z.floor() as i32);
+            let tile_z = IVec2::new(
+                transform.translation.x.floor() as i32,
+                target_z.floor() as i32,
+            );
             if tilemap.is_walkable(tile_z) {
                 transform.translation.z = target_z;
             }
