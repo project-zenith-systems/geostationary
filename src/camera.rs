@@ -11,7 +11,7 @@ pub struct FollowCamera;
 /// Camera configuration for smooth following behavior.
 #[derive(Resource)]
 pub struct CameraConfig {
-    /// How quickly the camera follows the target (0.0 = no follow, 1.0 = instant)
+    /// How quickly the camera follows the target (higher values = faster following)
     pub follow_speed: f32,
     /// Fixed offset from the target position
     pub offset: Vec3,
@@ -42,7 +42,7 @@ impl Plugin for CameraPlugin {
 }
 
 /// Spawns the 3D follow camera when entering InGame state.
-fn spawn_camera(mut commands: Commands, _config: Res<CameraConfig>) {
+fn spawn_camera(mut commands: Commands) {
     // Start camera at default position (will move to player in first frame)
     let camera_pos = Vec3::new(6.0, 10.0, 10.0);
     let look_target = Vec3::new(6.0, 0.0, 5.0);
