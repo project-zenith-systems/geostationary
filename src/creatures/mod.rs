@@ -68,13 +68,13 @@ fn creature_movement_system(
             let target_z = current_pos.z + movement.z;
 
             // Try X axis
-            let tile_x = IVec2::new(target_x.round() as i32, current_pos.z.round() as i32);
+            let tile_x = IVec2::new(target_x.floor() as i32, current_pos.z.floor() as i32);
             if tilemap.is_walkable(tile_x) {
                 transform.translation.x = target_x;
             }
 
             // Try Z axis
-            let tile_z = IVec2::new(transform.translation.x.round() as i32, target_z.round() as i32);
+            let tile_z = IVec2::new(transform.translation.x.floor() as i32, target_z.floor() as i32);
             if tilemap.is_walkable(tile_z) {
                 transform.translation.z = target_z;
             }
