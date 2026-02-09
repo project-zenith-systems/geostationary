@@ -5,10 +5,12 @@ use main_menu::{MainMenuPlugin, MenuEvent};
 use network::{NetCommand, NetEvent, NetworkPlugin, NetworkSet};
 use tiles::TilesPlugin;
 use ui::UiPlugin;
+use world_setup::WorldSetupPlugin;
 
 mod app_state;
 mod creatures;
 mod main_menu;
+mod world_setup;
 
 fn main() {
     App::new()
@@ -24,6 +26,7 @@ fn main() {
         .add_plugins(NetworkPlugin)
         .add_plugins(TilesPlugin)
         .add_plugins(creatures::CreaturesPlugin)
+        .add_plugins(WorldSetupPlugin)
         .init_state::<app_state::AppState>()
         .add_systems(Startup, spawn_camera)
         .add_systems(
