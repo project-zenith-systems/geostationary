@@ -25,7 +25,7 @@ fn main() {
         .add_plugins(UiPlugin::new().with_event::<MenuEvent>())
         .add_plugins(MainMenuPlugin)
         .add_plugins(NetworkPlugin)
-        .add_plugins(TilesPlugin)
+        .add_plugins(TilesPlugin::<app_state::AppState>::new())
         .add_plugins(ThingsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(camera::CameraPlugin)

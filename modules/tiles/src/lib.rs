@@ -1,4 +1,6 @@
 use bevy::prelude::*;
+use bevy::state::state_scoped::DespawnOnExit;
+use std::marker::PhantomData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 #[reflect(Debug, PartialEq)]
@@ -87,15 +89,31 @@ impl Tilemap {
     }
 }
 
-pub struct TilesPlugin;
+pub struct TilesPlugin<S: States> {
+    _phantom: PhantomData<S>,
+}
 
-impl Plugin for TilesPlugin {
+impl<S: States> TilesPlugin<S> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<S: States> Default for TilesPlugin<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S: States> Plugin for TilesPlugin<S> {
     fn build(&self, app: &mut App) {
         app.register_type::<TileKind>();
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
         app.init_resource::<TileMeshes>();
-        app.add_systems(Update, spawn_tile_meshes);
+        app.add_systems(Update, spawn_tile_meshes::<S>);
     }
 }
 
@@ -133,11 +151,12 @@ impl FromWorld for TileMeshes {
     }
 }
 
-fn spawn_tile_meshes(
+fn spawn_tile_meshes<S: States>(
     mut commands: Commands,
     tilemap: Option<Res<Tilemap>>,
     existing_tiles: Query<Entity, With<Tile>>,
     tile_meshes: Res<TileMeshes>,
+    current_state: Res<State<S>>,
 ) {
     let Some(tilemap) = tilemap else {
         // If the Tilemap resource is missing, ensure any previously spawned
@@ -158,7 +177,7 @@ fn spawn_tile_meshes(
         commands.entity(entity).despawn();
     }
 
-    // Spawn tile entities
+    // Spawn tile entities with DespawnOnExit component
     for (pos, kind) in tilemap.iter() {
         let world_x = pos.x as f32;
         let world_z = pos.y as f32;
@@ -170,6 +189,7 @@ fn spawn_tile_meshes(
                     MeshMaterial3d(tile_meshes.floor_material.clone()),
                     Transform::from_xyz(world_x, 0.0, world_z),
                     Tile { position: pos },
+                    DespawnOnExit(current_state.get().clone()),
                 ));
             }
             TileKind::Wall => {
@@ -178,6 +198,7 @@ fn spawn_tile_meshes(
                     MeshMaterial3d(tile_meshes.wall_material.clone()),
                     Transform::from_xyz(world_x, 0.5, world_z),
                     Tile { position: pos },
+                    DespawnOnExit(current_state.get().clone()),
                 ));
             }
         }
