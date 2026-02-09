@@ -52,9 +52,7 @@ impl ButtonBuilder {
     pub fn with_event<T: Message + Clone>(self, message: T) -> ButtonBuilderWithMessage<T> {
         ButtonBuilderWithMessage {
             inner: self,
-            message: ButtonMessage {
-                on_press: message,
-            },
+            message: ButtonMessage { on_press: message },
         }
     }
 

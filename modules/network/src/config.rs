@@ -4,10 +4,8 @@ use std::time::Duration;
 use quinn::{ClientConfig, IdleTimeout, ServerConfig, TransportConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-pub(crate) fn generate_self_signed_cert() -> Result<
-    (CertificateDer<'static>, PrivateKeyDer<'static>),
-    Box<dyn std::error::Error>,
-> {
+pub(crate) fn generate_self_signed_cert()
+-> Result<(CertificateDer<'static>, PrivateKeyDer<'static>), Box<dyn std::error::Error>> {
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
     let cert_der = cert.der().clone();
@@ -25,7 +23,9 @@ pub(crate) fn build_server_config() -> Result<ServerConfig, Box<dyn std::error::
 pub(crate) fn build_client_config() -> Result<ClientConfig, Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     {
-        return Err("Production TLS not yet implemented — use a debug build for development.".into());
+        return Err(
+            "Production TLS not yet implemented — use a debug build for development.".into(),
+        );
     }
 
     #[cfg(debug_assertions)]
