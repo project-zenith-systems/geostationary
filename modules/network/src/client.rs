@@ -34,19 +34,21 @@ async fn run_client_inner(
     let _ = event_tx.send(NetEvent::Connected);
 
     // Wait for either the connection to close or cancellation
-    tokio::select! {
+    let reason = tokio::select! {
         _ = cancel_token.cancelled() => {
             log::info!("Client disconnect requested");
             connection.close(0u32.into(), b"disconnect requested");
+            "Disconnect requested"
         }
         _ = connection.closed() => {
             log::info!("Connection closed by remote");
+            "Connection closed by remote"
         }
-    }
+    };
 
     log::info!("Disconnected from {addr}");
     let _ = event_tx.send(NetEvent::Disconnected {
-        reason: "Connection closed".into(),
+        reason: reason.into(),
     });
 
     Ok(())

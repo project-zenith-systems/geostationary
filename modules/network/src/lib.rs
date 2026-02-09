@@ -108,7 +108,6 @@ fn process_net_commands(
             }
             NetCommand::StopHosting => {
                 tasks.stop_hosting();
-                let _ = event_tx.0.send(NetEvent::HostingStopped);
             }
             NetCommand::Disconnect => {
                 tasks.disconnect();

@@ -59,5 +59,6 @@ async fn run_server_inner(
         }
     }
 
+    let _ = event_tx.send(NetEvent::HostingStopped);
     Ok(())
 }

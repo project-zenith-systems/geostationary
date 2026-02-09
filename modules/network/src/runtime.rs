@@ -51,16 +51,16 @@ impl NetworkTasks {
     }
 
     pub(crate) fn stop_hosting(&mut self) {
-        if let Some((handle, token)) = self.server_task.take() {
+        if let Some((_handle, token)) = self.server_task.take() {
             token.cancel();
-            handle.abort();
+            // Don't abort - let the task exit gracefully via cancellation
         }
     }
 
     pub(crate) fn disconnect(&mut self) {
-        if let Some((handle, token)) = self.client_task.take() {
+        if let Some((_handle, token)) = self.client_task.take() {
             token.cancel();
-            handle.abort();
+            // Don't abort - let the task exit gracefully via cancellation
         }
     }
 }
