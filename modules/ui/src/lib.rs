@@ -14,12 +14,23 @@ pub struct UiPlugin {
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiTheme>();
+        app.add_systems(Startup, spawn_ui_camera);
         app.add_systems(PreUpdate, button::change_button_colors);
 
         for register in &self.messages {
             register(app);
         }
     }
+}
+
+fn spawn_ui_camera(mut commands: Commands) {
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            ..default()
+        },
+    ));
 }
 
 impl UiPlugin {

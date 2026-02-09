@@ -31,7 +31,6 @@ fn main() {
         .add_plugins(camera::CameraPlugin)
         .add_plugins(world_setup::WorldSetupPlugin)
         .init_state::<app_state::AppState>()
-        .add_systems(Startup, spawn_camera)
         .add_systems(
             PreUpdate,
             handle_net_events
@@ -39,10 +38,6 @@ fn main() {
                 .before(NetworkSet::Send),
         )
         .run();
-}
-
-fn spawn_camera(mut commands: Commands) {
-    commands.spawn(Camera2d);
 }
 
 fn handle_net_events(
