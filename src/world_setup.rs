@@ -69,18 +69,6 @@ pub fn setup_world(
         Thing,
         DespawnOnExit(AppState::InGame),
     ));
-
-    // Spawn a 3D camera with ambient light
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(6.0, 10.0, 10.0).looking_at(Vec3::new(6.0, 0.0, 5.0), Vec3::Y),
-        AmbientLight {
-            color: Color::WHITE,
-            brightness: 300.0,
-            affects_lightmapped_meshes: true,
-        },
-        DespawnOnExit(AppState::InGame),
-    ));
 }
 
 /// System that cleans up the world when exiting InGame state.
