@@ -8,6 +8,11 @@ use crate::app_state::AppState;
 #[reflect(Component)]
 pub struct Creature;
 
+/// Marker component for player-controlled creatures.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct PlayerControlled;
+
 /// Component that defines how fast a creature can move (units per second).
 #[derive(Component, Debug, Clone, Copy, Reflect)]
 #[reflect(Component)]
@@ -27,6 +32,7 @@ impl Plugin for CreaturesPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Creature>();
         app.register_type::<MovementSpeed>();
+        app.register_type::<PlayerControlled>();
         app.add_systems(Update, creature_movement_system.run_if(in_state(AppState::InGame)));
     }
 }
@@ -35,7 +41,7 @@ fn creature_movement_system(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     tilemap: Option<Res<Tilemap>>,
-    mut query: Query<(&mut Transform, &MovementSpeed), With<Creature>>,
+    mut query: Query<(&mut Transform, &MovementSpeed), (With<Creature>, With<PlayerControlled>)>,
 ) {
     let Some(tilemap) = tilemap else {
         return;
@@ -102,5 +108,11 @@ mod tests {
     fn test_movement_speed_custom() {
         let speed = MovementSpeed { speed: 5.0 };
         assert_eq!(speed.speed, 5.0);
+    }
+
+    #[test]
+    fn test_player_controlled_component_default() {
+        let player_controlled = PlayerControlled::default();
+        assert!(matches!(player_controlled, PlayerControlled));
     }
 }
