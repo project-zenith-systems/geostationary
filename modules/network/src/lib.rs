@@ -65,20 +65,27 @@ impl Plugin for NetworkPlugin {
 /// Drains events from the async mpsc channel and writes them as Bevy messages.
 fn drain_net_events(mut receiver: ResMut<NetEventReceiver>, mut writer: MessageWriter<NetEvent>) {
     let mut count = 0;
-    while let Ok(event) = receiver.0.try_recv() {
-        writer.write(event);
-        count += 1;
-
-        if count >= MAX_NET_EVENTS_PER_FRAME {
-            if !CAP_WARNING_LOGGED.swap(true, Ordering::Relaxed) {
-                log::warn!(
-                    "Hit MAX_NET_EVENTS_PER_FRAME limit of {MAX_NET_EVENTS_PER_FRAME}. \
-                    Additional events will be processed next frame. \
-                    This warning will only be shown once."
-                );
+    while count < MAX_NET_EVENTS_PER_FRAME {
+        match receiver.0.try_recv() {
+            Ok(event) => {
+                writer.write(event);
+                count += 1;
             }
-            break;
+            Err(_) => return, // Channel empty, no more events to process
         }
+    }
+
+    // If we processed MAX_NET_EVENTS_PER_FRAME events, warn if there are more waiting
+    if receiver.0.is_empty() {
+        return;
+    }
+
+    if !CAP_WARNING_LOGGED.swap(true, Ordering::Relaxed) {
+        log::warn!(
+            "Hit MAX_NET_EVENTS_PER_FRAME limit of {MAX_NET_EVENTS_PER_FRAME}. \
+            Additional events will be processed next frame. \
+            This warning will only be shown once."
+        );
     }
 }
 
