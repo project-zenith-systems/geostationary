@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use tiles::Tilemap;
 
+use crate::app_state::AppState;
+
 /// Marker component for creatures - entities that can move and act in the world.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
@@ -25,7 +27,7 @@ impl Plugin for CreaturesPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Creature>();
         app.register_type::<MovementSpeed>();
-        app.add_systems(Update, creature_movement_system);
+        app.add_systems(Update, creature_movement_system.run_if(in_state(AppState::InGame)));
     }
 }
 
@@ -72,7 +74,7 @@ fn creature_movement_system(
             }
 
             // Try Z axis
-            let tile_z = IVec2::new(current_pos.x.round() as i32, target_z.round() as i32);
+            let tile_z = IVec2::new(transform.translation.x.round() as i32, target_z.round() as i32);
             if tilemap.is_walkable(tile_z) {
                 transform.translation.z = target_z;
             }
