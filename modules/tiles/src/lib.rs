@@ -138,6 +138,11 @@ fn spawn_tile_meshes(
     tile_meshes: Res<TileMeshes>,
 ) {
     let Some(tilemap) = tilemap else {
+        // If the Tilemap resource is missing, ensure any previously spawned
+        // Tile entities are cleaned up so they don't persist indefinitely.
+        for entity in &existing_tiles {
+            commands.entity(entity).despawn();
+        }
         return;
     };
 
