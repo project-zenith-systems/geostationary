@@ -108,9 +108,9 @@ fn process_net_commands(
             NetCommand::Host { port } => {
                 // Prevent duplicate hosting
                 if tasks.is_hosting() {
-                    let _ = event_tx.0.send(NetEvent::Error(
-                        "Already hosting a server".into()
-                    ));
+                    let _ = event_tx
+                        .0
+                        .send(NetEvent::Error("Already hosting a server".into()));
                     continue;
                 }
 
@@ -123,9 +123,9 @@ fn process_net_commands(
             NetCommand::Connect { addr } => {
                 // Prevent duplicate connections
                 if tasks.is_connected() {
-                    let _ = event_tx.0.send(NetEvent::Error(
-                        "Already connected to a server".into()
-                    ));
+                    let _ = event_tx
+                        .0
+                        .send(NetEvent::Error("Already connected to a server".into()));
                     continue;
                 }
 
@@ -150,51 +150,62 @@ fn process_net_commands(
 mod tests {
     use super::*;
 
+    #[derive(Resource, Default)]
+    struct NetEventCount {
+        current: usize,
+    }
+
+    fn reset_count(mut count: ResMut<NetEventCount>) {
+        count.current = 0;
+    }
+
+    fn count_net_events(mut reader: MessageReader<NetEvent>, mut count: ResMut<NetEventCount>) {
+        for _event in reader.read() {
+            count.current += 1;
+        }
+    }
+
     #[test]
     fn test_max_events_per_frame_cap() {
         // Create a test app
         let mut app = App::new();
-        
+
         // Set up the channel manually
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        
+
         app.insert_resource(NetEventReceiver(event_rx));
+        app.init_resource::<NetEventCount>();
         app.add_message::<NetEvent>();
-        app.add_systems(Update, drain_net_events);
-        
+        app.add_systems(
+            Update,
+            (reset_count, drain_net_events, count_net_events).chain(),
+        );
+
         // Send more events than the cap
         for i in 0..(MAX_NET_EVENTS_PER_FRAME + 50) {
-            event_tx.send(NetEvent::Error(format!("Test event {}", i)))
+            event_tx
+                .send(NetEvent::Error(format!("Test event {}", i)))
                 .expect("Failed to send event");
         }
-        
+
         // Run one frame
         app.update();
-        
+
         // Read all the events that were processed
-        let mut count = 0;
-        let mut reader = app.world_mut().get_resource_mut::<MessageReader<NetEvent>>()
-            .expect("MessageReader should exist");
-        for _event in reader.read() {
-            count += 1;
-        }
-        
+        let count = app.world().resource::<NetEventCount>().current;
+
         // Should have processed exactly MAX_NET_EVENTS_PER_FRAME events
-        assert_eq!(count, MAX_NET_EVENTS_PER_FRAME, 
-            "Should process exactly MAX_NET_EVENTS_PER_FRAME events per frame");
-        
+        assert_eq!(
+            count, MAX_NET_EVENTS_PER_FRAME,
+            "Should process exactly MAX_NET_EVENTS_PER_FRAME events per frame"
+        );
+
         // Run another frame to process remaining events
         app.update();
-        
-        let mut count2 = 0;
-        let mut reader = app.world_mut().get_resource_mut::<MessageReader<NetEvent>>()
-            .expect("MessageReader should exist");
-        for _event in reader.read() {
-            count2 += 1;
-        }
-        
+
+        let count2 = app.world().resource::<NetEventCount>().current;
+
         // Should have processed the remaining 50 events
-        assert_eq!(count2, 50, 
-            "Should process remaining events in next frame");
+        assert_eq!(count2, 50, "Should process remaining events in next frame");
     }
 }
