@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use std::marker::PhantomData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 #[reflect(Debug, PartialEq)]
@@ -89,21 +88,17 @@ impl Tilemap {
     }
 }
 
+/// Resource that stores which state should trigger tile despawn
+#[derive(Resource)]
+struct TileDespawnState<S: States>(S);
+
 pub struct TilesPlugin<S: States> {
-    _phantom: PhantomData<S>,
+    despawn_state: S,
 }
 
 impl<S: States> TilesPlugin<S> {
-    pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<S: States> Default for TilesPlugin<S> {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(despawn_state: S) -> Self {
+        Self { despawn_state }
     }
 }
 
@@ -113,6 +108,7 @@ impl<S: States> Plugin for TilesPlugin<S> {
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
         app.init_resource::<TileMeshes>();
+        app.insert_resource(TileDespawnState(self.despawn_state.clone()));
         app.add_systems(Update, spawn_tile_meshes::<S>);
     }
 }
@@ -156,7 +152,7 @@ fn spawn_tile_meshes<S: States>(
     tilemap: Option<Res<Tilemap>>,
     existing_tiles: Query<Entity, With<Tile>>,
     tile_meshes: Res<TileMeshes>,
-    current_state: Res<State<S>>,
+    despawn_state: Res<TileDespawnState<S>>,
 ) {
     let Some(tilemap) = tilemap else {
         // If the Tilemap resource is missing, ensure any previously spawned
@@ -189,7 +185,7 @@ fn spawn_tile_meshes<S: States>(
                     MeshMaterial3d(tile_meshes.floor_material.clone()),
                     Transform::from_xyz(world_x, 0.0, world_z),
                     Tile { position: pos },
-                    DespawnOnExit(current_state.get().clone()),
+                    DespawnOnExit(despawn_state.0.clone()),
                 ));
             }
             TileKind::Wall => {
@@ -198,7 +194,7 @@ fn spawn_tile_meshes<S: States>(
                     MeshMaterial3d(tile_meshes.wall_material.clone()),
                     Transform::from_xyz(world_x, 0.5, world_z),
                     Tile { position: pos },
-                    DespawnOnExit(current_state.get().clone()),
+                    DespawnOnExit(despawn_state.0.clone()),
                 ));
             }
         }
