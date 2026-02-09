@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy::{log, prelude::*};
 use tokio::sync::mpsc;
@@ -41,6 +42,9 @@ pub enum NetEvent {
 /// Maximum number of network events to process per frame to prevent stalling.
 const MAX_NET_EVENTS_PER_FRAME: usize = 100;
 
+/// Flag to track if we've already warned about hitting the event cap.
+static CAP_WARNING_LOGGED: AtomicBool = AtomicBool::new(false);
+
 pub struct NetworkPlugin;
 
 impl Plugin for NetworkPlugin {
@@ -64,12 +68,15 @@ fn drain_net_events(mut receiver: ResMut<NetEventReceiver>, mut writer: MessageW
     while let Ok(event) = receiver.0.try_recv() {
         writer.write(event);
         count += 1;
-        
+
         if count >= MAX_NET_EVENTS_PER_FRAME {
-            log::warn!(
-                "Hit MAX_NET_EVENTS_PER_FRAME limit of {MAX_NET_EVENTS_PER_FRAME}. \
-                Additional events will be processed next frame."
-            );
+            if !CAP_WARNING_LOGGED.swap(true, Ordering::Relaxed) {
+                log::warn!(
+                    "Hit MAX_NET_EVENTS_PER_FRAME limit of {MAX_NET_EVENTS_PER_FRAME}. \
+                    Additional events will be processed next frame. \
+                    This warning will only be shown once."
+                );
+            }
             break;
         }
     }
