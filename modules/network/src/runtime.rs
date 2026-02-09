@@ -142,7 +142,7 @@ mod tests {
         });
         
         let mut tasks = NetworkTasks::default();
-        tasks.server_task = Some((handle, cancel_token.clone()));
+        let handle_clone = tasks.server_task.insert((handle, cancel_token.clone())).0.abort_handle();
         
         assert!(tasks.is_hosting());
         tasks.stop_hosting();
@@ -150,8 +150,11 @@ mod tests {
         assert!(tasks.is_hosting());
         assert!(cancel_token.is_cancelled());
         
-        // After cleanup, the finished task should be removed
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Wait for the task to finish using a blocking approach
+        drop(handle_clone);
+        rt.block_on(async {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        });
         tasks.cleanup_finished();
         assert!(!tasks.is_hosting());
     }
@@ -167,7 +170,7 @@ mod tests {
         });
         
         let mut tasks = NetworkTasks::default();
-        tasks.client_task = Some((handle, cancel_token.clone()));
+        let handle_clone = tasks.client_task.insert((handle, cancel_token.clone())).0.abort_handle();
         
         assert!(tasks.is_connected());
         tasks.disconnect();
@@ -175,8 +178,11 @@ mod tests {
         assert!(tasks.is_connected());
         assert!(cancel_token.is_cancelled());
         
-        // After cleanup, the finished task should be removed
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Wait for the task to finish using a blocking approach
+        drop(handle_clone);
+        rt.block_on(async {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        });
         tasks.cleanup_finished();
         assert!(!tasks.is_connected());
     }
@@ -206,8 +212,10 @@ mod tests {
         let mut tasks = NetworkTasks::default();
         tasks.server_task = Some((handle, cancel_token));
         
-        // Give the task time to finish
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Wait for the task to finish deterministically
+        rt.block_on(async {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        });
         
         // Cleanup should remove finished tasks
         tasks.cleanup_finished();
@@ -223,8 +231,10 @@ mod tests {
         let mut tasks = NetworkTasks::default();
         tasks.server_task = Some((handle, cancel_token));
         
-        // Give the task time to finish
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Wait for the task to finish deterministically
+        rt.block_on(async {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        });
         
         // is_hosting should return false for finished tasks
         assert!(!tasks.is_hosting());
@@ -239,8 +249,10 @@ mod tests {
         let mut tasks = NetworkTasks::default();
         tasks.client_task = Some((handle, cancel_token));
         
-        // Give the task time to finish
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Wait for the task to finish deterministically
+        rt.block_on(async {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        });
         
         // is_connected should return false for finished tasks
         assert!(!tasks.is_connected());
