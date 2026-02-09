@@ -3,9 +3,11 @@ use std::net::SocketAddr;
 use bevy::prelude::*;
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::{NetCommand, NetEvent, NetworkPlugin, NetworkSet};
+use tiles::TilesPlugin;
 use ui::UiPlugin;
 
 mod app_state;
+mod creatures;
 mod main_menu;
 
 fn main() {
@@ -20,6 +22,8 @@ fn main() {
         .add_plugins(UiPlugin::new().with_event::<MenuEvent>())
         .add_plugins(MainMenuPlugin)
         .add_plugins(NetworkPlugin)
+        .add_plugins(TilesPlugin)
+        .add_plugins(creatures::CreaturesPlugin)
         .init_state::<app_state::AppState>()
         .add_systems(Startup, spawn_camera)
         .add_systems(
