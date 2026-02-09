@@ -8,6 +8,7 @@ use tiles::TilesPlugin;
 use ui::UiPlugin;
 
 mod app_state;
+mod camera;
 mod creatures;
 mod main_menu;
 mod world_setup;
@@ -27,6 +28,7 @@ fn main() {
         .add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
+        .add_plugins(camera::CameraPlugin)
         .add_plugins(world_setup::WorldSetupPlugin)
         .init_state::<app_state::AppState>()
         .add_systems(Startup, spawn_camera)
