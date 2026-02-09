@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use bevy::prelude::*;
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::{NetCommand, NetEvent, NetworkPlugin, NetworkSet};
-use tiles::TilesPlugin;
 use things::ThingsPlugin;
+use tiles::TilesPlugin;
 use ui::UiPlugin;
 
 mod app_state;
