@@ -21,7 +21,10 @@ impl NetworkRuntime {
         Self { rt: Arc::new(rt) }
     }
 
-    pub(crate) fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) -> JoinHandle<()> {
+    pub(crate) fn spawn(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> JoinHandle<()> {
         self.rt.spawn(future)
     }
 }
@@ -110,10 +113,10 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
         let handle = rt.spawn(async {});
-        
+
         let mut tasks = NetworkTasks::default();
         assert!(!tasks.is_hosting());
-        
+
         tasks.server_task = Some((handle, cancel_token));
         assert!(tasks.is_hosting());
     }
@@ -123,10 +126,10 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
         let handle = rt.spawn(async {});
-        
+
         let mut tasks = NetworkTasks::default();
         assert!(!tasks.is_connected());
-        
+
         tasks.client_task = Some((handle, cancel_token));
         assert!(tasks.is_connected());
     }
@@ -140,16 +143,20 @@ mod tests {
         let handle = rt.spawn(async move {
             token_clone.cancelled().await;
         });
-        
+
         let mut tasks = NetworkTasks::default();
-        let handle_clone = tasks.server_task.insert((handle, cancel_token.clone())).0.abort_handle();
-        
+        let handle_clone = tasks
+            .server_task
+            .insert((handle, cancel_token.clone()))
+            .0
+            .abort_handle();
+
         assert!(tasks.is_hosting());
         tasks.stop_hosting();
         // Task is still tracked (not finished yet) but cancellation is requested
         assert!(tasks.is_hosting());
         assert!(cancel_token.is_cancelled());
-        
+
         // Wait for the task to finish using a blocking approach
         drop(handle_clone);
         rt.block_on(async {
@@ -168,16 +175,20 @@ mod tests {
         let handle = rt.spawn(async move {
             token_clone.cancelled().await;
         });
-        
+
         let mut tasks = NetworkTasks::default();
-        let handle_clone = tasks.client_task.insert((handle, cancel_token.clone())).0.abort_handle();
-        
+        let handle_clone = tasks
+            .client_task
+            .insert((handle, cancel_token.clone()))
+            .0
+            .abort_handle();
+
         assert!(tasks.is_connected());
         tasks.disconnect();
         // Task is still tracked (not finished yet) but cancellation is requested
         assert!(tasks.is_connected());
         assert!(cancel_token.is_cancelled());
-        
+
         // Wait for the task to finish using a blocking approach
         drop(handle_clone);
         rt.block_on(async {
@@ -208,15 +219,15 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
         let handle = rt.spawn(async {});
-        
+
         let mut tasks = NetworkTasks::default();
         tasks.server_task = Some((handle, cancel_token));
-        
+
         // Wait for the task to finish deterministically
         rt.block_on(async {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         });
-        
+
         // Cleanup should remove finished tasks
         tasks.cleanup_finished();
         assert!(!tasks.is_hosting());
@@ -227,15 +238,15 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
         let handle = rt.spawn(async {});
-        
+
         let mut tasks = NetworkTasks::default();
         tasks.server_task = Some((handle, cancel_token));
-        
+
         // Wait for the task to finish deterministically
         rt.block_on(async {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         });
-        
+
         // is_hosting should return false for finished tasks
         assert!(!tasks.is_hosting());
     }
@@ -245,15 +256,15 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
         let handle = rt.spawn(async {});
-        
+
         let mut tasks = NetworkTasks::default();
         tasks.client_task = Some((handle, cancel_token));
-        
+
         // Wait for the task to finish deterministically
         rt.block_on(async {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         });
-        
+
         // is_connected should return false for finished tasks
         assert!(!tasks.is_connected());
     }
