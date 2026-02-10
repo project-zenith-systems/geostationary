@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use physics::{Collider, LockedAxes, Restitution, RigidBody};
+use physics::{Collider, LockedAxes, Restitution, RigidBody, SweptCcd};
 use things::Thing;
 use tiles::{TileKind, Tilemap};
 
@@ -64,9 +64,9 @@ pub fn setup_world(
         Mesh3d(player_mesh),
         MeshMaterial3d(player_material),
         Transform::from_xyz(6.0, 0.8, 5.0),
-        RigidBody::Kinematic,
+        RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),
-        LockedAxes::ROTATION_LOCKED,
+        LockedAxes::ROTATION_LOCKED.lock_translation_y(),
         PlayerControlled,
         Creature,
         MovementSpeed::default(),
@@ -90,6 +90,7 @@ pub fn setup_world(
         RigidBody::Dynamic,
         Collider::sphere(BALL_RADIUS),
         Restitution::new(0.8),
+        SweptCcd::default(),
         DespawnOnExit(AppState::InGame),
     ));
 }
