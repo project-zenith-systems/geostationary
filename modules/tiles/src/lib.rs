@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use physics::{Collider, RigidBody};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 #[reflect(Debug, PartialEq)]
@@ -170,6 +171,8 @@ fn spawn_tile_meshes(
                     MeshMaterial3d(tile_meshes.floor_material.clone()),
                     Transform::from_xyz(world_x, 0.0, world_z),
                     Tile { position: pos },
+                    RigidBody::Static,
+                    Collider::cuboid(0.5, 0.05, 0.5),
                 ));
             }
             TileKind::Wall => {
@@ -178,6 +181,8 @@ fn spawn_tile_meshes(
                     MeshMaterial3d(tile_meshes.wall_material.clone()),
                     Transform::from_xyz(world_x, 0.5, world_z),
                     Tile { position: pos },
+                    RigidBody::Static,
+                    Collider::cuboid(0.5, 0.5, 0.5),
                 ));
             }
         }
