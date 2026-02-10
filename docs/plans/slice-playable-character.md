@@ -90,3 +90,99 @@ Proper physics-based collision is a future concern (L0 physics).
 Fixed-angle perspective camera looking down at roughly 45-60 degrees.
 Smoothly follows the player position with a slight lag (lerp). No zoom
 or rotation controls in this slice.
+
+---
+
+## Post-mortem
+
+### Outcome
+
+The slice shipped everything it set out to deliver. Pressing Play hosts a local
+server, auto-connects, transitions to InGame, and drops the player into a
+lit 3D room with WASD movement and wall collision — exactly the "person in a
+box you can walk around in" described at the top of this document. Every layer
+in the participation table got its module, the architecture boundaries held,
+and 28 tests cover the new code.
+
+### What shipped beyond the plan
+
+| Addition | Why |
+|----------|-----|
+| `AppConfig` + `load_config` (PR #32) | Centralised window-title and network-port settings early; not planned but prevents magic numbers from spreading. |
+| `docs/testing-strategy.md` | Codified "test the seams, not the framework" before writing any module tests. Paid off immediately — tiles and creatures both have pure-logic tests that run without a Bevy `App`. |
+| Network hardening (PRs #33, #34) | Task cancellation tokens and a per-frame event-drain cap weren't in the slice scope, but both would have bitten us the moment a second slice touches networking. Cheap to add now, expensive to retrofit later. |
+
+### Deviations from plan
+
+- **`WorldPosition` dropped.** The plan called for a custom `WorldPosition`
+  component in `things`. During implementation it became clear that Bevy's
+  `Transform` already covers our needs; adding a parallel coordinate was pure
+  overhead. `things` still provides the `Thing` marker but nothing spatial.
+- **Camera2d stayed alive.** The plan assumed the main-menu camera would be
+  cleaned up by `DespawnOnExit`. In practice the UI camera was moved into
+  `UiPlugin` and persists across states (order 1), while the 3D camera spawns
+  only for InGame (order 0). This is a better long-term design — UI overlays
+  will need that camera in every state.
+
+### Hurdles
+
+**1. Black-screen lighting (issue #16, PR #30)**
+3D meshes using `StandardMaterial` rendered solid black because no lights
+existed. The fix was straightforward (directional + ambient light), but it
+overlapped with the camera PR (#31) and required merge-conflict resolution
+across both. Lesson: when two PRs touch the same spawn function, sequence them
+or extract the shared entity into its own commit first.
+
+**2. Duplicate camera spawn (PR #30)**
+After the camera module was split out, `world_setup.rs` still contained its
+own `Camera3d` spawn. Both PRs merged, producing two cameras. Caught during
+the lighting PR integration and removed. Lesson: track entity ownership in one
+place per entity kind — the camera module owns the camera, period.
+
+**3. Tile cleanup false alarm (issue #27, PR #35)**
+An issue was filed assuming tile entities would leak on state exit. Five
+commits of investigation later, the existing `spawn_tile_meshes` system
+already handled this: when the `Tilemap` resource is removed by
+`cleanup_world`, the system detects the missing resource next frame and
+despawns all tile entities. PR closed with no code changes, only a
+verification test. Lesson: read the existing cleanup paths before assuming
+they're missing.
+
+**4. Network tasks leaking ports (issue #19, PR #33)**
+`HostLocal` spawned a tokio task with no handle or cancellation. Pressing Play
+twice bound the port twice. Fixed by introducing `CancellationToken`,
+`NetworkTasks` resource, and `StopHosting` / `Disconnect` commands. Took six
+commits and multiple review rounds to get stale-state detection and
+connection-handler propagation right. Lesson: any long-lived async task needs
+a kill switch from day one — retrofitting is harder.
+
+**5. Unbounded event drain (issue #18, PR #34)**
+`drain_net_events` consumed the entire channel each frame. Fine now with
+negligible traffic, but a time bomb for when packet events arrive at scale.
+Capped at 100 events/frame with carry-over and a one-time log warning.
+
+### Remaining open issues
+
+| Issue | Note |
+|-------|------|
+| #26 — Gate tile mesh spawning to InGame | Architecturally impure (runs every frame in every state) but functionally harmless. Should be a quick fix in the integration layer. |
+| #20 — Configurable TLS server name | Only matters for remote connections; irrelevant to this local-only slice. |
+| #17 — Config management expansion | Foundation exists; expansion is future work. |
+
+### What went well
+
+- **Small PRs.** ~15 focused PRs made review fast and isolated breakage.
+- **Layer discipline held.** No layer-boundary violations. Tokio stayed sealed
+  inside `modules/network`. Game code never imports async types.
+- **Tests from the start.** Every new module shipped with tests. The tile
+  cleanup "bug" was disproven by writing a test, not by guessing.
+
+### What to do differently next time
+
+- **Sequence overlapping PRs explicitly.** The camera/lighting collision was
+  avoidable with a dependency edge in the issue tracker.
+- **Verify before filing.** Issue #27 cost investigation time for a problem
+  that didn't exist. A five-minute code read would have closed it immediately.
+- **Decide entity ownership up front.** The duplicate camera spawn came from
+  two modules both thinking they owned the camera. A one-line comment ("camera
+  is owned by `camera.rs`") would have prevented it.
