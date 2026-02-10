@@ -53,7 +53,8 @@ pub fn setup_world(
 
     // Spawn player character with a capsule mesh on a walkable floor tile
     // Capsule3d::new(0.3, 1.0) has total height = 1.0 + 2*0.3 = 1.6
-    // Position at y = 0.8 (half of total height) to sit on floor
+    // Position at y = 0.86 so capsule bottom (0.06) clears floor surface (0.05)
+    // TODO: the floor surface should ideally be at y=0.0, but the current tile collider is at y=0.1
     let player_mesh = meshes.add(Capsule3d::new(0.3, 1.0));
     let player_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 0.5, 0.8),
@@ -64,6 +65,7 @@ pub fn setup_world(
         Mesh3d(player_mesh),
         MeshMaterial3d(player_material),
         Transform::from_xyz(6.0, 0.86, 5.0),
+        // Dynamic (not Kinematic) because Kinematic bodies don't receive collision response
         RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),
         LockedAxes::ROTATION_LOCKED.lock_translation_y(),

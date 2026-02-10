@@ -172,6 +172,7 @@ fn spawn_tile_meshes(
                     Transform::from_xyz(world_x, 0.0, world_z),
                     Tile { position: pos },
                     RigidBody::Static,
+                    // avian3d Collider::cuboid takes full dimensions, not half-extents
                     Collider::cuboid(1.0, 0.1, 1.0),
                 ));
             }
@@ -182,6 +183,7 @@ fn spawn_tile_meshes(
                     Transform::from_xyz(world_x, 0.5, world_z),
                     Tile { position: pos },
                     RigidBody::Static,
+                    // avian3d Collider::cuboid takes full dimensions, not half-extents
                     Collider::cuboid(1.0, 1.0, 1.0),
                 ));
             }
