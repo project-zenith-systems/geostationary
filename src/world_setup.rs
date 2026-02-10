@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use physics::{Collider, Restitution, RigidBody};
 use things::Thing;
 use tiles::{TileKind, Tilemap};
 
@@ -67,6 +68,24 @@ pub fn setup_world(
         Creature,
         MovementSpeed::default(),
         Thing,
+        DespawnOnExit(AppState::InGame),
+    ));
+
+    // Spawn a bouncing ball above the floor
+    // Position it at y=5.0 so it has room to fall and bounce
+    let ball_mesh = meshes.add(Sphere::new(0.3));
+    let ball_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.8, 0.0), // Bright yellow
+        ..default()
+    });
+
+    commands.spawn((
+        Mesh3d(ball_mesh),
+        MeshMaterial3d(ball_material),
+        Transform::from_xyz(6.0, 5.0, 3.0), // Above the floor, centered in a walkable area
+        RigidBody::Dynamic,
+        Collider::sphere(0.3),
+        Restitution::new(0.8),
         DespawnOnExit(AppState::InGame),
     ));
 }
