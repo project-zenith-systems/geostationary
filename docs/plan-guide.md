@@ -153,8 +153,9 @@ independently.
 
 ## Tips
 
-- Keep the plan short. If a plan needs more than ~150 lines before the
-  post-mortem section, the slice is probably too big.
+- Keep the plan as short as practical. As a rule of thumb, if it grows much
+  beyond ~200 lines before the post-mortem section, consider whether the slice
+  should be split or simplified.
 - Write the plan before writing code. Resist the urge to prototype
   first and document later — the plan is a thinking tool, not
   paperwork.
