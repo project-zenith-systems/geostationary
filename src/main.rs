@@ -31,7 +31,7 @@ fn main() {
         .add_plugins(MainMenuPlugin)
         .add_plugins(NetworkPlugin)
         .add_plugins(PhysicsPlugin)
-        .add_plugins(PhysicsDebugPlugin::default())
+        .add_plugins(PhysicsDebugPlugin)
         .add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin)
         .add_plugins(creatures::CreaturesPlugin)

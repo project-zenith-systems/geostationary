@@ -71,7 +71,7 @@ impl Tilemap {
     }
 
     pub fn is_walkable(&self, pos: IVec2) -> bool {
-        self.get(pos).map_or(false, |kind| kind.is_walkable())
+        self.get(pos).is_some_and(|kind| kind.is_walkable())
     }
 
     /// Returns an iterator over all tiles with their positions and kinds

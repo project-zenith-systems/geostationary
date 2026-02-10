@@ -40,9 +40,13 @@ impl Plugin for CreaturesPlugin {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn creature_movement_system(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&mut LinearVelocity, &MovementSpeed), (With<Creature>, With<PlayerControlled>)>,
+    mut query: Query<
+        (&mut LinearVelocity, &MovementSpeed),
+        (With<Creature>, With<PlayerControlled>),
+    >,
 ) {
     for (mut velocity, movement_speed) in query.iter_mut() {
         let mut direction = Vec3::ZERO;
