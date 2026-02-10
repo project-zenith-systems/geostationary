@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use physics::{Collider, Restitution, RigidBody};
+use physics::{Collider, LockedAxes, Restitution, RigidBody};
 use things::Thing;
 use tiles::{TileKind, Tilemap};
 
@@ -63,7 +63,10 @@ pub fn setup_world(
     commands.spawn((
         Mesh3d(player_mesh),
         MeshMaterial3d(player_material),
-        Transform::from_xyz(6.0, 0.8, 5.0), // Place at walkable floor tile, y=0.8 for capsule to sit on floor
+        Transform::from_xyz(6.0, 0.8, 5.0),
+        RigidBody::Kinematic,
+        Collider::capsule(0.3, 1.0),
+        LockedAxes::ROTATION_LOCKED,
         PlayerControlled,
         Creature,
         MovementSpeed::default(),
