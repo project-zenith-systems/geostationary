@@ -73,7 +73,8 @@ pub fn setup_world(
 
     // Spawn a bouncing ball above the floor
     // Position it at y=5.0 so it has room to fall and bounce
-    let ball_mesh = meshes.add(Sphere::new(0.3));
+    const BALL_RADIUS: f32 = 0.3;
+    let ball_mesh = meshes.add(Sphere::new(BALL_RADIUS));
     let ball_material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.8, 0.0), // Bright yellow
         ..default()
@@ -84,7 +85,7 @@ pub fn setup_world(
         MeshMaterial3d(ball_material),
         Transform::from_xyz(6.0, 5.0, 3.0), // Above the floor, centered in a walkable area
         RigidBody::Dynamic,
-        Collider::sphere(0.3),
+        Collider::sphere(BALL_RADIUS),
         Restitution::new(0.8),
         DespawnOnExit(AppState::InGame),
     ));
