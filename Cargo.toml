@@ -5,7 +5,7 @@ edition = "2024"
 
 [workspace]
 resolver = "3"
-members = ["modules/ui", "modules/network", "modules/tiles", "modules/things"]
+members = ["modules/ui", "modules/network", "modules/tiles", "modules/things", "modules/physics"]
 
 [profile.dev]
 opt-level = 1
@@ -31,3 +31,4 @@ ui = { path = "modules/ui" }
 network = { path = "modules/network" }
 tiles = { path = "modules/tiles" }
 things = { path = "modules/things" }
+physics = { path = "modules/physics" }
