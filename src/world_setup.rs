@@ -66,7 +66,7 @@ pub fn setup_world(
         Transform::from_xyz(6.0, 0.8, 5.0),
         RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),
-        LockedAxes::ROTATION_LOCKED.lock_translation_y(),
+        LockedAxes::ROTATION_LOCKED,
         PlayerControlled,
         Creature,
         MovementSpeed::default(),
