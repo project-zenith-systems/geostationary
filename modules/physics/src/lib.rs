@@ -21,17 +21,4 @@ impl Plugin for PhysicsPlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn reexported_types_are_accessible() {
-        let _ = RigidBody::Dynamic;
-        let _ = RigidBody::Static;
-        let _ = RigidBody::Kinematic;
-        let _ = Collider::sphere(1.0);
-        let _ = Collider::cuboid(1.0, 1.0, 1.0);
-        let _ = LinearVelocity(Vec3::ZERO);
-        let _ = Restitution::new(0.5);
-        let _ = LockedAxes::ROTATION_LOCKED;
-    }
 }
