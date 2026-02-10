@@ -1,0 +1,36 @@
+name: Create Plan Branch
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  create-plan-branch:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'plan-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Extract plan name
+        id: plan
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          PLAN_NAME="${BRANCH#plan-}"
+          echo "name=$PLAN_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create plan branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const planName = process.env.PLAN_NAME;
+            const ref = `refs/heads/plan/${planName}`;
+            const sha = context.payload.pull_request.merge_commit_sha;
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref,
+              sha,
+            });
+            core.info(`Created branch plan/${planName} at ${sha}`);
+        env:
+          PLAN_NAME: ${{ steps.plan.outputs.name }}

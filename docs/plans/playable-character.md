@@ -1,4 +1,4 @@
-# Slice: Technically Playable Character
+# Plan: Technically Playable Character
 
 > **Stage goal:** A 3D character walks around a small tile-based room with walls.
 > Graphics are placeholder. The full creature/tile/thing systems are stubbed to
@@ -21,14 +21,14 @@ box that you can walk around in.
 ## Strategy
 
 Build upward through the layer stack, establishing the module boundaries that
-the full game will use. Each module is deliberately minimal — only the slice of
+the full game will use. Each module is deliberately minimal — only the portion of
 functionality needed for this milestone. The architecture docs define what each
 module *will* become; this document defines the thin vertical cut through them.
 
 ### Layer participation
 
-| Layer | Module | Slice scope |
-|-------|--------|-------------|
+| Layer | Module | Plan scope |
+|-------|--------|------------|
 | L0 | `ui` | Already done (main menu buttons) |
 | L0 | `network` | Already done (host + connect) |
 | L1 | `tiles` | Grid storage, tile types (Floor/Wall), mesh spawning |
@@ -37,7 +37,7 @@ module *will* become; this document defines the thin vertical cut through them.
 | L3 | `creatures` | `Creature` marker, movement speed, wall collision |
 | L6 | `camera` | 3D follow camera at fixed angle |
 
-**Not in this slice:** L2 structures/connectables (walls are just a tile type
+**Not in this plan:** L2 structures/connectables (walls are just a tile type
 for now), L4 mechanics, L5 player/souls distinction (player *is* the creature
 for now), L0 input abstraction (raw Bevy input is fine), L0 physics (manual
 grid collision is enough).
@@ -89,7 +89,7 @@ Proper physics-based collision is a future concern (L0 physics).
 
 Fixed-angle perspective camera looking down at roughly 45-60 degrees.
 Smoothly follows the player position with a slight lag (lerp). No zoom
-or rotation controls in this slice.
+or rotation controls in this plan.
 
 ---
 
@@ -97,7 +97,7 @@ or rotation controls in this slice.
 
 ### Outcome
 
-The slice shipped everything it set out to deliver. Pressing Play hosts a local
+The plan shipped everything it set out to deliver. Pressing Play hosts a local
 server, auto-connects, transitions to InGame, and drops the player into a
 lit 3D room with WASD movement and wall collision — exactly the "person in a
 box you can walk around in" described at the top of this document. Every layer
@@ -110,7 +110,7 @@ and 28 tests cover the new code.
 |----------|-----|
 | `AppConfig` + `load_config` (PR #32) | Centralised window-title and network-port settings early; not planned but prevents magic numbers from spreading. |
 | `docs/testing-strategy.md` | Codified "test the seams, not the framework" before writing any module tests. Paid off immediately — tiles and creatures both have pure-logic tests that run without a Bevy `App`. |
-| Network hardening (PRs #33, #34) | Task cancellation tokens and a per-frame event-drain cap weren't in the slice scope, but both would have bitten us the moment a second slice touches networking. Cheap to add now, expensive to retrofit later. |
+| Network hardening (PRs #33, #34) | Task cancellation tokens and a per-frame event-drain cap weren't in scope, but both would have bitten us the moment a second plan touches networking. Cheap to add now, expensive to retrofit later. |
 
 ### Deviations from plan
 
@@ -166,7 +166,7 @@ Capped at 100 events/frame with carry-over and a one-time log warning.
 | Issue | Note |
 |-------|------|
 | #26 — Gate tile mesh spawning to InGame | Architecturally impure (runs every frame in every state) but functionally harmless. Should be a quick fix in the integration layer. |
-| #20 — Configurable TLS server name | Only matters for remote connections; irrelevant to this local-only slice. |
+| #20 — Configurable TLS server name | Only matters for remote connections; irrelevant to this local-only plan. |
 | #17 — Config management expansion | Foundation exists; expansion is future work. |
 
 ### What went well

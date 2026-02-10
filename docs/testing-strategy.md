@@ -95,7 +95,7 @@ containing the logic.
 - `ButtonColors` construction from theme produces distinct normal/hovered/pressed
   states
 
-**Future candidates (playable character slice and beyond):**
+**Future candidates (playable character plan and beyond):**
 - `Tilemap::is_walkable` boundary conditions
 - `resolve_movement` against various wall configurations
 - Chemistry reaction lookups
@@ -408,7 +408,7 @@ two things are worth configuring:
 ### When to add the CI pipeline
 
 The pipeline should be added before the first pull request on the playable
-character slice. Even before any tests exist, the `fmt` and `clippy` jobs
+character plan. Even before any tests exist, the `fmt` and `clippy` jobs
 provide immediate value as a quality gate. Tests are then added incrementally
 as modules are built — starting with the network roundtrip test and tile grid
 unit tests.

@@ -1,4 +1,4 @@
-# Slice: Physics Foundation
+# Plan: Physics Foundation
 
 > **Stage goal:** A bouncing ball demonstrates real rigid-body physics in the
 > room, and the player character collides with walls through the physics engine
@@ -21,7 +21,7 @@
 
 ## Strategy
 
-The first slice proved the layer stack with manual collision. This slice
+The first plan proved the layer stack with manual collision. This plan
 replaces that stopgap with a real physics engine, establishing the L0 physics
 module that the rest of the game will build on. The bouncing ball is a
 deliberately simple dynamic body that validates the full rigid-body pipeline
@@ -42,8 +42,8 @@ spawn time.
 
 ### Layer participation
 
-| Layer | Module | Slice scope |
-|-------|--------|-------------|
+| Layer | Module | Plan scope |
+|-------|--------|------------|
 | L0 | `physics` | **New.** Workspace crate wrapping Avian 3D. Provides `PhysicsPlugin`, re-exports collider/body types, configures physics timestep and gravity. |
 | L0 | `ui` | Unchanged |
 | L0 | `network` | Unchanged |
@@ -52,7 +52,7 @@ spawn time.
 | L3 | `creatures` | Replace manual collision with kinematic body + physics velocity. Remove `Tilemap` dependency from movement system. |
 | — | `world_setup` | Spawn a bouncing ball entity with dynamic rigid body |
 
-### Not in this slice
+### Not in this plan
 
 - **Character controller crate** (bevy-tnua, bevy_ahoy). The kinematic body
   approach with direct velocity control is sufficient for WASD movement. A
@@ -60,14 +60,14 @@ spawn time.
   detection matter.
 - **Physics-based gravity module** (L2 `gravity`). The binary grounded/
   weightless toggle described in the architecture is a gameplay concept. This
-  slice just uses Avian's built-in gravity vector.
+  plan just uses Avian's built-in gravity vector.
 - **Networked physics / determinism.** The `enhanced-determinism` feature flag
   exists but is not needed until the simulation is server-authoritative.
 - **Collision layers / groups.** Everything collides with everything for now.
   Layer-based filtering is future work when projectiles, creatures, and items
   need different collision rules.
 - **Spatial queries.** Raycasts and shape casts are part of Avian but not
-  exercised in this slice.
+  exercised in this plan.
 - **Floor-as-gameplay-surface.** Floor tiles get colliders so the ball has
   something to land on, but using floor colliders for creature grounding
   (gravity, slopes) is a character-controller concern, deferred.
@@ -162,4 +162,4 @@ eventually come to rest on the floor due to damping.
 
 ## Post-mortem
 
-*To be filled in after the slice ships.*
+*To be filled in after the plan ships.*
