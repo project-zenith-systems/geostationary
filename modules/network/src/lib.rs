@@ -10,7 +10,8 @@ mod protocol;
 mod runtime;
 mod server;
 
-use runtime::{NetEventReceiver, NetEventSender, NetworkRuntime, NetworkTasks};
+pub use protocol::{HostMessage, PeerId, PeerMessage, PeerState};
+use runtime::{NetEventReceiver, NetEventSender, NetworkRuntime, NetworkTasks, ServerCommand};
 
 /// System set for network systems. Game code should read `NetEvent` messages
 /// after `NetworkSet::Receive` and write `NetCommand` messages before
@@ -37,10 +38,62 @@ pub enum NetCommand {
 pub enum NetEvent {
     HostingStarted { port: u16 },
     HostingStopped,
-    ClientConnected { addr: SocketAddr },
+    PeerConnected { id: PeerId, addr: SocketAddr },
     Connected,
     Disconnected { reason: String },
+    HostMessageReceived(HostMessage),
+    PeerMessageReceived { from: PeerId, message: PeerMessage },
+    PeerDisconnected { id: PeerId },
     Error(String),
+}
+
+/// Resource for sending messages from the server to clients.
+/// Inserted when the server task starts, removed on stop.
+#[derive(Resource, Clone)]
+pub struct NetServerSender {
+    tx: mpsc::UnboundedSender<ServerCommand>,
+}
+
+impl NetServerSender {
+    /// Create a new server sender from a channel.
+    pub(crate) fn new(tx: mpsc::UnboundedSender<ServerCommand>) -> Self {
+        Self { tx }
+    }
+
+    /// Send a message to a specific peer.
+    pub fn send_to(&self, peer: PeerId, message: &HostMessage) {
+        if let Err(e) = self.tx.send(ServerCommand::SendTo { peer, message: message.clone() }) {
+            log::warn!("Failed to send message to peer {}: {}", peer.0, e);
+        }
+    }
+
+    /// Broadcast a message to all connected peers.
+    pub fn broadcast(&self, message: &HostMessage) {
+        if let Err(e) = self.tx.send(ServerCommand::Broadcast { message: message.clone() }) {
+            log::warn!("Failed to broadcast message: {}", e);
+        }
+    }
+}
+
+/// Resource for sending messages from the client to the server.
+/// Inserted when the client task starts, removed on disconnect.
+#[derive(Resource, Clone)]
+pub struct NetClientSender {
+    tx: mpsc::UnboundedSender<PeerMessage>,
+}
+
+impl NetClientSender {
+    /// Create a new client sender from a channel.
+    pub(crate) fn new(tx: mpsc::UnboundedSender<PeerMessage>) -> Self {
+        Self { tx }
+    }
+
+    /// Send a message to the server.
+    pub fn send(&self, message: &PeerMessage) {
+        if let Err(e) = self.tx.send(message.clone()) {
+            log::warn!("Failed to send message to server: {}", e);
+        }
+    }
 }
 
 /// Maximum number of network events to process per frame to prevent stalling.
@@ -208,5 +261,94 @@ mod tests {
 
         // Should have processed the remaining 50 events
         assert_eq!(count2, 50, "Should process remaining events in next frame");
+    }
+
+    #[test]
+    fn test_net_server_sender_send_to() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sender = NetServerSender::new(tx);
+
+        let peer = PeerId(42);
+        let message = HostMessage::Welcome { peer_id: peer };
+
+        sender.send_to(peer, &message);
+
+        let received = rx.try_recv().expect("Should receive command");
+        match received {
+            ServerCommand::SendTo { peer: recv_peer, message: recv_msg } => {
+                assert_eq!(recv_peer, peer);
+                match recv_msg {
+                    HostMessage::Welcome { peer_id } => {
+                        assert_eq!(peer_id, peer);
+                    }
+                    _ => panic!("Expected Welcome message"),
+                }
+            }
+            _ => panic!("Expected SendTo command"),
+        }
+    }
+
+    #[test]
+    fn test_net_server_sender_broadcast() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sender = NetServerSender::new(tx);
+
+        let message = HostMessage::PeerLeft { id: PeerId(7) };
+
+        sender.broadcast(&message);
+
+        let received = rx.try_recv().expect("Should receive command");
+        match received {
+            ServerCommand::Broadcast { message: recv_msg } => {
+                match recv_msg {
+                    HostMessage::PeerLeft { id } => {
+                        assert_eq!(id, PeerId(7));
+                    }
+                    _ => panic!("Expected PeerLeft message"),
+                }
+            }
+            _ => panic!("Expected Broadcast command"),
+        }
+    }
+
+    #[test]
+    fn test_net_client_sender_send() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sender = NetClientSender::new(tx);
+
+        let message = PeerMessage::Input {
+            direction: [1.0, 0.0, -1.0],
+        };
+
+        sender.send(&message);
+
+        let received = rx.try_recv().expect("Should receive message");
+        match received {
+            PeerMessage::Input { direction } => {
+                assert_eq!(direction, [1.0, 0.0, -1.0]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_new_net_event_variants() {
+        // Test that all new event variants can be constructed
+        let _event1 = NetEvent::HostMessageReceived(HostMessage::Welcome {
+            peer_id: PeerId(1),
+        });
+
+        let _event2 = NetEvent::PeerMessageReceived {
+            from: PeerId(2),
+            message: PeerMessage::Input {
+                direction: [0.0, 0.0, 0.0],
+            },
+        };
+
+        let _event3 = NetEvent::PeerConnected {
+            id: PeerId(3),
+            addr: "127.0.0.1:8080".parse().unwrap(),
+        };
+
+        let _event4 = NetEvent::PeerDisconnected { id: PeerId(4) };
     }
 }
