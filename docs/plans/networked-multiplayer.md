@@ -50,7 +50,7 @@ convention, and write tests not just visual checks.
 
 | Layer | Module | Plan scope |
 |-------|--------|------------|
-| L0 | `network` | `PeerId` type, `HostMessage`/`PeerMessage`/`PeerState` protocol types, `NetServerSender`/`NetClientSender` resources for typed messages, `NetEvent` variants for protocol delivery, length-prefixed wire framing, serde+bincode serialization, bi-directional QUIC streams per client |
+| L0 | `network` | `PeerId` type, `HostMessage`/`PeerMessage`/`PeerState` protocol types, `NetServerSender`/`NetClientSender` resources for typed messages, `NetEvent` variants for protocol delivery, serde+bincode serialization, `LengthDelimitedCodec` stream framing (from tokio-util), bi-directional QUIC streams per client |
 | L0 | `physics` | Unchanged |
 | L0 | `ui` | Unchanged |
 | L1 | `tiles` | Unchanged |
@@ -85,7 +85,6 @@ modules/
       client.rs     # MODIFIED — bi-di stream, read/write loops
       runtime.rs    # MODIFIED — sender channels in NetworkTasks
       protocol.rs   # NEW — HostMessage, PeerMessage, PeerState, encode/decode
-      framing.rs    # NEW — read_frame / write_frame (u32 length prefix)
       config.rs     # Unchanged
 src/
   net_game.rs       # NEW — systems: input send, state broadcast, player join/leave
@@ -138,10 +137,12 @@ Incoming messages arrive as typed `NetEvent` variants:
   `ClientConnected`
 - `NetEvent::PeerDisconnected { id: PeerId }` — new variant
 
-Wire framing (`framing.rs`): `write_frame` writes `[u32 len][payload]`;
-`read_frame` reads one frame. Internal to the module.
+Stream framing uses `tokio_util::codec::LengthDelimitedCodec` (already in the
+dependency tree via `tokio-util = "0.7"`). QUIC bi-directional streams are
+wrapped in `Framed<stream, LengthDelimitedCodec>` for automatic length-prefixed
+message delimiting. No custom framing code needed.
 
-The server maintains a `HashMap<PeerId, SendStream>` internally. When
+The server maintains a `HashMap<PeerId, Framed<SendStream, ...>>` internally. When
 `send_to(peer, msg)` is called, the message is serialized and routed to the
 correct stream. `broadcast` iterates all peers.
 

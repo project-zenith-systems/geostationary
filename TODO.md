@@ -1,16 +1,16 @@
-## Add protocol types and wire framing to network module
+## Add protocol types to network module
 
 **Plan:** `plan/networked-multiplayer` · [docs/plans/networked-multiplayer.md](docs/plans/networked-multiplayer.md)
 
-**Files:** `modules/network/src/protocol.rs` (new), `modules/network/src/framing.rs` (new), `modules/network/Cargo.toml`
+**Files:** `modules/network/src/protocol.rs` (new), `modules/network/Cargo.toml`
 
 - Add `serde` and `bincode` dependencies to `modules/network/Cargo.toml`
 - Add `protocol.rs` with domain-neutral types: `PeerId`, `HostMessage`, `PeerMessage`, `PeerState`
 - `HostMessage` variants: `Welcome`, `PeerJoined`, `PeerLeft`, `StateUpdate`
 - `PeerMessage` variants: `Input { direction }`
 - Internal `encode`/`decode` functions wrapping bincode
-- Add `framing.rs` with `write_frame` (`[u32 len][payload]`) and `read_frame`
-- Unit tests for serialization roundtrips and framing edge cases
+- Stream framing uses `tokio_util::codec::LengthDelimitedCodec` (already in deps) — no custom framing code
+- Unit tests for serialization roundtrips
 - **Not included:** integration with server/client tasks or NetEvent changes (next tasks)
 
 ## Extend network API with typed message events and sender resources
@@ -19,7 +19,7 @@
 
 **Files:** `modules/network/src/lib.rs`, `modules/network/src/runtime.rs`
 
-Depends on: "Add protocol types and wire framing to network module"
+Depends on: "Add protocol types to network module"
 
 - Add `NetEvent::HostMessageReceived(HostMessage)` variant (client receives from host)
 - Add `NetEvent::PeerMessageReceived { from: PeerId, message: PeerMessage }` variant (host receives from peer)
@@ -42,8 +42,9 @@ Depends on: "Extend network API with typed message events and sender resources"
 - Maintain `HashMap<PeerId, SendStream>` for connected peers
 - Assign incrementing PeerIds (starting at 1) on connection
 - Open bi-directional QUIC stream per peer
-- Per-peer read loop: `read_frame` → decode `PeerMessage` → emit `NetEvent::PeerMessageReceived`
-- Per-peer write loop: read from routing channel → encode `HostMessage` → `write_frame`
+- Wrap streams with `LengthDelimitedCodec` via `Framed` for automatic message delimiting
+- Per-peer read loop: decode `PeerMessage` from framed stream → emit `NetEvent::PeerMessageReceived`
+- Per-peer write loop: read from routing channel → encode `HostMessage` → write to framed stream
 - Emit `NetEvent::PeerDisconnected { id }` on disconnect
 - Create `NetServerSender` mpsc channel before spawning server task; insert resource
 - Route `send_to` and `broadcast` through internal channels to per-peer write loops
@@ -56,9 +57,9 @@ Depends on: "Extend network API with typed message events and sender resources"
 
 Depends on: "Extend network API with typed message events and sender resources"
 
-- After connecting, open bi-directional QUIC stream
-- Read loop: `read_frame` → decode `HostMessage` → emit `NetEvent::HostMessageReceived`
-- Write loop: read from channel → encode `PeerMessage` → `write_frame`
+- After connecting, open bi-directional QUIC stream wrapped with `LengthDelimitedCodec`
+- Read loop: decode `HostMessage` from framed stream → emit `NetEvent::HostMessageReceived`
+- Write loop: read from channel → encode `PeerMessage` → write to framed stream
 - Create `NetClientSender` mpsc channel before spawning client task; insert resource
 - Handle disconnect/cancellation cleanly
 
