@@ -165,10 +165,10 @@ async fn run_server_inner(
                                     // Wait for either task to complete or connection close
                                     tokio::select! {
                                         _ = read_handle => {
-                                            log::info!("Read task completed for peer {}", peer_id.0);
+                                            log::debug!("Read task completed for peer {}", peer_id.0);
                                         }
                                         _ = write_handle => {
-                                            log::info!("Write task completed for peer {}", peer_id.0);
+                                            log::debug!("Write task completed for peer {}", peer_id.0);
                                         }
                                         _ = connection.closed() => {
                                             log::info!("Connection closed for peer {}", peer_id.0);
@@ -203,11 +203,15 @@ async fn run_server_inner(
                             Ok(bytes) => {
                                 let senders = peer_senders.lock().await;
                                 if let Some(sender) = senders.get(&peer) {
+                                    // Note: Send failures are logged but not surfaced as errors because:
+                                    // 1. Sends are fire-and-forget from the caller's perspective
+                                    // 2. Peer disconnections are already reported via PeerDisconnected events
+                                    // 3. The channel error typically indicates the peer is disconnecting
                                     if let Err(e) = sender.send(Bytes::from(bytes)) {
-                                        log::warn!("Failed to route message to peer {}: {}", peer.0, e);
+                                        log::debug!("Failed to route message to peer {} (likely disconnecting): {}", peer.0, e);
                                     }
                                 } else {
-                                    log::warn!("Peer {} not found for send_to", peer.0);
+                                    log::debug!("Peer {} not found for send_to (already disconnected)", peer.0);
                                 }
                             }
                             Err(e) => {
@@ -221,9 +225,12 @@ async fn run_server_inner(
                             Ok(bytes) => {
                                 let bytes = Bytes::from(bytes);
                                 let senders = peer_senders.lock().await;
+                                // Note: Individual broadcast failures are logged but don't fail the whole broadcast.
+                                // This is intentional - some peers may be disconnecting while others are healthy.
+                                // Disconnections are reported separately via PeerDisconnected events.
                                 for (peer_id, sender) in senders.iter() {
                                     if let Err(e) = sender.send(bytes.clone()) {
-                                        log::warn!("Failed to broadcast to peer {}: {}", peer_id.0, e);
+                                        log::debug!("Failed to broadcast to peer {} (likely disconnecting): {}", peer_id.0, e);
                                     }
                                 }
                             }
@@ -248,8 +255,6 @@ async fn run_server_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
 
     #[test]
     fn test_peer_id_incrementing() {
