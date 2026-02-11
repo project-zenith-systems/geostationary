@@ -162,4 +162,107 @@ eventually come to rest on the floor due to damping.
 
 ## Post-mortem
 
-*To be filled in after the plan ships.*
+### Outcome
+
+The plan delivered everything it promised. `modules/physics` wraps Avian 3D
+behind a sealed API, walls and floors have static colliders, the homebrew
+tilemap collision is gone, and a bouncing ball validates the full rigid-body
+pipeline. The player walks around the room with physics-resolved wall
+collisions, and no `avian3d` import appears outside the physics module. The
+architecture boundary held cleanly. Four PRs landed the work (#58 physics
+module, #59 tile colliders, #60 bouncing ball, #61 player movement rewrite),
+followed by five fix commits that corrected body-type and collider-size
+mistakes discovered during manual testing.
+
+### What shipped beyond the plan
+
+| Addition | Why |
+|----------|-----|
+| `GravityScale` re-export | Needed for the zero-gravity player workaround (see hurdle 1). Not in the original re-export list but required by game code. |
+| `PhysicsDebugPlugin` re-export | Essential for diagnosing every physics hurdle below. Should be gated behind a debug flag eventually (TODO in code). |
+| Planning document refactoring (commit `a2f74b7`) | Updated plan-guide and workflows to align with conventions discovered during the first two plans. Cheap housekeeping, done between task PRs. |
+
+### Deviations from plan
+
+- **Dynamic body instead of Kinematic for the player.** The plan specified
+  `RigidBody::Kinematic`. In practice, Avian's kinematic bodies do not receive
+  collision response — the player walked straight through walls. The fix was
+  `RigidBody::Dynamic` with `GravityScale(0.0)` and
+  `LockedAxes::ROTATION_LOCKED.lock_translation_y()` to simulate kinematic-like
+  behaviour while still getting collision pushback. This is the biggest
+  deviation and the one most worth recording for future plans.
+- **No physics module tests.** The plan called for "new tests cover the
+  physics module's public API." The test module exists but is empty. All
+  validation was manual (visual). This is a gap.
+- **`ColliderDensity` not re-exported.** Mentioned in the plan as a candidate;
+  turned out to be unnecessary. `GravityScale` took its place in the actual
+  re-export set.
+- **No plan branch.** Work happened on `feat/physics-player-movement` instead
+  of the `plan/physics-foundation` branch described by the branching convention.
+  Task PRs targeted this feature branch directly.
+- **Floor collider Y-offset.** Floor colliders sit at y=0.1 (half the 0.1
+  thickness), not y=0.0 as the design implied. This forced the player spawn to
+  y=0.86 to clear the surface. A TODO comment marks this for cleanup.
+
+### Hurdles
+
+**1. Kinematic bodies ignore collision response (PR #61, fix commits)**
+The plan assumed `RigidBody::Kinematic` would collide with static geometry.
+Avian's kinematic bodies are moved by velocity but do not receive pushback from
+collisions — the player phased through walls. Switched to
+`RigidBody::Dynamic` with gravity disabled and Y-translation locked.
+**Lesson:** verify physics engine body-type semantics before committing to one
+in the plan. Avian's Kinematic ≠ Unity's Kinematic Controller.
+
+**2. `Collider::cuboid` takes full dimensions, not half-extents (commit `0d61217`)**
+The initial tile colliders used `Collider::cuboid(0.5, 0.5, 0.5)` for walls,
+assuming half-extents (as Rapier does). Avian's API takes full dimensions, so
+every collider was double the intended size. Walls bled into adjacent tiles and
+the floor was 0.2 units thick instead of 0.1.
+**Lesson:** read the doc signature, not the Rapier muscle memory. This class of
+bug is silent — geometry looks "close enough" until something clips.
+
+**3. Cascading symptoms from wrong collider sizes (commits `00d97b2`, `f5abafb`, `49b04a3`)**
+Before the root cause (hurdle 2) was found, the undersized colliders caused two
+visible symptoms that looked like separate bugs: the player bounced erratically
+on floor tiles because it was catching the edges of colliders that didn't fully
+tile the surface, and the bouncing ball fell straight through the gaps between
+floor colliders. Both prompted intermediate "fixes" — `SweptCcd` on the ball
+(thinking it was tunnelling), zero gravity on the player, removing the Y
+translation lock — none of which addressed the actual problem. Once the
+collider sizes were corrected in `0d61217`, the gaps closed, the bouncing
+stopped, and SweptCcd became unnecessary and was removed.
+**Lesson:** when multiple physics objects misbehave in the same scene, suspect
+shared geometry before per-entity tuning. Debug-render the colliders first.
+
+### What went well
+
+- **Avian isolation held perfectly.** Not a single `avian3d` import outside
+  `modules/physics`. The re-export boundary works as designed.
+- **Clean removal of homebrew collision.** The `Tilemap` dependency, per-axis
+  sliding logic, and `is_walkable` calls in `creature_movement_system` were
+  deleted in one commit with no fallout. The module boundary made the cut
+  surgical.
+- **Bouncing ball proved the pipeline.** Gravity, collision detection,
+  restitution, and damping all work. The ball falls, bounces, and settles —
+  exactly the validation the plan called for, requiring zero game systems.
+- **Small, focused PRs.** Four feature PRs plus targeted fix commits. Each was
+  reviewable in isolation.
+
+### What to do differently next time
+
+- **Verify physics engine semantics before the plan.** The Kinematic → Dynamic
+  pivot cost five fix commits and would have been avoided by a 10-minute
+  prototype. Future plans involving a new engine dependency should include a
+  spike task.
+- **Write physics tests, not just visual checks.** Every hurdle above was
+  caught by eyeballing the game window. An integration test spawning a body
+  against a wall and asserting position-after-step would have caught the
+  kinematic and collider-size bugs faster and prevented regressions.
+- **Follow the branching convention.** This plan skipped the `plan/` branch
+  and worked on a feature branch. The convention exists for a reason — squash-
+  merging a plan branch into main keeps history clean. Use it next time.
+- **Pin down coordinate conventions early.** The floor Y-offset issue cascaded
+  into player spawn height calculations. A one-paragraph "world coordinate
+  conventions" section in the architecture docs would prevent this class of
+  problem across plans.
