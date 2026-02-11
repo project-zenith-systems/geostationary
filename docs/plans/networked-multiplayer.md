@@ -1,10 +1,10 @@
 # Plan: Networked Multiplayer
 
 > **Stage goal:** Two game instances communicate over the wire. The host runs a
-> server-authoritative simulation — clients send WASD input, the server runs
-> physics for all players and sends authoritative positions back. The L0 network
-> module gains domain-agnostic byte channels while all game protocol knowledge
-> stays in the root crate.
+> server-authoritative simulation — clients send input, the server runs physics
+> for all peers and sends authoritative positions back. The L0 network module
+> owns both transport and protocol — typed messages in domain-neutral terms, with
+> serialization handled internally.
 
 ## What "done" looks like
 
@@ -20,21 +20,27 @@
    behaviour
 7. Client disconnection despawns the remote player on the host; host shutdown
    returns the client to the main menu
-8. No game types exist inside `modules/network/` — it moves raw `Vec<u8>` only
+8. The network module's protocol uses domain-neutral terms (peers, positions,
+   input vectors) — game code maps these to its own concepts
 9. No `tokio`/`quinn`/`mpsc` types appear outside `modules/network/`
-10. Existing tests pass; new tests cover data channels and protocol serialization
+10. Existing tests pass; new tests cover protocol serialization and data channels
 
 ## Strategy
 
-This plan sends game data over the wire for the first time. The core tension is
-between the network module (L0, domain-agnostic) and the game protocol (root
-crate, domain-aware). The network module gains the ability to shuttle bytes
-between peers — nothing more. All serialization, entity spawning, and state
-replication live in the root crate.
+This plan sends game data over the wire for the first time. The network module
+owns both transport and protocol — the same way the physics module owns both
+the engine wrapper and the physics primitives (rigid bodies, colliders) without
+knowing they represent creatures or walls. The protocol defines peers, spatial
+state, and input vectors; the game code decides what those primitives represent.
 
-Work proceeds bottom-up: extend the network module with data channels, define the
-game protocol, rewire player spawning through the network flow, add the Join
-button, then wire the full input→state loop.
+Serialization (serde + bincode) lives entirely inside the network module. Upper
+layers send and receive typed protocol messages, never raw bytes. This pushes
+the serialization concern down to L0 where it belongs — game code doesn't need
+bincode as a dependency.
+
+Work proceeds bottom-up: extend the network module with protocol types and data
+channels, rewire player spawning through the network flow, add the Join button,
+then wire the full input→state loop.
 
 Lessons from previous post-mortems: sequence PRs explicitly (physics-foundation),
 decide entity ownership up front (playable-character), follow the branching
@@ -44,7 +50,7 @@ convention, and write tests not just visual checks.
 
 | Layer | Module | Plan scope |
 |-------|--------|------------|
-| L0 | `network` | `PeerId` type, `NetServerSender`/`NetClientSender` resources for raw byte channels, `NetEvent::DataReceived`/`ClientDisconnected` variants, length-prefixed wire framing, bi-directional QUIC streams per client |
+| L0 | `network` | `PeerId` type, `HostMessage`/`PeerMessage`/`PeerState` protocol types, `NetServerSender`/`NetClientSender` resources for typed messages, `NetEvent` variants for protocol delivery, length-prefixed wire framing, serde+bincode serialization, bi-directional QUIC streams per client |
 | L0 | `physics` | Unchanged |
 | L0 | `ui` | Unchanged |
 | L1 | `tiles` | Unchanged |
@@ -52,7 +58,6 @@ convention, and write tests not just visual checks.
 | L1 | `main_menu` | `MenuEvent::Join` variant, Join button on title screen |
 | L3 | `creatures` | `creature_movement_system` gated to run only on `ListenServer` |
 | L6 | `camera` | Unchanged (follows `PlayerControlled`) |
-| — | `protocol.rs` | **New.** `ServerMessage`, `ClientMessage`, `PlayerState` — serde + bincode |
 | — | `net_game.rs` | **New.** Systems bridging network ↔ game state |
 | — | `world_setup.rs` | Remove player capsule spawn (moves to network flow) |
 | — | `main.rs` | `NetworkRole` resource, `net_game` systems, Join handling |
@@ -73,59 +78,72 @@ convention, and write tests not just visual checks.
 ```
 modules/
   network/
+    Cargo.toml      # MODIFIED — add serde, bincode
     src/
-      lib.rs          # MODIFIED — new variants, PeerId, sender resources
-      server.rs       # MODIFIED — bi-di streams, read/write loops, PeerId map
-      client.rs       # MODIFIED — bi-di stream, read/write loops
-      runtime.rs      # MODIFIED — sender channels in NetworkTasks
-      framing.rs      # NEW — read_frame / write_frame (u32 length prefix)
-      config.rs       # Unchanged
+      lib.rs        # MODIFIED — new NetEvent variants, PeerId, sender resources
+      server.rs     # MODIFIED — bi-di streams, read/write loops, PeerId map
+      client.rs     # MODIFIED — bi-di stream, read/write loops
+      runtime.rs    # MODIFIED — sender channels in NetworkTasks
+      protocol.rs   # NEW — HostMessage, PeerMessage, PeerState, encode/decode
+      framing.rs    # NEW — read_frame / write_frame (u32 length prefix)
+      config.rs     # Unchanged
 src/
-  protocol.rs         # NEW — ServerMessage, ClientMessage, bincode serde
-  net_game.rs         # NEW — systems: input send, state broadcast, player join/leave
-  world_setup.rs      # MODIFIED — remove player spawn
-  creatures/mod.rs    # MODIFIED — gate movement on NetworkRole
+  net_game.rs       # NEW — systems: input send, state broadcast, player join/leave
+  world_setup.rs    # MODIFIED — remove player spawn
+  creatures/mod.rs  # MODIFIED — gate movement on NetworkRole
   main_menu/
-    mod.rs            # MODIFIED — handle MenuEvent::Join
-    title_screen.rs   # MODIFIED — add Join button
-  main.rs             # MODIFIED — NetworkRole, net_game registration, Join flow
+    mod.rs          # MODIFIED — handle MenuEvent::Join
+    title_screen.rs # MODIFIED — add Join button
+  main.rs           # MODIFIED — NetworkRole, net_game registration, Join flow
 ```
+
+### Network protocol design
+
+The protocol lives in `modules/network/src/protocol.rs` and uses domain-neutral
+terminology. The same way the physics module provides `RigidBody` and `Collider`
+without knowing they are creatures or walls, the network module provides protocol
+primitives that the game maps to its own domain.
+
+**Host → peer messages (`HostMessage`):**
+- `Welcome { peer_id: PeerId }` — assigns the connecting peer their identity
+- `PeerJoined { id: PeerId, position: [f32; 3] }` — a new peer entered
+- `PeerLeft { id: PeerId }` — a peer disconnected
+- `StateUpdate { peers: Vec<PeerState> }` — authoritative spatial state
+
+**Peer → host messages (`PeerMessage`):**
+- `Input { direction: [f32; 3] }` — input vector from the peer
+
+**Shared types:**
+- `PeerId` — `u64` newtype, `Copy`/`Eq`/`Hash`
+- `PeerState { id: PeerId, position: [f32; 3], velocity: [f32; 3] }`
+
+Serialization is internal to the module — `bincode` encodes/decodes these types.
+Game code sends and receives typed messages, never raw bytes.
 
 ### Network data channel design
 
-Two new resources for sending raw bytes:
+Two new resources for sending typed protocol messages:
 
-- **`NetServerSender`** — wraps `mpsc::UnboundedSender`. Methods: `send_to(peer,
-  data)` and `broadcast(data)`. Inserted when the server task starts, removed on
-  stop. Game code uses `Option<Res<NetServerSender>>`.
-- **`NetClientSender`** — wraps `mpsc::UnboundedSender<Vec<u8>>`. Method:
-  `send(data)`. Inserted when the client task starts, removed on disconnect.
+- **`NetServerSender`** — methods: `send_to(peer, &HostMessage)` and
+  `broadcast(&HostMessage)`. Internally serializes to bytes and routes via mpsc.
+  Inserted when the server task starts, removed on stop.
+- **`NetClientSender`** — method: `send(&PeerMessage)`. Internally serializes
+  and sends via mpsc. Inserted when the client task starts, removed on disconnect.
 
-Incoming data: `NetEvent::DataReceived { from: PeerId, data: Vec<u8> }`. On the
-client, `from` is always `PeerId(0)` (the server). On the server, `from` is the
-client's assigned `PeerId`.
+Incoming messages arrive as typed `NetEvent` variants:
+- `NetEvent::HostMessageReceived(HostMessage)` — client receives from host
+- `NetEvent::PeerMessageReceived { from: PeerId, message: PeerMessage }` — host
+  receives from a peer
+- `NetEvent::PeerConnected { id: PeerId, addr: SocketAddr }` — replaces
+  `ClientConnected`
+- `NetEvent::PeerDisconnected { id: PeerId }` — new variant
 
 Wire framing (`framing.rs`): `write_frame` writes `[u32 len][payload]`;
-`read_frame` reads one frame. This is the only serialization inside the network
-module — it knows nothing about what the bytes contain.
+`read_frame` reads one frame. Internal to the module.
 
 The server maintains a `HashMap<PeerId, SendStream>` internally. When
-`NetServerSender.send_to(peer, data)` is called, the data is routed to the
+`send_to(peer, msg)` is called, the message is serialized and routed to the
 correct stream. `broadcast` iterates all peers.
-
-### Game protocol design
-
-`src/protocol.rs` (root crate only, never enters network module):
-
-- `ClientMessage::InputUpdate { direction: [f32; 3] }` — normalized WASD vector
-- `ServerMessage::Welcome { your_id: u64 }` — sent to newly connected client
-- `ServerMessage::PlayerJoined { id: u64, position: [f32; 3] }`
-- `ServerMessage::PlayerLeft { id: u64 }`
-- `ServerMessage::StateUpdate { players: Vec<PlayerState> }` — authoritative
-  positions each tick
-
-Serialization: `bincode` (compact binary, serde-compatible). Added as root crate
-dependency only.
 
 ### Player lifecycle
 
@@ -134,33 +152,33 @@ Player entities are spawned by the network flow, **not** by `setup_world`:
 **Host (ListenServer):**
 - `OnEnter(InGame)` + `ListenServer` → spawn host player (Dynamic body,
   `PlayerControlled`, `Creature`, `MovementSpeed`, `PeerId(0)` component)
-- `ClientConnected { id }` → spawn remote player (Dynamic body, `Creature`,
+- `PeerConnected { id }` → spawn remote player (Dynamic body, `Creature`,
   `MovementSpeed`, assigned `PeerId` component, **no** `PlayerControlled`). Send
-  `Welcome` + `PlayerJoined` for all existing players to new client. Send
-  `PlayerJoined` for new player to all clients.
-- `ClientDisconnected { id }` → despawn entity, broadcast `PlayerLeft`
+  `Welcome` + `PeerJoined` for all existing peers to new peer. Send
+  `PeerJoined` for new peer to all peers.
+- `PeerDisconnected { id }` → despawn entity, broadcast `PeerLeft`
 
 **Client:**
-- `PlayerJoined { id, pos }` → spawn entity (Kinematic body, no physics). If
+- `PeerJoined { id, pos }` → spawn entity (Kinematic body, no physics). If
   `id == my_id`, add `PlayerControlled` so the camera follows it.
-- `PlayerLeft { id }` → despawn entity
+- `PeerLeft { id }` → despawn entity
 - `StateUpdate` → set `Transform.translation` on matching entities
 
 ### Server-authoritative input/state loop
 
 **Host each frame:**
 1. `creature_movement_system` reads keyboard → sets host player `LinearVelocity`
-2. `apply_remote_input` reads `DataReceived` → deserializes `InputUpdate` → sets
-   remote player `LinearVelocity` via `MovementSpeed`
+2. `apply_remote_input` reads `PeerMessageReceived` → extracts `Input` direction
+   → sets remote player `LinearVelocity` via `MovementSpeed`
 3. Avian physics steps all Dynamic bodies
-4. `broadcast_state` collects all player positions → serializes `StateUpdate` →
-   sends via `NetServerSender.broadcast()`
+4. `broadcast_state` collects all player positions → sends `StateUpdate` via
+   `NetServerSender.broadcast()`
 
 **Client each frame:**
-1. `send_client_input` reads keyboard → serializes `InputUpdate` → sends via
+1. `send_client_input` reads keyboard → sends `PeerMessage::Input` via
    `NetClientSender`
-2. `receive_server_state` reads `DataReceived` → deserializes `ServerMessage` →
-   applies positions to entities
+2. `receive_server_state` reads `HostMessageReceived` → applies `PeerJoined` /
+   `PeerLeft` / `StateUpdate` to entities
 
 `creature_movement_system` is gated:
 `.run_if(|role: Res<NetworkRole>| *role == NetworkRole::ListenServer)`
@@ -177,9 +195,9 @@ screen. On `NetEvent::Connected`, set `NetworkRole::Client`, transition to
 
 ### Dependencies
 
-- Add `bincode = "1"` and `serde = { version = "1", features = ["derive"] }` to
-  root `Cargo.toml` (serde is already there)
-- No new dependencies in `modules/network/Cargo.toml`
+- Add `serde = { version = "1", features = ["derive"] }` and `bincode = "1"` to
+  `modules/network/Cargo.toml`
+- No new dependencies in root `Cargo.toml`
 
 ## Post-mortem
 
