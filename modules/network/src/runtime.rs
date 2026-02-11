@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{HostMessage, NetEvent, PeerMessage};
 
 /// Internal commands for server message sending.
+/// Bevy → server task bridge: sent from game systems to server task.
 #[derive(Clone, Debug)]
 pub(crate) enum ServerCommand {
     SendTo { peer: crate::PeerId, message: HostMessage },
