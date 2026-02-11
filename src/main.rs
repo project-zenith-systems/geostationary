@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use bevy::prelude::*;
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::{NetCommand, NetEvent, NetworkPlugin, NetworkSet};
-use physics::PhysicsPlugin;
+use physics::{PhysicsDebugPlugin, PhysicsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
 use ui::UiPlugin;
@@ -31,6 +31,7 @@ fn main() {
         .add_plugins(MainMenuPlugin)
         .add_plugins(NetworkPlugin)
         .add_plugins(PhysicsPlugin)
+        .add_plugins(PhysicsDebugPlugin) // TODO: gate behind debug builds or config flag
         .add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin)
         .add_plugins(creatures::CreaturesPlugin)

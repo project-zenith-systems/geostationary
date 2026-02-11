@@ -7,7 +7,11 @@ use tokio_util::sync::CancellationToken;
 use crate::NetEvent;
 use crate::config;
 
-pub(crate) async fn run_client(addr: SocketAddr, event_tx: mpsc::UnboundedSender<NetEvent>, cancel_token: CancellationToken) {
+pub(crate) async fn run_client(
+    addr: SocketAddr,
+    event_tx: mpsc::UnboundedSender<NetEvent>,
+    cancel_token: CancellationToken,
+) {
     if let Err(e) = run_client_inner(addr, &event_tx, cancel_token).await {
         let _ = event_tx.send(NetEvent::Error(format!("Client error: {e}")));
     }

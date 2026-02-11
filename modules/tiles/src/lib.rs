@@ -71,7 +71,7 @@ impl Tilemap {
     }
 
     pub fn is_walkable(&self, pos: IVec2) -> bool {
-        self.get(pos).map_or(false, |kind| kind.is_walkable())
+        self.get(pos).is_some_and(|kind| kind.is_walkable())
     }
 
     /// Returns an iterator over all tiles with their positions and kinds
@@ -172,7 +172,8 @@ fn spawn_tile_meshes(
                     Transform::from_xyz(world_x, 0.0, world_z),
                     Tile { position: pos },
                     RigidBody::Static,
-                    Collider::cuboid(0.5, 0.05, 0.5),
+                    // avian3d Collider::cuboid takes full dimensions, not half-extents
+                    Collider::cuboid(1.0, 0.1, 1.0),
                 ));
             }
             TileKind::Wall => {
@@ -182,7 +183,8 @@ fn spawn_tile_meshes(
                     Transform::from_xyz(world_x, 0.5, world_z),
                     Tile { position: pos },
                     RigidBody::Static,
-                    Collider::cuboid(0.5, 0.5, 0.5),
+                    // avian3d Collider::cuboid takes full dimensions, not half-extents
+                    Collider::cuboid(1.0, 1.0, 1.0),
                 ));
             }
         }

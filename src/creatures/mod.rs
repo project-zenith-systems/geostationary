@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use tiles::Tilemap;
+use physics::LinearVelocity;
 
 use crate::app_state::AppState;
 
@@ -40,57 +40,38 @@ impl Plugin for CreaturesPlugin {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn creature_movement_system(
     keyboard: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    tilemap: Option<Res<Tilemap>>,
-    mut query: Query<(&mut Transform, &MovementSpeed), (With<Creature>, With<PlayerControlled>)>,
+    mut query: Query<
+        (&mut LinearVelocity, &MovementSpeed),
+        (With<Creature>, With<PlayerControlled>),
+    >,
 ) {
-    let Some(tilemap) = tilemap else {
-        return;
-    };
+    for (mut velocity, movement_speed) in query.iter_mut() {
+        let mut direction = Vec3::ZERO;
 
-    for (mut transform, movement_speed) in query.iter_mut() {
-        let mut movement = Vec3::ZERO;
-
-        // Read keyboard input (WASD)
         if keyboard.pressed(KeyCode::KeyW) {
-            movement.z -= 1.0;
+            direction.z -= 1.0;
         }
         if keyboard.pressed(KeyCode::KeyS) {
-            movement.z += 1.0;
+            direction.z += 1.0;
         }
         if keyboard.pressed(KeyCode::KeyA) {
-            movement.x -= 1.0;
+            direction.x -= 1.0;
         }
         if keyboard.pressed(KeyCode::KeyD) {
-            movement.x += 1.0;
+            direction.x += 1.0;
         }
 
-        // Normalize and scale by speed and delta time
-        if movement.length_squared() > 0.0 {
-            movement = movement.normalize() * movement_speed.speed * time.delta_secs();
+        let desired = if direction.length_squared() > 0.0 {
+            direction.normalize() * movement_speed.speed
+        } else {
+            Vec3::ZERO
+        };
 
-            // Check each axis independently for wall sliding behavior
-            let current_pos = transform.translation;
-            let target_x = current_pos.x + movement.x;
-            let target_z = current_pos.z + movement.z;
-
-            // Try X axis
-            let tile_x = IVec2::new(target_x.floor() as i32, current_pos.z.floor() as i32);
-            if tilemap.is_walkable(tile_x) {
-                transform.translation.x = target_x;
-            }
-
-            // Try Z axis
-            let tile_z = IVec2::new(
-                transform.translation.x.floor() as i32,
-                target_z.floor() as i32,
-            );
-            if tilemap.is_walkable(tile_z) {
-                transform.translation.z = target_z;
-            }
-        }
+        velocity.x = desired.x;
+        velocity.z = desired.z;
     }
 }
 
