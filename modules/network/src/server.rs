@@ -46,11 +46,19 @@ async fn run_server_inner(
                 tokio::spawn(async move {
                     match incoming.await {
                         Ok(connection) => {
-                            log::info!("Client connected from {}", connection.remote_address());
+                            let addr = connection.remote_address();
+                            log::info!("Client connected from {}", addr);
                             // TODO: Implement proper peer ID assignment in next task
+                            // Using a simple hash of the address as a temporary unique identifier
+                            let temp_peer_id = PeerId(
+                                (addr.ip().to_canonical().to_string() + &addr.port().to_string())
+                                    .as_bytes()
+                                    .iter()
+                                    .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64))
+                            );
                             let _ = event_tx.send(NetEvent::PeerConnected {
-                                id: PeerId(0),
-                                addr: connection.remote_address(),
+                                id: temp_peer_id,
+                                addr,
                             });
 
                             // Wait for either connection close or server shutdown

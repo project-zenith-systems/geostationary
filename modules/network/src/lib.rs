@@ -62,12 +62,16 @@ impl NetServerSender {
 
     /// Send a message to a specific peer.
     pub fn send_to(&self, peer: PeerId, message: &HostMessage) {
-        let _ = self.tx.send(ServerCommand::SendTo { peer, message: message.clone() });
+        if let Err(e) = self.tx.send(ServerCommand::SendTo { peer, message: message.clone() }) {
+            log::warn!("Failed to send message to peer {}: {}", peer.0, e);
+        }
     }
 
     /// Broadcast a message to all connected peers.
     pub fn broadcast(&self, message: &HostMessage) {
-        let _ = self.tx.send(ServerCommand::Broadcast { message: message.clone() });
+        if let Err(e) = self.tx.send(ServerCommand::Broadcast { message: message.clone() }) {
+            log::warn!("Failed to broadcast message: {}", e);
+        }
     }
 }
 
@@ -86,7 +90,9 @@ impl NetClientSender {
 
     /// Send a message to the server.
     pub fn send(&self, message: &PeerMessage) {
-        let _ = self.tx.send(message.clone());
+        if let Err(e) = self.tx.send(message.clone()) {
+            log::warn!("Failed to send message to server: {}", e);
+        }
     }
 }
 
