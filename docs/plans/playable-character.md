@@ -161,14 +161,6 @@ a kill switch from day one — retrofitting is harder.
 negligible traffic, but a time bomb for when packet events arrive at scale.
 Capped at 100 events/frame with carry-over and a one-time log warning.
 
-### Remaining open issues
-
-| Issue | Note |
-|-------|------|
-| #26 — Gate tile mesh spawning to InGame | Architecturally impure (runs every frame in every state) but functionally harmless. Should be a quick fix in the integration layer. |
-| #20 — Configurable TLS server name | Only matters for remote connections; irrelevant to this local-only plan. |
-| #17 — Config management expansion | Foundation exists; expansion is future work. |
-
 ### What went well
 
 - **Small PRs.** ~15 focused PRs made review fast and isolated breakage.
