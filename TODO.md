@@ -39,12 +39,13 @@ Depends on: "Add protocol types to network module"
 
 Depends on: "Extend network API with typed message events and sender resources"
 
-- Maintain `HashMap<PeerId, SendStream>` for connected peers
+- Maintain `HashMap<PeerId, FramedWrite<SendStream, LengthDelimitedCodec>>` for connected peers
 - Assign incrementing PeerIds (starting at 1) on connection
-- Open bi-directional QUIC stream per peer
-- Wrap streams with `LengthDelimitedCodec` via `Framed` for automatic message delimiting
-- Per-peer read loop: decode `PeerMessage` from framed stream → emit `NetEvent::PeerMessageReceived`
-- Per-peer write loop: read from routing channel → encode `HostMessage` → write to framed stream
+- Open bi-directional QUIC stream per peer (separate `RecvStream` and `SendStream`)
+- Wrap `RecvStream` with `FramedRead<RecvStream, LengthDelimitedCodec>` for inbound messages
+- Wrap `SendStream` with `FramedWrite<SendStream, LengthDelimitedCodec>` for outbound messages
+- Per-peer read loop: decode `PeerMessage` from `FramedRead` → emit `NetEvent::PeerMessageReceived`
+- Per-peer write loop: read from routing channel → encode `HostMessage` → write to `FramedWrite`
 - Emit `NetEvent::PeerDisconnected { id }` on disconnect
 - Create `NetServerSender` mpsc channel before spawning server task; insert resource
 - Route `send_to` and `broadcast` through internal channels to per-peer write loops
@@ -57,9 +58,11 @@ Depends on: "Extend network API with typed message events and sender resources"
 
 Depends on: "Extend network API with typed message events and sender resources"
 
-- After connecting, open bi-directional QUIC stream wrapped with `LengthDelimitedCodec`
-- Read loop: decode `HostMessage` from framed stream → emit `NetEvent::HostMessageReceived`
-- Write loop: read from channel → encode `PeerMessage` → write to framed stream
+- After connecting, open bi-directional QUIC stream (separate `RecvStream` and `SendStream`)
+- Wrap `RecvStream` with `FramedRead<RecvStream, LengthDelimitedCodec>` for inbound messages
+- Wrap `SendStream` with `FramedWrite<SendStream, LengthDelimitedCodec>` for outbound messages
+- Read loop: decode `HostMessage` from `FramedRead` → emit `NetEvent::HostMessageReceived`
+- Write loop: read from channel → encode `PeerMessage` → write to `FramedWrite`
 - Create `NetClientSender` mpsc channel before spawning client task; insert resource
 - Handle disconnect/cancellation cleanly
 

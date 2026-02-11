@@ -138,13 +138,17 @@ Incoming messages arrive as typed `NetEvent` variants:
 - `NetEvent::PeerDisconnected { id: PeerId }` — new variant
 
 Stream framing uses `tokio_util::codec::LengthDelimitedCodec` (already in the
-dependency tree via `tokio-util = "0.7"`). QUIC bi-directional streams are
-wrapped in `Framed<stream, LengthDelimitedCodec>` for automatic length-prefixed
-message delimiting. No custom framing code needed.
+dependency tree via `tokio-util = "0.7"`). QUIC bi-directional streams expose
+separate read and write halves (`RecvStream` / `SendStream`), which are wrapped
+in `FramedRead<RecvStream, LengthDelimitedCodec>` and `FramedWrite<SendStream,
+LengthDelimitedCodec>` for automatic length-prefixed message delimiting. No
+custom framing code needed.
 
-The server maintains a `HashMap<PeerId, Framed<SendStream, ...>>` internally. When
-`send_to(peer, msg)` is called, the message is serialized and routed to the
-correct stream. `broadcast` iterates all peers.
+The server maintains a `HashMap<PeerId, FramedWrite<SendStream,
+LengthDelimitedCodec>>` internally for outbound messages. When `send_to(peer,
+msg)` is called, the message is serialized and routed to the correct peer's
+write handle. `broadcast` iterates all peers. Each peer also has a read loop
+using `FramedRead<RecvStream, LengthDelimitedCodec>` for inbound messages.
 
 ### Player lifecycle
 
