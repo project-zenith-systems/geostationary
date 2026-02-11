@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 mod client;
 mod config;
+mod protocol;
 mod runtime;
 mod server;
 
