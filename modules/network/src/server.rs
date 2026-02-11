@@ -148,7 +148,7 @@ async fn run_server_inner(
                                                     match bytes {
                                                         Some(bytes) => {
                                                             if let Err(e) = framed_write.send(bytes).await {
-                                                                log::warn!("Failed to send to peer {}: {}", peer_id.0, e);
+                                                                log::warn!("Failed to send to peer {} (stream error): {}", peer_id.0, e);
                                                                 break;
                                                             }
                                                         }
