@@ -4,7 +4,7 @@ use bevy::log;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::NetEvent;
+use crate::{NetEvent, PeerId};
 use crate::config;
 
 pub(crate) async fn run_server(
@@ -47,7 +47,9 @@ async fn run_server_inner(
                     match incoming.await {
                         Ok(connection) => {
                             log::info!("Client connected from {}", connection.remote_address());
-                            let _ = event_tx.send(NetEvent::ClientConnected {
+                            // TODO: Implement proper peer ID assignment in next task
+                            let _ = event_tx.send(NetEvent::PeerConnected {
+                                id: PeerId(0),
                                 addr: connection.remote_address(),
                             });
 
