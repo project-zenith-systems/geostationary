@@ -13,6 +13,10 @@ mod server;
 pub use protocol::{HostMessage, PeerId, PeerMessage, PeerState};
 use runtime::{NetEventReceiver, NetEventSender, NetworkRuntime, NetworkTasks, ServerCommand};
 
+/// Bounded channel buffer size for client outbound messages.
+/// Prevents memory exhaustion if game code produces messages faster than network can send.
+const CLIENT_BUFFER_SIZE: usize = 100;
+
 /// System set for network systems. Game code should read `NetEvent` messages
 /// after `NetworkSet::Receive` and write `NetCommand` messages before
 /// `NetworkSet::Send`.
@@ -79,19 +83,28 @@ impl NetServerSender {
 /// Inserted when the client task starts, removed on disconnect.
 #[derive(Resource, Clone)]
 pub struct NetClientSender {
-    tx: mpsc::UnboundedSender<PeerMessage>,
+    tx: mpsc::Sender<PeerMessage>,
 }
 
 impl NetClientSender {
     /// Create a new client sender from a channel.
-    pub(crate) fn new(tx: mpsc::UnboundedSender<PeerMessage>) -> Self {
+    pub(crate) fn new(tx: mpsc::Sender<PeerMessage>) -> Self {
         Self { tx }
     }
 
     /// Send a message to the server.
-    pub fn send(&self, message: &PeerMessage) {
-        if let Err(e) = self.tx.send(message.clone()) {
-            log::warn!("Failed to send message to server: {}", e);
+    /// Returns true if the message was sent, false if the channel is full or closed.
+    pub fn send(&self, message: &PeerMessage) -> bool {
+        match self.tx.try_send(message.clone()) {
+            Ok(_) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                log::debug!("Client send buffer full, message dropped");
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                log::debug!("Client sender channel closed, message dropped");
+                false
+            }
         }
     }
 }
@@ -201,11 +214,16 @@ fn process_net_commands(
                     continue;
                 }
 
+                // Create bounded client message channel and insert NetClientSender resource.
+                // Bounded channel provides backpressure if game code sends faster than network can handle.
+                let (client_msg_tx, client_msg_rx) = mpsc::channel(CLIENT_BUFFER_SIZE);
+                commands.insert_resource(NetClientSender::new(client_msg_tx));
+
                 let tx = event_tx.0.clone();
                 let addr = *addr;
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
-                let handle = runtime.spawn(client::run_client(addr, tx, token_clone));
+                let handle = runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone));
                 tasks.client_task = Some((handle, cancel_token));
             }
             NetCommand::StopHosting => {
@@ -331,14 +349,15 @@ mod tests {
 
     #[test]
     fn test_net_client_sender_send() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(10);
         let sender = NetClientSender::new(tx);
 
         let message = PeerMessage::Input {
             direction: [1.0, 0.0, -1.0],
         };
 
-        sender.send(&message);
+        let result = sender.send(&message);
+        assert!(result, "Message should be sent successfully");
 
         let received = rx.try_recv().expect("Should receive message");
         match received {
@@ -346,6 +365,21 @@ mod tests {
                 assert_eq!(direction, [1.0, 0.0, -1.0]);
             }
         }
+    }
+
+    #[test]
+    fn test_net_client_sender_buffer_full() {
+        let (tx, _rx) = mpsc::channel(1);
+        let sender = NetClientSender::new(tx);
+
+        let message = PeerMessage::Input {
+            direction: [1.0, 0.0, -1.0],
+        };
+
+        // First send should succeed
+        assert!(sender.send(&message), "First send should succeed");
+        // Second send should fail because buffer is full
+        assert!(!sender.send(&message), "Second send should fail when buffer full");
     }
 
     #[test]
