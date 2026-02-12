@@ -88,7 +88,7 @@ async fn run_client_inner(
     let client_cancel_read = client_cancel.clone();
     let event_tx_read = event_tx.clone();
     let cancel_token_read = cancel_token.clone();
-    let read_handle = tokio::spawn(async move {
+    let mut read_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = cancel_token_read.cancelled() => {
@@ -129,7 +129,7 @@ async fn run_client_inner(
     // Spawn write loop
     let client_cancel_write = client_cancel.clone();
     let cancel_token_write = cancel_token.clone();
-    let write_handle = tokio::spawn(async move {
+    let mut write_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = cancel_token_write.cancelled() => {
@@ -146,9 +146,22 @@ async fn run_client_inner(
                             // Encode PeerMessage
                             match encode(&message) {
                                 Ok(bytes) => {
-                                    if let Err(e) = framed_write.send(Bytes::from(bytes)).await {
-                                        log::warn!("Failed to send message to host (stream error): {}", e);
-                                        break;
+                                    // Wrap send in select to observe cancellation during send
+                                    tokio::select! {
+                                        result = framed_write.send(Bytes::from(bytes)) => {
+                                            if let Err(e) = result {
+                                                log::warn!("Failed to send message to host (stream error): {}", e);
+                                                break;
+                                            }
+                                        }
+                                        _ = cancel_token_write.cancelled() => {
+                                            log::debug!("Write loop cancelled during send (disconnect requested)");
+                                            break;
+                                        }
+                                        _ = client_cancel_write.cancelled() => {
+                                            log::debug!("Write loop cancelled during send (client shutdown)");
+                                            break;
+                                        }
                                     }
                                 }
                                 Err(e) => {
