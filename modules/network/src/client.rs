@@ -15,18 +15,20 @@ use crate::protocol::{decode, encode, HostMessage, PeerMessage};
 pub(crate) async fn run_client(
     addr: SocketAddr,
     event_tx: mpsc::UnboundedSender<NetEvent>,
-    client_msg_rx: mpsc::UnboundedReceiver<PeerMessage>,
+    client_msg_rx: mpsc::Receiver<PeerMessage>,
     cancel_token: CancellationToken,
 ) {
     if let Err(e) = run_client_inner(addr, &event_tx, client_msg_rx, cancel_token).await {
-        let _ = event_tx.send(NetEvent::Error(format!("Client error: {e}")));
+        let reason = format!("Client error: {e}");
+        let _ = event_tx.send(NetEvent::Disconnected { reason: reason.clone() });
+        let _ = event_tx.send(NetEvent::Error(reason));
     }
 }
 
 async fn run_client_inner(
     addr: SocketAddr,
     event_tx: &mpsc::UnboundedSender<NetEvent>,
-    mut client_msg_rx: mpsc::UnboundedReceiver<PeerMessage>,
+    mut client_msg_rx: mpsc::Receiver<PeerMessage>,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client_config = config::build_client_config()?;
@@ -71,7 +73,7 @@ async fn run_client_inner(
             let _ = event_tx.send(NetEvent::Disconnected {
                 reason: format!("Failed to open stream: {}", e),
             });
-            return Err(e.into());
+            return Ok(());
         }
     };
 
@@ -205,20 +207,4 @@ async fn run_client_inner(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_client_signature() {
-        // Verify the run_client function has the expected signature
-        // This ensures compile-time validation of the changes
-        let _: fn(
-            SocketAddr,
-            mpsc::UnboundedSender<NetEvent>,
-            mpsc::UnboundedReceiver<PeerMessage>,
-            CancellationToken,
-        ) -> _ = run_client;
-    }
-}
 
