@@ -168,6 +168,7 @@ async fn run_client_inner(
     let reason = tokio::select! {
         _ = cancel_token.cancelled() => {
             log::info!("Client disconnect requested");
+            connection.close(0u32.into(), b"disconnect requested");
             "Disconnect requested"
         }
         _ = &mut read_handle => {
