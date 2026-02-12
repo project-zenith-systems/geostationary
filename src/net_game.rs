@@ -314,6 +314,7 @@ fn receive_host_messages(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut messages: MessageReader<NetEvent>,
+    network_role: Res<NetworkRole>,
     local_peer_id: Option<Res<LocalPeerId>>,
     mut players: Query<(Entity, &NetworkPeerId, &mut Transform), With<Creature>>,
 ) {
@@ -331,6 +332,12 @@ fn receive_host_messages(
                     local_id = Some(*peer_id);
                 }
                 HostMessage::PeerJoined { id, position } => {
+                    // Only spawn entities on the client, not on the ListenServer
+                    // (server spawns entities in handle_peer_connected)
+                    if *network_role != NetworkRole::Client {
+                        continue;
+                    }
+                    
                     // Check if this entity already exists
                     let exists = players.iter().any(|(_, peer_id, _)| peer_id.0 == *id);
                     if !exists {
@@ -369,6 +376,12 @@ fn receive_host_messages(
                     }
                 }
                 HostMessage::PeerLeft { id } => {
+                    // Only despawn entities on the client, not on the ListenServer
+                    // (server despawns entities in handle_peer_disconnected)
+                    if *network_role != NetworkRole::Client {
+                        continue;
+                    }
+                    
                     // Find and despawn the entity
                     for (entity, peer_id, _) in players.iter() {
                         if peer_id.0 == *id {
@@ -378,6 +391,12 @@ fn receive_host_messages(
                     }
                 }
                 HostMessage::StateUpdate { peers } => {
+                    // Only update positions on the client, not on the ListenServer
+                    // (server has authoritative positions from physics)
+                    if *network_role != NetworkRole::Client {
+                        continue;
+                    }
+                    
                     // Update positions for all peers
                     for peer_state in peers.iter() {
                         for (_, peer_id, mut transform) in players.iter_mut() {
@@ -415,8 +434,11 @@ impl Plugin for NetGamePlugin {
                 )
                     .run_if(resource_equals(NetworkRole::ListenServer)),
                 // Client-only systems: only run when acting as a client
-                (send_client_input, receive_host_messages)
-                    .run_if(resource_equals(NetworkRole::Client)),
+                send_client_input.run_if(resource_equals(NetworkRole::Client)),
+                // Systems that must run for both clients and listen servers
+                receive_host_messages.run_if(|role: Res<NetworkRole>| {
+                    matches!(*role, NetworkRole::Client | NetworkRole::ListenServer)
+                }),
             )
                 .run_if(in_state(AppState::InGame)),
         );
