@@ -67,10 +67,7 @@ fn handle_net_events(
             }
             NetEvent::Connected => {
                 // If we're not already a ListenServer, we're a Client
-                let is_listen_server = network_role
-                    .is_some_and(|r| *r == net_game::NetworkRole::ListenServer);
-                
-                if !is_listen_server {
+                if !network_role.is_some_and(|r| *r == net_game::NetworkRole::ListenServer) {
                     commands.insert_resource(net_game::NetworkRole::Client);
                 }
                 
