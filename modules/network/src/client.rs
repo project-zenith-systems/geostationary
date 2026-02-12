@@ -20,8 +20,8 @@ pub(crate) async fn run_client(
 ) {
     if let Err(e) = run_client_inner(addr, &event_tx, client_msg_rx, cancel_token).await {
         let reason = format!("Client error: {e}");
-        let _ = event_tx.send(NetEvent::Disconnected { reason: reason.clone() });
-        let _ = event_tx.send(NetEvent::Error(reason));
+        let _ = event_tx.send(NetEvent::Error(reason.clone()));
+        let _ = event_tx.send(NetEvent::Disconnected { reason });
     }
 }
 
