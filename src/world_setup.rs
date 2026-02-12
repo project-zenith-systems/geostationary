@@ -1,11 +1,9 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use physics::{Collider, GravityScale, LockedAxes, Restitution, RigidBody};
-use things::Thing;
+use physics::{Collider, Restitution, RigidBody};
 use tiles::{TileKind, Tilemap};
 
 use crate::app_state::AppState;
-use crate::creatures::{Creature, MovementSpeed, PlayerControlled};
 
 /// System that sets up the world when entering InGame state.
 /// Spawns a 12x10 room with walls and internal obstacles for collision testing.
@@ -51,30 +49,7 @@ pub fn setup_world(
         DespawnOnExit(AppState::InGame),
     ));
 
-    // Spawn player character with a capsule mesh on a walkable floor tile
-    // Capsule3d::new(0.3, 1.0) has total height = 1.0 + 2*0.3 = 1.6
-    // Position at y = 0.86 so capsule bottom (0.06) clears floor surface (0.05)
-    let player_mesh = meshes.add(Capsule3d::new(0.3, 1.0));
-    let player_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.2, 0.5, 0.8),
-        ..default()
-    });
-
-    commands.spawn((
-        Mesh3d(player_mesh),
-        MeshMaterial3d(player_material),
-        Transform::from_xyz(6.0, 0.86, 5.0),
-        // Dynamic (not Kinematic) because Kinematic bodies don't receive collision response
-        RigidBody::Dynamic,
-        Collider::capsule(0.3, 1.0),
-        LockedAxes::ROTATION_LOCKED.lock_translation_y(),
-        GravityScale(0.0),
-        PlayerControlled,
-        Creature,
-        MovementSpeed::default(),
-        Thing,
-        DespawnOnExit(AppState::InGame),
-    ));
+    // Player capsule spawn removed - now handled by net_game.rs systems
 
     // Spawn a bouncing ball above the floor
     // Position it at y=5.0 so it has room to fall and bounce

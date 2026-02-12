@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use physics::LinearVelocity;
 
 use crate::app_state::AppState;
+use crate::net_game::NetworkRole;
 
 /// Marker component for creatures - entities that can move and act in the world.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
@@ -35,9 +36,18 @@ impl Plugin for CreaturesPlugin {
         app.register_type::<PlayerControlled>();
         app.add_systems(
             Update,
-            creature_movement_system.run_if(in_state(AppState::InGame)),
+            creature_movement_system.run_if(is_listen_server_in_game),
         );
     }
+}
+
+/// Run condition that checks if we're in game and running as a listen server.
+fn is_listen_server_in_game(
+    state: Res<State<AppState>>,
+    network_role: Option<Res<NetworkRole>>,
+) -> bool {
+    *state.get() == AppState::InGame
+        && network_role.is_some_and(|role| *role == NetworkRole::ListenServer)
 }
 
 #[allow(clippy::type_complexity)]
