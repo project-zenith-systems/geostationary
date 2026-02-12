@@ -16,6 +16,10 @@ use crate::config;
 use crate::protocol::{decode, encode, PeerMessage};
 use crate::runtime::ServerCommand;
 
+/// Bounded channel buffer size per peer to prevent memory exhaustion from slow peers.
+/// Allows brief bursts while providing backpressure.
+const PER_PEER_BUFFER_SIZE: usize = 100;
+
 pub(crate) async fn run_server(
     port: u16,
     event_tx: mpsc::UnboundedSender<NetEvent>,
@@ -43,9 +47,6 @@ async fn run_server_inner(
 
     // Shared state for peer ID assignment and per-peer write channels
     let next_peer_id = Arc::new(AtomicU64::new(1));
-    // Bounded channels prevent slow/stuck peers from consuming unbounded memory.
-    // Buffer size of 100 messages per peer allows brief bursts while providing backpressure.
-    const PER_PEER_BUFFER_SIZE: usize = 100;
     let peer_senders: Arc<tokio::sync::Mutex<HashMap<PeerId, mpsc::Sender<Bytes>>>> = 
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
@@ -210,7 +211,13 @@ async fn run_server_inner(
                                     peer_cancel.cancel();
 
                                     // Wait for both tasks to complete (prevents events after disconnect)
-                                    let _ = tokio::join!(read_handle, write_handle);
+                                    let (read_result, write_result) = tokio::join!(read_handle, write_handle);
+                                    if let Err(e) = read_result {
+                                        log::warn!("Read task for peer {} panicked: {}", peer_id.0, e);
+                                    }
+                                    if let Err(e) = write_result {
+                                        log::warn!("Write task for peer {} panicked: {}", peer_id.0, e);
+                                    }
 
                                     // Cleanup: remove peer sender and emit disconnect event
                                     {
