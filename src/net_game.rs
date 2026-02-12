@@ -119,11 +119,16 @@ fn handle_peer_connected(
                 );
             }
 
-            // Broadcast PeerJoined for the new peer to all existing peers
-            sender.broadcast(&HostMessage::PeerJoined {
-                id: *id,
-                position: spawn_pos.into(),
-            });
+            // Send PeerJoined for the new peer to all existing peers (not the new peer itself)
+            for (peer_id, _) in existing_peers.iter() {
+                sender.send_to(
+                    peer_id.0,
+                    &HostMessage::PeerJoined {
+                        id: *id,
+                        position: spawn_pos.into(),
+                    },
+                );
+            }
         }
     }
 }
@@ -255,7 +260,7 @@ fn receive_host_messages(
         if let NetEvent::HostMessageReceived(message) = event {
             match message {
                 HostMessage::Welcome { peer_id } => {
-                    // Store our local peer ID
+                    // Store our local peer ID (only set once on initial connection)
                     if local_id.is_none() {
                         commands.insert_resource(LocalPeerId(*peer_id));
                     }
