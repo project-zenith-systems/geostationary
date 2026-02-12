@@ -79,16 +79,13 @@ async fn run_client_inner(
     let mut framed_read = FramedRead::new(recv_stream, LengthDelimitedCodec::new());
     let mut framed_write = FramedWrite::new(send_stream, LengthDelimitedCodec::new());
 
-    let event_tx_read = event_tx.clone();
-    let event_tx_write = event_tx.clone();
-    let cancel_token_read = cancel_token.clone();
-    let cancel_token_write = cancel_token.clone();
-
     // Create per-client cancellation token to coordinate shutdown
     let client_cancel = CancellationToken::new();
 
     // Spawn read loop
     let client_cancel_read = client_cancel.clone();
+    let event_tx_read = event_tx.clone();
+    let cancel_token_read = cancel_token.clone();
     let read_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -129,6 +126,7 @@ async fn run_client_inner(
 
     // Spawn write loop
     let client_cancel_write = client_cancel.clone();
+    let cancel_token_write = cancel_token.clone();
     let write_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -166,8 +164,12 @@ async fn run_client_inner(
         }
     });
 
-    // Wait for any task to complete or connection to close, then cancel client tasks
+    // Wait for any task to complete, connection to close, or cancellation
     let reason = tokio::select! {
+        _ = cancel_token.cancelled() => {
+            log::info!("Client disconnect requested");
+            "Disconnect requested"
+        }
         _ = &mut read_handle => {
             log::debug!("Read task completed");
             "Read stream closed"
