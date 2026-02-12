@@ -7,6 +7,10 @@ use things::Thing;
 use crate::app_state::AppState;
 use crate::creatures::{Creature, MovementSpeed, PlayerControlled};
 
+/// Network update rate in Hz (updates per second).
+const NETWORK_UPDATE_RATE: f32 = 30.0;
+const NETWORK_UPDATE_INTERVAL: f32 = 1.0 / NETWORK_UPDATE_RATE;
+
 /// Resource to track the network role of this instance.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkRole {
@@ -29,40 +33,76 @@ pub struct LocalPeerId(pub PeerId);
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NetworkPeerId(pub PeerId);
 
-/// System that spawns the host player when entering InGame as a ListenServer.
-/// Runs on OnEnter(InGame) when NetworkRole is ListenServer.
+/// Timer for throttling state broadcasts from the server.
+#[derive(Resource)]
+struct StateBroadcastTimer(Timer);
+
+impl Default for StateBroadcastTimer {
+    fn default() -> Self {
+        Self(Timer::from_seconds(NETWORK_UPDATE_INTERVAL, TimerMode::Repeating))
+    }
+}
+
+/// Timer for throttling client input sends.
+#[derive(Resource)]
+struct InputSendTimer(Timer);
+
+impl Default for InputSendTimer {
+    fn default() -> Self {
+        Self(Timer::from_seconds(NETWORK_UPDATE_INTERVAL, TimerMode::Repeating))
+    }
+}
+
+/// System that spawns the host player when the host connects to itself.
+/// The host player uses the PeerId assigned by the server (typically PeerId(1)).
+/// This system is triggered by PeerConnected events on the ListenServer.
 fn spawn_host_player(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut messages: MessageReader<NetEvent>,
     network_role: Res<NetworkRole>,
+    local_peer_id: Option<Res<LocalPeerId>>,
+    existing_players: Query<&NetworkPeerId, With<PlayerControlled>>,
 ) {
     if *network_role != NetworkRole::ListenServer {
         return;
     }
 
-    // Spawn host player with PeerId(0)
-    let player_mesh = meshes.add(Capsule3d::new(0.3, 1.0));
-    let player_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.2, 0.5, 0.8),
-        ..default()
-    });
+    // Check if we already have a host player
+    if !existing_players.is_empty() {
+        return;
+    }
 
-    commands.spawn((
-        Mesh3d(player_mesh),
-        MeshMaterial3d(player_material),
-        Transform::from_xyz(6.0, 0.86, 5.0),
-        RigidBody::Dynamic,
-        Collider::capsule(0.3, 1.0),
-        LockedAxes::ROTATION_LOCKED.lock_translation_y(),
-        GravityScale(0.0),
-        PlayerControlled,
-        Creature,
-        MovementSpeed::default(),
-        NetworkPeerId(PeerId(0)),
-        Thing,
-        DespawnOnExit(AppState::InGame),
-    ));
+    for event in messages.read() {
+        // When the host connects to itself, spawn the host player with the assigned PeerId
+        if let NetEvent::Connected = event {
+            // Use the LocalPeerId if available, otherwise wait for Welcome message
+            if let Some(local_id) = local_peer_id {
+                let player_mesh = meshes.add(Capsule3d::new(0.3, 1.0));
+                let player_material = materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.2, 0.5, 0.8),
+                    ..default()
+                });
+
+                commands.spawn((
+                    Mesh3d(player_mesh),
+                    MeshMaterial3d(player_material),
+                    Transform::from_xyz(6.0, 0.86, 5.0),
+                    RigidBody::Dynamic,
+                    Collider::capsule(0.3, 1.0),
+                    LockedAxes::ROTATION_LOCKED.lock_translation_y(),
+                    GravityScale(0.0),
+                    PlayerControlled,
+                    Creature,
+                    MovementSpeed::default(),
+                    NetworkPeerId(local_id.0),
+                    Thing,
+                    DespawnOnExit(AppState::InGame),
+                ));
+            }
+        }
+    }
 }
 
 /// System that handles new peer connections.
@@ -107,6 +147,15 @@ fn handle_peer_connected(
 
             // Send Welcome message to the new peer
             sender.send_to(*id, &HostMessage::Welcome { peer_id: *id });
+
+            // Send PeerJoined for the new peer itself so they spawn their own entity
+            sender.send_to(
+                *id,
+                &HostMessage::PeerJoined {
+                    id: *id,
+                    position: spawn_pos.into(),
+                },
+            );
 
             // Send PeerJoined for all existing peers to the new peer
             for (peer_id, transform) in existing_peers.iter() {
@@ -191,13 +240,21 @@ fn apply_remote_input(
 
 /// System that broadcasts state updates to all peers.
 /// Collects all player positions and sends StateUpdate via NetServerSender.
+/// Throttled to NETWORK_UPDATE_RATE to reduce bandwidth usage.
 fn broadcast_state(
+    time: Res<Time>,
+    mut timer: ResMut<StateBroadcastTimer>,
     server_sender: Option<Res<NetServerSender>>,
     players: Query<(&NetworkPeerId, &Transform, &LinearVelocity), With<Creature>>,
 ) {
     let Some(sender) = server_sender else {
         return;
     };
+
+    // Throttle state broadcasts to NETWORK_UPDATE_RATE
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
 
     let peers: Vec<PeerState> = players
         .iter()
@@ -215,13 +272,21 @@ fn broadcast_state(
 
 /// System that sends client input to the server.
 /// Reads keyboard and sends PeerMessage::Input via NetClientSender.
+/// Throttled to NETWORK_UPDATE_RATE to reduce network traffic.
 fn send_client_input(
+    time: Res<Time>,
+    mut timer: ResMut<InputSendTimer>,
     keyboard: Res<ButtonInput<KeyCode>>,
     client_sender: Option<Res<NetClientSender>>,
 ) {
     let Some(sender) = client_sender else {
         return;
     };
+
+    // Throttle input sends to NETWORK_UPDATE_RATE
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
 
     let mut direction = Vec3::ZERO;
 
@@ -238,10 +303,12 @@ fn send_client_input(
         direction.x += 1.0;
     }
 
-    // Always send input, even if it's zero (to stop movement)
-    sender.send(&PeerMessage::Input {
+    // Send input to server. Log if the send buffer is full.
+    if !sender.send(&PeerMessage::Input {
         direction: direction.into(),
-    });
+    }) {
+        warn!("Failed to send client input: send buffer full or closed");
+    }
 }
 
 /// System that receives host messages and updates client state.
@@ -260,10 +327,9 @@ fn receive_host_messages(
         if let NetEvent::HostMessageReceived(message) = event {
             match message {
                 HostMessage::Welcome { peer_id } => {
-                    // Store our local peer ID (only set once on initial connection)
-                    if local_id.is_none() {
-                        commands.insert_resource(LocalPeerId(*peer_id));
-                    }
+                    // Always update our local peer ID when receiving Welcome
+                    // This ensures we have the correct ID even after reconnecting
+                    commands.insert_resource(LocalPeerId(*peer_id));
                 }
                 HostMessage::PeerJoined { id, position } => {
                     // Check if this entity already exists
@@ -333,10 +399,12 @@ pub struct NetGamePlugin;
 impl Plugin for NetGamePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetworkRole>();
-        app.add_systems(OnEnter(AppState::InGame), spawn_host_player);
+        app.init_resource::<StateBroadcastTimer>();
+        app.init_resource::<InputSendTimer>();
         app.add_systems(
             Update,
             (
+                spawn_host_player,
                 handle_peer_connected,
                 handle_peer_disconnected,
                 apply_remote_input,
@@ -346,5 +414,70 @@ impl Plugin for NetGamePlugin {
             )
                 .run_if(in_state(AppState::InGame)),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_network_role_default() {
+        let role = NetworkRole::default();
+        assert_eq!(role, NetworkRole::None);
+    }
+
+    #[test]
+    fn test_network_role_equality() {
+        assert_eq!(NetworkRole::None, NetworkRole::None);
+        assert_eq!(NetworkRole::ListenServer, NetworkRole::ListenServer);
+        assert_eq!(NetworkRole::Client, NetworkRole::Client);
+        assert_ne!(NetworkRole::None, NetworkRole::ListenServer);
+        assert_ne!(NetworkRole::ListenServer, NetworkRole::Client);
+        assert_ne!(NetworkRole::Client, NetworkRole::None);
+    }
+
+    #[test]
+    fn test_local_peer_id_construction() {
+        let peer_id = PeerId(42);
+        let local_peer_id = LocalPeerId(peer_id);
+        assert_eq!(local_peer_id.0, peer_id);
+    }
+
+    #[test]
+    fn test_network_peer_id_construction() {
+        let peer_id = PeerId(123);
+        let network_peer_id = NetworkPeerId(peer_id);
+        assert_eq!(network_peer_id.0, peer_id);
+    }
+
+    #[test]
+    fn test_network_peer_id_equality() {
+        let peer_id1 = NetworkPeerId(PeerId(1));
+        let peer_id2 = NetworkPeerId(PeerId(1));
+        let peer_id3 = NetworkPeerId(PeerId(2));
+        
+        assert_eq!(peer_id1, peer_id2);
+        assert_ne!(peer_id1, peer_id3);
+    }
+
+    #[test]
+    fn test_state_broadcast_timer_default() {
+        let timer = StateBroadcastTimer::default();
+        assert!(!timer.0.finished());
+        assert_eq!(timer.0.mode(), TimerMode::Repeating);
+    }
+
+    #[test]
+    fn test_input_send_timer_default() {
+        let timer = InputSendTimer::default();
+        assert!(!timer.0.finished());
+        assert_eq!(timer.0.mode(), TimerMode::Repeating);
+    }
+
+    #[test]
+    fn test_network_update_rate_constants() {
+        // Verify that NETWORK_UPDATE_INTERVAL is the inverse of NETWORK_UPDATE_RATE
+        assert!((NETWORK_UPDATE_INTERVAL * NETWORK_UPDATE_RATE - 1.0).abs() < 0.0001);
     }
 }

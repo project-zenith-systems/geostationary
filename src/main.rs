@@ -70,13 +70,15 @@ fn handle_net_events(
                 if !network_role.is_some_and(|r| *r == net_game::NetworkRole::ListenServer) {
                     commands.insert_resource(net_game::NetworkRole::Client);
                 }
-                
+
                 next_state.set(app_state::AppState::InGame);
             }
             NetEvent::Disconnected { .. } => {
-                // Reset NetworkRole to None when disconnected
+                // Reset NetworkRole to None when disconnected and return to the main menu
                 commands.insert_resource(net_game::NetworkRole::None);
                 commands.remove_resource::<net_game::LocalPeerId>();
+                next_state.set(app_state::AppState::MainMenu);
+                menu_events.write(MenuEvent::Title);
             }
             NetEvent::Error(msg) => {
                 warn!("Network error: {msg}");
