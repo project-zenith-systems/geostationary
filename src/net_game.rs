@@ -83,7 +83,11 @@ fn spawn_host_player(
     }
 
     // No existing entity for this peer. This shouldn't happen since handle_peer_connected
-    // should have already spawned it, but this is a safety fallback.
+    // should have already spawned it when the peer connected.
+    warn!(
+        "spawn_host_player: No entity found for local peer {:?}. Waiting for handle_peer_connected to spawn it.",
+        local_id.0
+    );
 }
 
 /// System that handles new peer connections.
@@ -387,7 +391,7 @@ impl Plugin for NetGamePlugin {
         app.add_systems(
             Update,
             (
-                // Runs for any in-game role so the local player is tagged
+                // Tags the local player entity with PlayerControlled when running as ListenServer
                 spawn_host_player,
                 // Server-only systems: only run when acting as a listen server
                 (
