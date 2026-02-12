@@ -192,10 +192,10 @@ fn handle_peer_disconnected(
 
     for event in messages.read() {
         if let NetEvent::PeerDisconnected { id } = event {
-            // Find and despawn the entity
+            // Find and despawn the entity (no children, so despawn() is sufficient)
             for (entity, peer_id) in peers.iter() {
                 if peer_id.0 == *id {
-                    commands.entity(entity).despawn_recursive();
+                    commands.entity(entity).despawn();
                     break;
                 }
             }
@@ -382,10 +382,10 @@ fn receive_host_messages(
                         continue;
                     }
                     
-                    // Find and despawn the entity
+                    // Find and despawn the entity (no children, so despawn() is sufficient)
                     for (entity, peer_id, _) in players.iter() {
                         if peer_id.0 == *id {
-                            commands.entity(entity).despawn_recursive();
+                            commands.entity(entity).despawn();
                             break;
                         }
                     }

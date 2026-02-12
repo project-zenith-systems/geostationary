@@ -98,7 +98,7 @@ async fn run_server_inner(
                             };
 
                             match accept_result {
-                                Ok((recv_stream, send_stream)) => {
+                                Ok((send_stream, recv_stream)) => {
                                     // Wrap streams with LengthDelimitedCodec
                                     let mut framed_read = FramedRead::new(recv_stream, LengthDelimitedCodec::new());
                                     let mut framed_write = FramedWrite::new(send_stream, LengthDelimitedCodec::new());
@@ -122,7 +122,7 @@ async fn run_server_inner(
 
                                     // Spawn per-peer read loop
                                     let peer_cancel_read = peer_cancel.clone();
-                                    let read_handle = tokio::spawn(async move {
+                                    let mut read_handle = tokio::spawn(async move {
                                         loop {
                                             tokio::select! {
                                                 _ = cancel_token_read.cancelled() => {
@@ -165,7 +165,7 @@ async fn run_server_inner(
 
                                     // Spawn per-peer write loop
                                     let peer_cancel_write = peer_cancel.clone();
-                                    let write_handle = tokio::spawn(async move {
+                                    let mut write_handle = tokio::spawn(async move {
                                         loop {
                                             tokio::select! {
                                                 _ = cancel_token_write.cancelled() => {
