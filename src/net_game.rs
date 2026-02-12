@@ -195,7 +195,7 @@ fn handle_peer_disconnected(
             // Find and despawn the entity
             for (entity, peer_id) in peers.iter() {
                 if peer_id.0 == *id {
-                    commands.entity(entity).despawn_recursive();
+                    commands.entity(entity).despawn();
                     break;
                 }
             }
@@ -385,7 +385,7 @@ fn receive_host_messages(
                     // Find and despawn the entity
                     for (entity, peer_id, _) in players.iter() {
                         if peer_id.0 == *id {
-                            commands.entity(entity).despawn_recursive();
+                            commands.entity(entity).despawn();
                             break;
                         }
                     }
