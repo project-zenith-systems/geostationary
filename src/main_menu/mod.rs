@@ -27,6 +27,7 @@ pub enum MenuEvent {
     Title,
     Settings,
     Play,
+    Join,
     Quit,
 }
 
@@ -86,6 +87,14 @@ fn menu_message_reader(
                 net_commands.write(NetCommand::Host {
                     port: config.network.port,
                 });
+                MenuEventResult::ReplaceChildren(loading_screen::spawn(
+                    &mut commands,
+                    theme.as_ref(),
+                ))
+            }
+            MenuEvent::Join => {
+                let addr = ([127, 0, 0, 1], config.network.port).into();
+                net_commands.write(NetCommand::Connect { addr });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,
                     theme.as_ref(),
