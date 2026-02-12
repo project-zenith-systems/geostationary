@@ -223,6 +223,16 @@ at tier 1.
   correctness is immediately visible when you run the game.
 - **Trivial getters and constructors.** If a function does nothing interesting,
   a test for it is just noise.
+- **Echo tests.** A test that constructs a value and asserts the fields match
+  the literals it just wrote is testing the compiler, not your code. Every test
+  must follow **Arrange–Act–Assert (AAA)**: set up inputs (arrange), exercise
+  a real behaviour (act), and check an observable outcome (assert). If the
+  "act" step is just construction, and the "assert" step reads back the same
+  literals, delete the test. Examples of tests that should not exist:
+  - `let x = Foo { speed: 5.0 }; assert_eq!(x.speed, 5.0);`
+  - `let c = Creature::default(); assert!(matches!(c, Creature));` (unit struct, always true)
+  - `assert_eq!(NetworkRole::None, NetworkRole::None);` (testing derived `PartialEq`)
+  - Constructing enum variants without asserting anything
 
 
 ## Test organisation

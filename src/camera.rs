@@ -94,23 +94,6 @@ fn camera_follow_system(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_camera_config_default() {
-        let config = CameraConfig::default();
-        assert_eq!(config.follow_speed, 2.0);
-        assert_eq!(config.offset, Vec3::new(0.0, 10.0, 8.0));
-    }
-
-    #[test]
-    fn test_camera_config_custom() {
-        let config = CameraConfig {
-            follow_speed: 5.0,
-            offset: Vec3::new(0.0, 15.0, 10.0),
-        };
-        assert_eq!(config.follow_speed, 5.0);
-        assert_eq!(config.offset, Vec3::new(0.0, 15.0, 10.0));
-    }
-
     /// Verifies that camera_follow_system moves the camera toward a
     /// PlayerControlled entity's position + offset. Uses a very high
     /// follow_speed so even a sub-millisecond delta clamps the lerp to 1.0,

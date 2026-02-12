@@ -298,21 +298,3 @@ async fn run_server_inner(
     let _ = event_tx.send(NetEvent::HostingStopped);
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_peer_id_incrementing() {
-        let next_peer_id = Arc::new(AtomicU64::new(1));
-        
-        let id1 = PeerId(next_peer_id.fetch_add(1, Ordering::SeqCst));
-        let id2 = PeerId(next_peer_id.fetch_add(1, Ordering::SeqCst));
-        let id3 = PeerId(next_peer_id.fetch_add(1, Ordering::SeqCst));
-        
-        assert_eq!(id1, PeerId(1));
-        assert_eq!(id2, PeerId(2));
-        assert_eq!(id3, PeerId(3));
-    }
-}

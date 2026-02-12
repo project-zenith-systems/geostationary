@@ -382,25 +382,4 @@ mod tests {
         assert!(!sender.send(&message), "Second send should fail when buffer full");
     }
 
-    #[test]
-    fn test_new_net_event_variants() {
-        // Test that all new event variants can be constructed
-        let _event1 = NetEvent::HostMessageReceived(HostMessage::Welcome {
-            peer_id: PeerId(1),
-        });
-
-        let _event2 = NetEvent::PeerMessageReceived {
-            from: PeerId(2),
-            message: PeerMessage::Input {
-                direction: [0.0, 0.0, 0.0],
-            },
-        };
-
-        let _event3 = NetEvent::PeerConnected {
-            id: PeerId(3),
-            addr: "127.0.0.1:8080".parse().unwrap(),
-        };
-
-        let _event4 = NetEvent::PeerDisconnected { id: PeerId(4) };
-    }
 }

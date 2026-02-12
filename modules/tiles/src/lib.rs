@@ -273,13 +273,4 @@ mod tests {
         assert_eq!(tiles[2], (IVec2::new(0, 1), TileKind::Floor));
         assert_eq!(tiles[3], (IVec2::new(1, 1), TileKind::Wall));
     }
-
-    #[test]
-    fn test_tile_component() {
-        let tile = Tile {
-            position: IVec2::new(5, 10),
-        };
-        assert_eq!(tile.position.x, 5);
-        assert_eq!(tile.position.y, 10);
-    }
 }

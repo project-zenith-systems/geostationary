@@ -84,32 +84,3 @@ fn creature_movement_system(
         velocity.z = desired.z;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_creature_component_default() {
-        let creature = Creature::default();
-        assert!(matches!(creature, Creature));
-    }
-
-    #[test]
-    fn test_movement_speed_default() {
-        let speed = MovementSpeed::default();
-        assert_eq!(speed.speed, 3.0);
-    }
-
-    #[test]
-    fn test_movement_speed_custom() {
-        let speed = MovementSpeed { speed: 5.0 };
-        assert_eq!(speed.speed, 5.0);
-    }
-
-    #[test]
-    fn test_player_controlled_component_default() {
-        let player_controlled = PlayerControlled::default();
-        assert!(matches!(player_controlled, PlayerControlled));
-    }
-}

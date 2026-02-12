@@ -110,13 +110,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_network_tasks_default() {
-        let tasks = NetworkTasks::default();
-        assert!(!tasks.is_hosting());
-        assert!(!tasks.is_connected());
-    }
-
-    #[test]
     fn test_is_hosting() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();

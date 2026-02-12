@@ -183,6 +183,14 @@ issue automatically (see `README.md` for format details).
    never directly into `main`. The plan branch is created automatically
    when the plan PR merges.
 
+8. **Tests follow the testing strategy.** Any tests added or modified by a
+   task must follow [docs/testing-strategy.md](testing-strategy.md). In
+   particular, every test must use **Arrange–Act–Assert**: set up state,
+   exercise a behaviour, and check an outcome. Do not commit echo tests
+   that only construct a value and read its fields back — these test the
+   compiler, not the code. See the "What not to test" section of the
+   testing strategy for the full list of anti-patterns.
+
 ### How to decompose a plan
 
 Walk the layer participation table bottom-up:
