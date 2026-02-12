@@ -53,6 +53,10 @@ impl Default for InputSendTimer {
     }
 }
 
+/// Tracks whether we've already warned about missing host player to prevent log spam.
+#[derive(Resource, Default)]
+struct HostPlayerWarned(bool);
+
 /// System that ensures the host player is correctly spawned/tagged for the local peer.
 /// The host player uses the PeerId assigned by the server (typically PeerId(1)).
 /// This system runs on the ListenServer whenever a LocalPeerId exists.
@@ -60,7 +64,8 @@ fn spawn_host_player(
     mut commands: Commands,
     network_role: Res<NetworkRole>,
     local_peer_id: Option<Res<LocalPeerId>>,
-    mut existing_players: Query<(Entity, &NetworkPeerId, Option<&PlayerControlled>)>,
+    players: Query<(Entity, &NetworkPeerId, Option<&PlayerControlled>)>,
+    mut warned: ResMut<HostPlayerWarned>,
 ) {
     if *network_role != NetworkRole::ListenServer {
         return;
@@ -72,22 +77,28 @@ fn spawn_host_player(
     };
 
     // Look for an existing entity for this peer and ensure it is player-controlled.
-    for (entity, network_peer_id, player_controlled) in existing_players.iter_mut() {
+    for (entity, network_peer_id, player_controlled) in players.iter() {
         if network_peer_id.0 == local_id.0 {
             // If the entity exists but isn't yet marked as player-controlled, tag it now.
             if player_controlled.is_none() {
                 commands.entity(entity).insert(PlayerControlled);
             }
+            // Reset the warning flag if we found the entity
+            warned.0 = false;
             return;
         }
     }
 
     // No existing entity for this peer. This shouldn't happen since handle_peer_connected
     // should have already spawned it when the peer connected.
-    warn!(
-        "spawn_host_player: No entity found for local peer {:?}. Waiting for handle_peer_connected to spawn it.",
-        local_id.0
-    );
+    // Only warn once to avoid log spam.
+    if !warned.0 {
+        warn!(
+            "spawn_host_player: No entity found for local peer {:?}. Waiting for handle_peer_connected to spawn it.",
+            local_id.0
+        );
+        warned.0 = true;
+    }
 }
 
 /// System that handles new peer connections.
@@ -388,6 +399,7 @@ impl Plugin for NetGamePlugin {
         app.init_resource::<NetworkRole>();
         app.init_resource::<StateBroadcastTimer>();
         app.init_resource::<InputSendTimer>();
+        app.init_resource::<HostPlayerWarned>();
         app.add_systems(
             Update,
             (
