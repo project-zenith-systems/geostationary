@@ -334,7 +334,7 @@ fn receive_host_messages(
                 HostMessage::PeerJoined { id, position } => {
                     // Only spawn entities on the client, not on the ListenServer
                     // (server spawns entities in handle_peer_connected)
-                    if *network_role != NetworkRole::Client {
+                    if matches!(*network_role, NetworkRole::ListenServer) {
                         continue;
                     }
                     
@@ -378,7 +378,7 @@ fn receive_host_messages(
                 HostMessage::PeerLeft { id } => {
                     // Only despawn entities on the client, not on the ListenServer
                     // (server despawns entities in handle_peer_disconnected)
-                    if *network_role != NetworkRole::Client {
+                    if matches!(*network_role, NetworkRole::ListenServer) {
                         continue;
                     }
                     
@@ -393,7 +393,7 @@ fn receive_host_messages(
                 HostMessage::StateUpdate { peers } => {
                     // Only update positions on the client, not on the ListenServer
                     // (server has authoritative positions from physics)
-                    if *network_role != NetworkRole::Client {
+                    if matches!(*network_role, NetworkRole::ListenServer) {
                         continue;
                     }
                     
