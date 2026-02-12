@@ -201,11 +201,15 @@ fn process_net_commands(
                     continue;
                 }
 
+                // Create client message channel and insert NetClientSender resource
+                let (client_msg_tx, client_msg_rx) = mpsc::unbounded_channel();
+                commands.insert_resource(NetClientSender::new(client_msg_tx));
+
                 let tx = event_tx.0.clone();
                 let addr = *addr;
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
-                let handle = runtime.spawn(client::run_client(addr, tx, token_clone));
+                let handle = runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone));
                 tasks.client_task = Some((handle, cancel_token));
             }
             NetCommand::StopHosting => {
