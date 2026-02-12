@@ -83,6 +83,8 @@ fn spawn_host_player(
             if player_controlled.is_none() {
                 commands.entity(entity).insert(PlayerControlled);
             }
+            // Reset warning flag since we found the entity
+            warned.0 = false;
             return;
         }
     }
