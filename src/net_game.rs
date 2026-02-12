@@ -55,7 +55,7 @@ impl Default for InputSendTimer {
 
 /// Tracks whether we've already warned about missing host player to prevent log spam.
 #[derive(Resource, Default)]
-struct HostPlayerWarned(bool);
+struct HostPlayerWarningIssued(bool);
 
 /// System that ensures the host player is correctly spawned/tagged for the local peer.
 /// The host player uses the PeerId assigned by the server (typically PeerId(1)).
@@ -65,7 +65,7 @@ fn spawn_host_player(
     network_role: Res<NetworkRole>,
     local_peer_id: Option<Res<LocalPeerId>>,
     players: Query<(Entity, &NetworkPeerId, Option<&PlayerControlled>)>,
-    mut warned: ResMut<HostPlayerWarned>,
+    mut warning_issued: ResMut<HostPlayerWarningIssued>,
 ) {
     if *network_role != NetworkRole::ListenServer {
         return;
@@ -84,7 +84,7 @@ fn spawn_host_player(
                 commands.entity(entity).insert(PlayerControlled);
             }
             // Reset the warning flag if we found the entity
-            warned.0 = false;
+            warning_issued.0 = false;
             return;
         }
     }
@@ -92,12 +92,12 @@ fn spawn_host_player(
     // No existing entity for this peer. This shouldn't happen since handle_peer_connected
     // should have already spawned it when the peer connected.
     // Only warn once to avoid log spam.
-    if !warned.0 {
+    if !warning_issued.0 {
         warn!(
             "spawn_host_player: No entity found for local peer {:?}. Waiting for handle_peer_connected to spawn it.",
             local_id.0
         );
-        warned.0 = true;
+        warning_issued.0 = true;
     }
 }
 
@@ -317,7 +317,7 @@ fn receive_host_messages(
     local_peer_id: Option<Res<LocalPeerId>>,
     mut players: Query<(Entity, &NetworkPeerId, &mut Transform), With<Creature>>,
 ) {
-    let mut local_id = local_peer_id.map(|id| id.0);
+    let mut current_local_id = local_peer_id.map(|id| id.0);
 
     for event in messages.read() {
         if let NetEvent::HostMessageReceived(message) = event {
@@ -327,7 +327,7 @@ fn receive_host_messages(
                     // This ensures we have the correct ID even after reconnecting
                     commands.insert_resource(LocalPeerId(*peer_id));
                     // Update the local variable so subsequent messages in this frame see the new ID
-                    local_id = Some(*peer_id);
+                    current_local_id = Some(*peer_id);
                 }
                 HostMessage::PeerJoined { id, position } => {
                     // Check if this entity already exists
@@ -335,7 +335,7 @@ fn receive_host_messages(
                     if !exists {
                         let player_mesh = meshes.add(Capsule3d::new(0.3, 1.0));
                         let player_material = materials.add(StandardMaterial {
-                            base_color: if Some(*id) == local_id {
+                            base_color: if Some(*id) == current_local_id {
                                 Color::srgb(0.2, 0.5, 0.8) // Own player
                             } else {
                                 Color::srgb(0.8, 0.5, 0.2) // Other player
@@ -362,7 +362,7 @@ fn receive_host_messages(
                         ));
 
                         // If this is our own player, add PlayerControlled so camera follows
-                        if Some(*id) == local_id {
+                        if Some(*id) == current_local_id {
                             entity_commands.insert(PlayerControlled);
                         }
                     }
@@ -399,7 +399,7 @@ impl Plugin for NetGamePlugin {
         app.init_resource::<NetworkRole>();
         app.init_resource::<StateBroadcastTimer>();
         app.init_resource::<InputSendTimer>();
-        app.init_resource::<HostPlayerWarned>();
+        app.init_resource::<HostPlayerWarningIssued>();
         app.add_systems(
             Update,
             (
