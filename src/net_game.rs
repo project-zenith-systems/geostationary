@@ -55,7 +55,7 @@ impl Default for InputSendTimer {
 
 /// Tracks whether we've already warned about missing host player to prevent log spam.
 #[derive(Resource, Default)]
-struct HostPlayerWarningIssued(bool);
+struct HasWarnedAboutMissingHostPlayer(bool);
 
 /// System that ensures the host player is correctly spawned/tagged for the local peer.
 /// The host player uses the PeerId assigned by the server (typically PeerId(1)).
@@ -64,8 +64,8 @@ fn spawn_host_player(
     mut commands: Commands,
     network_role: Res<NetworkRole>,
     local_peer_id: Option<Res<LocalPeerId>>,
-    players: Query<(Entity, &NetworkPeerId, Option<&PlayerControlled>)>,
-    mut warning_issued: ResMut<HostPlayerWarningIssued>,
+    peer_entities: Query<(Entity, &NetworkPeerId, Option<&PlayerControlled>)>,
+    mut warning_shown: ResMut<HasWarnedAboutMissingHostPlayer>,
 ) {
     if *network_role != NetworkRole::ListenServer {
         return;
@@ -77,27 +77,27 @@ fn spawn_host_player(
     };
 
     // Look for an existing entity for this peer and ensure it is player-controlled.
-    for (entity, network_peer_id, player_controlled) in players.iter() {
+    for (entity, network_peer_id, player_controlled) in peer_entities.iter() {
         if network_peer_id.0 == local_id.0 {
             // If the entity exists but isn't yet marked as player-controlled, tag it now.
             if player_controlled.is_none() {
                 commands.entity(entity).insert(PlayerControlled);
             }
             // Reset the warning flag if we found the entity
-            warning_issued.0 = false;
+            warning_shown.0 = false;
             return;
         }
     }
 
-    // No existing entity for this peer. This shouldn't happen since handle_peer_connected
-    // should have already spawned it when the peer connected.
+    // No existing entity for this peer. This shouldn't happen since the entity
+    // should be created when the peer connects.
     // Only warn once to avoid log spam.
-    if !warning_issued.0 {
+    if !warning_shown.0 {
         warn!(
-            "spawn_host_player: No entity found for local peer {:?}. Waiting for handle_peer_connected to spawn it.",
+            "No entity found for local peer {:?}. The entity should be created when the peer connects.",
             local_id.0
         );
-        warning_issued.0 = true;
+        warning_shown.0 = true;
     }
 }
 
@@ -399,7 +399,7 @@ impl Plugin for NetGamePlugin {
         app.init_resource::<NetworkRole>();
         app.init_resource::<StateBroadcastTimer>();
         app.init_resource::<InputSendTimer>();
-        app.init_resource::<HostPlayerWarningIssued>();
+        app.init_resource::<HasWarnedAboutMissingHostPlayer>();
         app.add_systems(
             Update,
             (
