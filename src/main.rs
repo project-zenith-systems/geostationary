@@ -13,6 +13,7 @@ mod camera;
 mod config;
 mod creatures;
 mod main_menu;
+mod net_game;
 mod world_setup;
 
 fn main() {
@@ -37,6 +38,7 @@ fn main() {
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(camera::CameraPlugin)
         .add_plugins(world_setup::WorldSetupPlugin)
+        .add_plugins(net_game::NetGamePlugin)
         .init_state::<app_state::AppState>()
         .add_systems(
             PreUpdate,
@@ -48,19 +50,38 @@ fn main() {
 }
 
 fn handle_net_events(
+    mut commands: Commands,
     mut messages: MessageReader<NetEvent>,
     mut net_commands: MessageWriter<NetCommand>,
     mut menu_events: MessageWriter<MenuEvent>,
     mut next_state: ResMut<NextState<app_state::AppState>>,
+    network_role: Option<Res<net_game::NetworkRole>>,
 ) {
     for event in messages.read() {
         match event {
             NetEvent::HostingStarted { port } => {
+                // Set NetworkRole to ListenServer when hosting starts
+                commands.insert_resource(net_game::NetworkRole::ListenServer);
                 let addr: SocketAddr = ([127, 0, 0, 1], *port).into();
                 net_commands.write(NetCommand::Connect { addr });
             }
             NetEvent::Connected => {
+                // If we're not already a ListenServer, we're a Client
+                let is_listen_server = network_role
+                    .as_ref()
+                    .map(|r| **r == net_game::NetworkRole::ListenServer)
+                    .unwrap_or(false);
+                
+                if !is_listen_server {
+                    commands.insert_resource(net_game::NetworkRole::Client);
+                }
+                
                 next_state.set(app_state::AppState::InGame);
+            }
+            NetEvent::Disconnected { .. } => {
+                // Reset NetworkRole to None when disconnected
+                commands.insert_resource(net_game::NetworkRole::None);
+                commands.remove_resource::<net_game::LocalPeerId>();
             }
             NetEvent::Error(msg) => {
                 warn!("Network error: {msg}");
