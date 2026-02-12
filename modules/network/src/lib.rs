@@ -121,11 +121,24 @@ impl Plugin for NetworkPlugin {
 }
 
 /// Drains events from the async mpsc channel and writes them as Bevy messages.
-fn drain_net_events(mut receiver: ResMut<NetEventReceiver>, mut writer: MessageWriter<NetEvent>) {
+fn drain_net_events(
+    mut commands: Commands,
+    mut receiver: ResMut<NetEventReceiver>,
+    mut writer: MessageWriter<NetEvent>,
+) {
     let mut count = 0;
     while count < MAX_NET_EVENTS_PER_FRAME {
         match receiver.0.try_recv() {
             Ok(event) => {
+                // Remove NetServerSender when hosting stops
+                if matches!(&event, NetEvent::HostingStopped) {
+                    commands.remove_resource::<NetServerSender>();
+                }
+                // Remove NetClientSender when disconnected
+                if matches!(&event, NetEvent::Disconnected { .. }) {
+                    commands.remove_resource::<NetClientSender>();
+                }
+                
                 writer.write(event);
                 count += 1;
             }
@@ -149,6 +162,7 @@ fn drain_net_events(mut receiver: ResMut<NetEventReceiver>, mut writer: MessageW
 
 /// Reads NetCommand Bevy messages and spawns async tasks accordingly.
 fn process_net_commands(
+    mut commands: Commands,
     mut commands_reader: MessageReader<NetCommand>,
     runtime: Res<NetworkRuntime>,
     event_tx: Res<NetEventSender>,
@@ -168,10 +182,14 @@ fn process_net_commands(
                     continue;
                 }
 
+                // Create server command channel and insert NetServerSender resource
+                let (server_cmd_tx, server_cmd_rx) = mpsc::unbounded_channel();
+                commands.insert_resource(NetServerSender::new(server_cmd_tx));
+
                 let tx = event_tx.0.clone();
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
-                let handle = runtime.spawn(server::run_server(*port, tx, token_clone));
+                let handle = runtime.spawn(server::run_server(*port, tx, server_cmd_rx, token_clone));
                 tasks.server_task = Some((handle, cancel_token));
             }
             NetCommand::Connect { addr } => {

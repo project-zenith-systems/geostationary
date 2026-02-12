@@ -7,8 +7,10 @@ edition = "2024"
 bevy = "0.18"
 quinn = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["codec"] }
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
+bytes = "1"
+futures-util = "0.3"
