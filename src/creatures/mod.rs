@@ -38,6 +38,7 @@ impl Plugin for CreaturesPlugin {
             Update,
             creature_movement_system
                 .run_if(in_state(AppState::InGame))
+                .run_if(resource_exists::<NetworkRole>)
                 .run_if(|role: Res<NetworkRole>| *role == NetworkRole::ListenServer),
         );
     }
