@@ -131,11 +131,11 @@ fn drain_net_events(
         match receiver.0.try_recv() {
             Ok(event) => {
                 // Remove NetServerSender when hosting stops
-                if matches!(event, NetEvent::HostingStopped) {
+                if matches!(&event, NetEvent::HostingStopped) {
                     commands.remove_resource::<NetServerSender>();
                 }
                 // Remove NetClientSender when disconnected
-                if matches!(event, NetEvent::Disconnected { .. }) {
+                if matches!(&event, NetEvent::Disconnected { .. }) {
                     commands.remove_resource::<NetClientSender>();
                 }
                 
