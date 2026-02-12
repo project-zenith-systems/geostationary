@@ -76,23 +76,19 @@ async fn run_server_inner(
                             let peer_id = PeerId(next_peer_id.fetch_add(1, Ordering::SeqCst));
                             log::info!("Client connected from {} with PeerId {}", addr, peer_id.0);
                             
-                            let _ = event_tx.send(NetEvent::PeerConnected {
-                                id: peer_id,
-                                addr,
-                            });
-
-                            // Open bi-directional stream (with cancellation support)
+                            // Open bi-directional stream (with cancellation support).
+                            // PeerConnected is deferred until the write channel is
+                            // registered so that game code can send messages (e.g.
+                            // Welcome) immediately upon seeing the event.
                             let accept_result = tokio::select! {
                                 result = connection.accept_bi() => result,
                                 _ = cancel_token_clone.cancelled() => {
                                     log::info!("Server shutdown while waiting for bi-directional stream from peer {}", peer_id.0);
                                     connection.close(0u32.into(), b"server shutdown");
-                                    let _ = event_tx.send(NetEvent::PeerDisconnected { id: peer_id });
                                     return;
                                 }
                                 _ = connection.closed() => {
                                     log::info!("Connection closed before bi-directional stream opened for peer {}", peer_id.0);
-                                    let _ = event_tx.send(NetEvent::PeerDisconnected { id: peer_id });
                                     return;
                                 }
                             };
@@ -106,11 +102,19 @@ async fn run_server_inner(
                                     // Create bounded channel for this peer's write loop
                                     let (write_tx, mut write_rx) = mpsc::channel::<Bytes>(PER_PEER_BUFFER_SIZE);
                                     
-                                    // Register peer sender
+                                    // Register peer sender, then announce the
+                                    // connection so game code can send messages
+                                    // (e.g. Welcome) that will be deliverable
+                                    // immediately.
                                     {
                                         let mut senders = peer_senders.lock().await;
                                         senders.insert(peer_id, write_tx);
                                     }
+
+                                    let _ = event_tx.send(NetEvent::PeerConnected {
+                                        id: peer_id,
+                                        addr,
+                                    });
 
                                     let event_tx_read = event_tx.clone();
                                     let cancel_token_read = cancel_token_clone.clone();
@@ -229,7 +233,6 @@ async fn run_server_inner(
                                 }
                                 Err(e) => {
                                     log::warn!("Failed to accept bi-directional stream from {}: {}", addr, e);
-                                    let _ = event_tx.send(NetEvent::PeerDisconnected { id: peer_id });
                                 }
                             }
                         }

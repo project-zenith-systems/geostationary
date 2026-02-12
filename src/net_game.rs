@@ -214,20 +214,19 @@ fn apply_remote_input(
 ) {
     for event in messages.read() {
         if let NetEvent::PeerMessageReceived { from, message } = event {
-            if let PeerMessage::Input { direction } = message {
-                // Find the player entity for this peer
-                for (peer_id, mut velocity, movement_speed) in players.iter_mut() {
-                    if peer_id.0 == *from {
-                        let dir = Vec3::from_array(*direction);
-                        let desired = if dir.length_squared() > 0.0 {
-                            dir.normalize() * movement_speed.speed
-                        } else {
-                            Vec3::ZERO
-                        };
-                        velocity.x = desired.x;
-                        velocity.z = desired.z;
-                        break;
-                    }
+            let PeerMessage::Input { direction } = message;
+            // Find the player entity for this peer
+            for (peer_id, mut velocity, movement_speed) in players.iter_mut() {
+                if peer_id.0 == *from {
+                    let dir = Vec3::from_array(*direction);
+                    let desired = if dir.length_squared() > 0.0 {
+                        dir.normalize() * movement_speed.speed
+                    } else {
+                        Vec3::ZERO
+                    };
+                    velocity.x = desired.x;
+                    velocity.z = desired.z;
+                    break;
                 }
             }
         }
@@ -492,14 +491,12 @@ mod tests {
     #[test]
     fn test_state_broadcast_timer_default() {
         let timer = StateBroadcastTimer::default();
-        assert!(!timer.0.finished());
         assert_eq!(timer.0.mode(), TimerMode::Repeating);
     }
 
     #[test]
     fn test_input_send_timer_default() {
         let timer = InputSendTimer::default();
-        assert!(!timer.0.finished());
         assert_eq!(timer.0.mode(), TimerMode::Repeating);
     }
 

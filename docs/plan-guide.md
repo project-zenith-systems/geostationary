@@ -65,7 +65,7 @@ initial plan.>
 1. **Observable outcomes over implementation detail.** "What done looks
    like" describes behaviour a human can verify, not code structure.
 
-2. **Scope by exclusion.** Explicitly list what is *not* in the plan.
+2. **Scope by exclusion.** Explicitly list what is _not_ in the plan.
    This is more useful than listing what is, because it prevents the
    slow expansion of "while we're here" additions.
 
@@ -97,8 +97,6 @@ When filling in the post-mortem after a plan ships, use these sections:
   original plan and why.
 - **Hurdles** — Numbered list of problems encountered, how they were
   solved, and what lesson each one taught.
-- **Remaining open issues** — Table of issues that were discovered but
-  not fixed in this plan.
 - **What went well** — Bullet points.
 - **What to do differently next time** — Bullet points.
 
@@ -169,6 +167,7 @@ issue automatically (see `README.md` for format details).
    line that names both the plan branch and the plan document. Use this exact
    format (the backtick-wrapped branch name is parsed by the `validate-pr-target`
    workflow to enforce that task PRs target the correct branch):
+
    ```
    **Plan:** `plan/<name>` · [docs/plans/<name>.md](docs/plans/<name>.md)
    ```
@@ -177,7 +176,7 @@ issue automatically (see `README.md` for format details).
    the issue title. The body below it should include:
    - What files/modules are touched
    - Bullet list of concrete changes
-   - What is explicitly *not* included (if ambiguity is likely)
+   - What is explicitly _not_ included (if ambiguity is likely)
    - Link to the plan doc (see above)
 
 7. **PRs target the plan branch.** Task PRs merge into `plan/<name>`,

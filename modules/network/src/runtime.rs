@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::{HostMessage, NetEvent, PeerMessage};
+use crate::{HostMessage, NetEvent};
 
 /// Internal commands for server message sending.
 /// Bevy → server task bridge: sent from game systems to server task.
@@ -44,14 +44,6 @@ pub(crate) struct NetEventSender(pub(crate) mpsc::UnboundedSender<NetEvent>);
 /// async → Bevy bridge: drained each frame in PreUpdate.
 #[derive(Resource)]
 pub(crate) struct NetEventReceiver(pub(crate) mpsc::UnboundedReceiver<NetEvent>);
-
-/// Server command sender: Bevy → server task for sending messages.
-#[derive(Resource, Clone)]
-pub(crate) struct ServerCommandSender(pub(crate) mpsc::UnboundedSender<ServerCommand>);
-
-/// Client message sender: Bevy → client task for sending messages.
-#[derive(Resource, Clone)]
-pub(crate) struct ClientMessageSender(pub(crate) mpsc::UnboundedSender<PeerMessage>);
 
 /// Tracks active network tasks and their cancellation tokens.
 #[derive(Resource, Default)]
