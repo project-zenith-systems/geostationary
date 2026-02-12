@@ -74,6 +74,10 @@ fn handle_net_events(
                 next_state.set(app_state::AppState::InGame);
             }
             NetEvent::Disconnected { .. } => {
+                // If we were a listen server, stop hosting
+                if network_role.is_some_and(|r| *r == net_game::NetworkRole::ListenServer) {
+                    net_commands.write(NetCommand::StopHosting);
+                }
                 // Reset NetworkRole to None when disconnected and return to the main menu
                 commands.insert_resource(net_game::NetworkRole::None);
                 commands.remove_resource::<net_game::LocalPeerId>();

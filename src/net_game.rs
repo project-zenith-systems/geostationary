@@ -53,56 +53,37 @@ impl Default for InputSendTimer {
     }
 }
 
-/// System that spawns the host player when the host connects to itself.
+/// System that ensures the host player is correctly spawned/tagged for the local peer.
 /// The host player uses the PeerId assigned by the server (typically PeerId(1)).
-/// This system is triggered by PeerConnected events on the ListenServer.
+/// This system runs on the ListenServer whenever a LocalPeerId exists.
 fn spawn_host_player(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut messages: MessageReader<NetEvent>,
     network_role: Res<NetworkRole>,
     local_peer_id: Option<Res<LocalPeerId>>,
-    existing_players: Query<&NetworkPeerId, With<PlayerControlled>>,
+    mut existing_players: Query<(Entity, &NetworkPeerId, Option<&PlayerControlled>)>,
 ) {
     if *network_role != NetworkRole::ListenServer {
         return;
     }
 
-    // Check if we already have a host player
-    if !existing_players.is_empty() {
+    // Only proceed once we know our LocalPeerId.
+    let Some(local_id) = local_peer_id else {
         return;
-    }
+    };
 
-    for event in messages.read() {
-        // When the host connects to itself, spawn the host player with the assigned PeerId
-        if let NetEvent::Connected = event {
-            // Use the LocalPeerId if available, otherwise wait for Welcome message
-            if let Some(local_id) = local_peer_id {
-                let player_mesh = meshes.add(Capsule3d::new(0.3, 1.0));
-                let player_material = materials.add(StandardMaterial {
-                    base_color: Color::srgb(0.2, 0.5, 0.8),
-                    ..default()
-                });
-
-                commands.spawn((
-                    Mesh3d(player_mesh),
-                    MeshMaterial3d(player_material),
-                    Transform::from_xyz(6.0, 0.86, 5.0),
-                    RigidBody::Dynamic,
-                    Collider::capsule(0.3, 1.0),
-                    LockedAxes::ROTATION_LOCKED.lock_translation_y(),
-                    GravityScale(0.0),
-                    PlayerControlled,
-                    Creature,
-                    MovementSpeed::default(),
-                    NetworkPeerId(local_id.0),
-                    Thing,
-                    DespawnOnExit(AppState::InGame),
-                ));
+    // Look for an existing entity for this peer and ensure it is player-controlled.
+    for (entity, network_peer_id, player_controlled) in existing_players.iter_mut() {
+        if network_peer_id.0 == local_id.0 {
+            // If the entity exists but isn't yet marked as player-controlled, tag it now.
+            if player_controlled.is_none() {
+                commands.entity(entity).insert(PlayerControlled);
             }
+            return;
         }
     }
+
+    // No existing entity for this peer. This shouldn't happen since handle_peer_connected
+    // should have already spawned it, but this is a safety fallback.
 }
 
 /// System that handles new peer connections.
@@ -321,7 +302,7 @@ fn receive_host_messages(
     local_peer_id: Option<Res<LocalPeerId>>,
     mut players: Query<(Entity, &NetworkPeerId, &mut Transform), With<Creature>>,
 ) {
-    let local_id = local_peer_id.map(|id| id.0);
+    let mut local_id = local_peer_id.map(|id| id.0);
 
     for event in messages.read() {
         if let NetEvent::HostMessageReceived(message) = event {
@@ -330,6 +311,8 @@ fn receive_host_messages(
                     // Always update our local peer ID when receiving Welcome
                     // This ensures we have the correct ID even after reconnecting
                     commands.insert_resource(LocalPeerId(*peer_id));
+                    // Update the local variable so subsequent messages in this frame see the new ID
+                    local_id = Some(*peer_id);
                 }
                 HostMessage::PeerJoined { id, position } => {
                     // Check if this entity already exists
@@ -404,13 +387,19 @@ impl Plugin for NetGamePlugin {
         app.add_systems(
             Update,
             (
+                // Runs for any in-game role so the local player is tagged
                 spawn_host_player,
-                handle_peer_connected,
-                handle_peer_disconnected,
-                apply_remote_input,
-                broadcast_state,
-                send_client_input,
-                receive_host_messages,
+                // Server-only systems: only run when acting as a listen server
+                (
+                    handle_peer_connected,
+                    handle_peer_disconnected,
+                    apply_remote_input,
+                    broadcast_state,
+                )
+                    .run_if(resource_equals(NetworkRole::ListenServer)),
+                // Client-only systems: only run when acting as a client
+                (send_client_input, receive_host_messages)
+                    .run_if(resource_equals(NetworkRole::Client)),
             )
                 .run_if(in_state(AppState::InGame)),
         );
