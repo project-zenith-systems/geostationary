@@ -71,7 +71,7 @@ fn handle_peer_connected(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut net_event_reader: MessageReader<NetEvent>,
+    mut messages: MessageReader<NetEvent>,
     server_sender: Option<Res<NetServerSender>>,
     existing_peers: Query<(&NetworkPeerId, &Transform)>,
 ) {
@@ -79,7 +79,7 @@ fn handle_peer_connected(
         return;
     };
 
-    for event in net_event_reader.read() {
+    for event in messages.read() {
         if let NetEvent::PeerConnected { id, .. } = event {
             // Spawn remote player entity
             let player_mesh = meshes.add(Capsule3d::new(0.3, 1.0));
@@ -132,7 +132,7 @@ fn handle_peer_connected(
 /// Despawns the entity and broadcasts PeerLeft.
 fn handle_peer_disconnected(
     mut commands: Commands,
-    mut net_event_reader: MessageReader<NetEvent>,
+    mut messages: MessageReader<NetEvent>,
     server_sender: Option<Res<NetServerSender>>,
     peers: Query<(Entity, &NetworkPeerId)>,
 ) {
@@ -140,7 +140,7 @@ fn handle_peer_disconnected(
         return;
     };
 
-    for event in net_event_reader.read() {
+    for event in messages.read() {
         if let NetEvent::PeerDisconnected { id } = event {
             // Find and despawn the entity
             for (entity, peer_id) in peers.iter() {
@@ -159,10 +159,10 @@ fn handle_peer_disconnected(
 /// System that applies remote input to remote player entities.
 /// Reads PeerMessageReceived events and sets LinearVelocity.
 fn apply_remote_input(
-    mut net_event_reader: MessageReader<NetEvent>,
+    mut messages: MessageReader<NetEvent>,
     mut players: Query<(&NetworkPeerId, &mut LinearVelocity, &MovementSpeed), With<Creature>>,
 ) {
-    for event in net_event_reader.read() {
+    for event in messages.read() {
         if let NetEvent::PeerMessageReceived { from, message } = event {
             if let PeerMessage::Input { direction } = message {
                 // Find the player entity for this peer
@@ -245,13 +245,13 @@ fn receive_host_messages(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut net_event_reader: MessageReader<NetEvent>,
+    mut messages: MessageReader<NetEvent>,
     local_peer_id: Option<Res<LocalPeerId>>,
     mut players: Query<(Entity, &NetworkPeerId, &mut Transform), With<Creature>>,
 ) {
     let local_id = local_peer_id.map(|id| id.0);
 
-    for event in net_event_reader.read() {
+    for event in messages.read() {
         if let NetEvent::HostMessageReceived(message) = event {
             match message {
                 HostMessage::Welcome { peer_id } => {
@@ -279,7 +279,9 @@ fn receive_host_messages(
                             Mesh3d(player_mesh),
                             MeshMaterial3d(player_material),
                             Transform::from_translation(pos),
-                            RigidBody::Kinematic, // Clients use kinematic bodies
+                            // All client-side entities use kinematic bodies because the server
+                            // is authoritative for physics. Positions are updated from server state.
+                            RigidBody::Kinematic,
                             Collider::capsule(0.3, 1.0),
                             LockedAxes::ROTATION_LOCKED.lock_translation_y(),
                             GravityScale(0.0),

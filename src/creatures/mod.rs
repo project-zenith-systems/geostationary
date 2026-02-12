@@ -36,12 +36,18 @@ impl Plugin for CreaturesPlugin {
         app.register_type::<PlayerControlled>();
         app.add_systems(
             Update,
-            creature_movement_system
-                .run_if(in_state(AppState::InGame))
-                .run_if(resource_exists::<NetworkRole>)
-                .run_if(|role: Res<NetworkRole>| *role == NetworkRole::ListenServer),
+            creature_movement_system.run_if(is_listen_server_in_game),
         );
     }
+}
+
+/// Run condition that checks if we're in game and running as a listen server.
+fn is_listen_server_in_game(
+    state: Res<State<AppState>>,
+    network_role: Option<Res<NetworkRole>>,
+) -> bool {
+    *state.get() == AppState::InGame
+        && network_role.is_some_and(|role| *role == NetworkRole::ListenServer)
 }
 
 #[allow(clippy::type_complexity)]
