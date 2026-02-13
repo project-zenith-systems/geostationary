@@ -10,6 +10,7 @@ const CONFIG_BASENAME: &str = "config";
 pub struct AppConfig {
     pub network: NetworkConfig,
     pub window: WindowConfig,
+    pub debug: DebugConfig,
 }
 
 impl Default for AppConfig {
@@ -18,6 +19,9 @@ impl Default for AppConfig {
             network: NetworkConfig { port: 7777 },
             window: WindowConfig {
                 title: "Geostationary".to_string(),
+            },
+            debug: DebugConfig {
+                physics_debug: false,
             },
         }
     }
@@ -31,6 +35,11 @@ pub struct NetworkConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WindowConfig {
     pub title: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DebugConfig {
+    pub physics_debug: bool,
 }
 
 pub fn load_config() -> AppConfig {
@@ -49,6 +58,7 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
     let builder = Config::builder()
         .set_default("network.port", defaults.network.port)?
         .set_default("window.title", defaults.window.title)?
+        .set_default("debug.physics_debug", defaults.debug.physics_debug)?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
         .add_source(Environment::with_prefix("GEOSTATIONARY").separator("__"));
