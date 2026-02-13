@@ -65,3 +65,28 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
 
     builder.build()?.try_deserialize()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_config_default() {
+        let config = AppConfig::default();
+        assert_eq!(config.network.port, 7777);
+        assert_eq!(config.window.title, "Geostationary");
+        assert_eq!(config.debug.physics_debug, false);
+    }
+
+    #[test]
+    fn test_debug_config_default() {
+        let config = DebugConfig { physics_debug: false };
+        assert_eq!(config.physics_debug, false);
+    }
+
+    #[test]
+    fn test_debug_config_enabled() {
+        let config = DebugConfig { physics_debug: true };
+        assert_eq!(config.physics_debug, true);
+    }
+}
