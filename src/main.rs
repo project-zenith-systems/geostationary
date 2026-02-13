@@ -1,8 +1,6 @@
-use std::net::SocketAddr;
-
 use bevy::prelude::*;
 use main_menu::{MainMenuPlugin, MenuEvent};
-use network::{ClientEvent, NetCommand, NetId, NetworkPlugin, NetworkSet, ServerEvent};
+use network::NetworkPlugin;
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
@@ -14,7 +12,7 @@ mod client;
 mod config;
 mod creatures;
 mod main_menu;
-mod server;
+mod network_events;
 mod world_setup;
 
 fn main() {
@@ -39,78 +37,8 @@ fn main() {
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(camera::CameraPlugin)
         .add_plugins(world_setup::WorldSetupPlugin)
-        .add_plugins(server::ServerPlugin)
         .add_plugins(client::ClientPlugin)
+        .add_plugins(network_events::NetworkEventsPlugin)
         .init_state::<app_state::AppState>()
-        .add_systems(
-            PreUpdate,
-            (handle_server_events, handle_client_events)
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
-        )
         .run();
-}
-
-fn handle_server_events(
-    mut messages: MessageReader<ServerEvent>,
-    mut net_commands: MessageWriter<NetCommand>,
-    mut menu_events: MessageWriter<MenuEvent>,
-) {
-    for event in messages.read() {
-        match event {
-            ServerEvent::HostingStarted { port } => {
-                info!("Hosting started on port {port}, setting role to ListenServer");
-                let addr: SocketAddr = ([127, 0, 0, 1], *port).into();
-
-                info!("Connecting to self at {addr}");
-                net_commands.write(NetCommand::Connect { addr });
-            }
-            ServerEvent::Error(msg) => {
-                warn!("Network error: {msg}");
-                menu_events.write(MenuEvent::Title);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn handle_client_events(
-    mut commands: Commands,
-    mut messages: MessageReader<ClientEvent>,
-    mut net_commands: MessageWriter<NetCommand>,
-    mut menu_events: MessageWriter<MenuEvent>,
-    mut next_state: ResMut<NextState<app_state::AppState>>,
-    server: Option<Res<server::Server>>,
-) {
-    for event in messages.read() {
-        match event {
-            ClientEvent::Connected => {
-                if server.is_none() {
-                    info!("Connected to server, setting role to Client");
-                    commands.insert_resource(client::Client {
-                        local_net_id: NetId(0),
-                    });
-                } else {
-                    info!("Self-connection established (ListenServer)");
-                }
-
-                next_state.set(app_state::AppState::InGame);
-            }
-            ClientEvent::Disconnected { reason } => {
-                info!("Disconnected: {reason}");
-                if server.is_some() {
-                    net_commands.write(NetCommand::StopHosting);
-                    commands.remove_resource::<server::Server>();
-                }
-
-                next_state.set(app_state::AppState::MainMenu);
-                menu_events.write(MenuEvent::Title);
-            }
-            ClientEvent::Error(msg) => {
-                warn!("Network error: {msg}");
-                menu_events.write(MenuEvent::Title);
-            }
-            _ => {}
-        }
-    }
 }

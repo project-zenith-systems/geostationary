@@ -20,6 +20,10 @@ use runtime::{
 /// Prevents memory exhaustion if game code produces messages faster than network can send.
 const CLIENT_BUFFER_SIZE: usize = 100;
 
+/// Network update rate in Hz (updates per second).
+const NETWORK_UPDATE_RATE: f32 = 30.0;
+pub const NETWORK_UPDATE_INTERVAL: f32 = 1.0 / NETWORK_UPDATE_RATE;
+
 /// System set for network systems. Game code should read network events
 /// after `NetworkSet::Receive` and write `NetCommand` messages before
 /// `NetworkSet::Send`.
@@ -39,6 +43,36 @@ pub enum NetCommand {
     StopHosting,
     Disconnect,
 }
+
+/// Resource to track the state of the server.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Server {
+    next_net_id: u64,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self { next_net_id: 1 }
+    }
+}
+
+impl Server {
+    pub fn next_net_id(&mut self) -> NetId {
+        let id = self.next_net_id;
+        self.next_net_id += 1;
+        NetId(id)
+    }
+}
+
+/// Resource to track the state of the client.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Client {
+    pub local_net_id: NetId,
+}
+
+/// Component: which client's input controls this entity (server-side only).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ControlledByClient(pub ClientId);
 
 /// Events emitted by the server side of the network layer.
 #[derive(Message, Clone, Debug)]

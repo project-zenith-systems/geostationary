@@ -1,7 +1,7 @@
 use bevy::ecs::component::Component;
 use serde::{Deserialize, Serialize};
-use wincode::{SchemaRead, SchemaWrite};
 use wincode::config::DefaultConfig;
+use wincode::{SchemaRead, SchemaWrite};
 
 /// Unique identifier for a client in the network.
 #[derive(
