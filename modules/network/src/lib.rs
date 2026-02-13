@@ -11,13 +11,16 @@ mod runtime;
 mod server;
 
 pub use protocol::{ClientId, ClientMessage, EntityState, NetId, ServerMessage};
-use runtime::{NetEventReceiver, NetEventSender, NetworkRuntime, NetworkTasks, ServerCommand};
+use runtime::{
+    ClientEventReceiver, ClientEventSender, NetworkRuntime, NetworkTasks, ServerCommand,
+    ServerEventReceiver, ServerEventSender,
+};
 
 /// Bounded channel buffer size for client outbound messages.
 /// Prevents memory exhaustion if game code produces messages faster than network can send.
 const CLIENT_BUFFER_SIZE: usize = 100;
 
-/// System set for network systems. Game code should read `NetEvent` messages
+/// System set for network systems. Game code should read network events
 /// after `NetworkSet::Receive` and write `NetCommand` messages before
 /// `NetworkSet::Send`.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,9 +40,9 @@ pub enum NetCommand {
     Disconnect,
 }
 
-/// Events emitted by the network layer back to game code.
+/// Events emitted by the server side of the network layer.
 #[derive(Message, Clone, Debug)]
-pub enum NetEvent {
+pub enum ServerEvent {
     HostingStarted {
         port: u16,
     },
@@ -48,11 +51,6 @@ pub enum NetEvent {
         id: ClientId,
         addr: SocketAddr,
     },
-    Connected,
-    Disconnected {
-        reason: String,
-    },
-    ServerMessageReceived(ServerMessage),
     ClientMessageReceived {
         from: ClientId,
         message: ClientMessage,
@@ -60,6 +58,15 @@ pub enum NetEvent {
     ClientDisconnected {
         id: ClientId,
     },
+    Error(String),
+}
+
+/// Events emitted by the client side of the network layer.
+#[derive(Message, Clone, Debug)]
+pub enum ClientEvent {
+    Connected,
+    Disconnected { reason: String },
+    ServerMessageReceived(ServerMessage),
     Error(String),
 }
 
@@ -136,36 +143,75 @@ pub struct NetworkPlugin;
 
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (server_event_tx, server_event_rx) = mpsc::unbounded_channel();
+        let (client_event_tx, client_event_rx) = mpsc::unbounded_channel();
 
         app.insert_resource(NetworkRuntime::new());
         app.insert_resource(NetworkTasks::default());
-        app.insert_resource(NetEventSender(event_tx));
-        app.insert_resource(NetEventReceiver(event_rx));
+        app.insert_resource(ServerEventSender(server_event_tx));
+        app.insert_resource(ServerEventReceiver(server_event_rx));
+        app.insert_resource(ClientEventSender(client_event_tx));
+        app.insert_resource(ClientEventReceiver(client_event_rx));
         app.add_message::<NetCommand>();
-        app.add_message::<NetEvent>();
+        app.add_message::<ServerEvent>();
+        app.add_message::<ClientEvent>();
         app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
-        app.add_systems(PreUpdate, drain_net_events.in_set(NetworkSet::Receive));
+        app.add_systems(
+            PreUpdate,
+            (drain_server_events, drain_client_events).in_set(NetworkSet::Receive),
+        );
         app.add_systems(PreUpdate, process_net_commands.in_set(NetworkSet::Send));
     }
 }
 
-/// Drains events from the async mpsc channel and writes them as Bevy messages.
-fn drain_net_events(
+/// Drains server events from the async mpsc channel and writes them as Bevy messages.
+fn drain_server_events(
     mut commands: Commands,
-    mut receiver: ResMut<NetEventReceiver>,
-    mut writer: MessageWriter<NetEvent>,
+    mut receiver: ResMut<ServerEventReceiver>,
+    mut writer: MessageWriter<ServerEvent>,
 ) {
     let mut count = 0;
     while count < MAX_NET_EVENTS_PER_FRAME {
         match receiver.0.try_recv() {
             Ok(event) => {
                 // Remove NetServerSender when hosting stops
-                if matches!(&event, NetEvent::HostingStopped) {
+                if matches!(&event, ServerEvent::HostingStopped) {
                     commands.remove_resource::<NetServerSender>();
                 }
+
+                writer.write(event);
+                count += 1;
+            }
+            Err(_) => return, // Channel empty, no more events to process
+        }
+    }
+
+    // If we processed MAX_NET_EVENTS_PER_FRAME events, warn if there are more waiting
+    if receiver.0.is_empty() {
+        return;
+    }
+
+    if !CAP_WARNING_LOGGED.swap(true, Ordering::SeqCst) {
+        log::warn!(
+            "Hit MAX_NET_EVENTS_PER_FRAME limit of {MAX_NET_EVENTS_PER_FRAME}. \
+            Additional events will be processed next frame. \
+            This warning will only be shown once."
+        );
+    }
+}
+
+/// Drains client events from the async mpsc channel and writes them as Bevy messages.
+fn drain_client_events(
+    mut commands: Commands,
+    mut receiver: ResMut<ClientEventReceiver>,
+    mut writer: MessageWriter<ClientEvent>,
+) {
+    let mut count = 0;
+    while count < MAX_NET_EVENTS_PER_FRAME {
+        match receiver.0.try_recv() {
+            Ok(event) => {
                 // Remove NetClientSender when disconnected
-                if matches!(&event, NetEvent::Disconnected { .. }) {
+                if matches!(&event, ClientEvent::Disconnected { .. }) {
                     commands.remove_resource::<NetClientSender>();
                 }
 
@@ -195,7 +241,8 @@ fn process_net_commands(
     mut commands: Commands,
     mut commands_reader: MessageReader<NetCommand>,
     runtime: Res<NetworkRuntime>,
-    event_tx: Res<NetEventSender>,
+    server_event_tx: Res<ServerEventSender>,
+    client_event_tx: Res<ClientEventSender>,
     mut tasks: ResMut<NetworkTasks>,
 ) {
     // Clean up any finished tasks before processing new commands
@@ -206,9 +253,9 @@ fn process_net_commands(
             NetCommand::Host { port } => {
                 // Prevent duplicate hosting
                 if tasks.is_hosting() {
-                    let _ = event_tx
+                    let _ = server_event_tx
                         .0
-                        .send(NetEvent::Error("Already hosting a server".into()));
+                        .send(ServerEvent::Error("Already hosting a server".into()));
                     continue;
                 }
 
@@ -216,7 +263,7 @@ fn process_net_commands(
                 let (server_cmd_tx, server_cmd_rx) = mpsc::unbounded_channel();
                 commands.insert_resource(NetServerSender::new(server_cmd_tx));
 
-                let tx = event_tx.0.clone();
+                let tx = server_event_tx.0.clone();
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
                 let handle =
@@ -226,9 +273,9 @@ fn process_net_commands(
             NetCommand::Connect { addr } => {
                 // Prevent duplicate connections
                 if tasks.is_connected() {
-                    let _ = event_tx
+                    let _ = client_event_tx
                         .0
-                        .send(NetEvent::Error("Already connected to a server".into()));
+                        .send(ClientEvent::Error("Already connected to a server".into()));
                     continue;
                 }
 
@@ -237,7 +284,7 @@ fn process_net_commands(
                 let (client_msg_tx, client_msg_rx) = mpsc::channel(CLIENT_BUFFER_SIZE);
                 commands.insert_resource(NetClientSender::new(client_msg_tx));
 
-                let tx = event_tx.0.clone();
+                let tx = client_event_tx.0.clone();
                 let addr = *addr;
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
@@ -260,15 +307,18 @@ mod tests {
     use super::*;
 
     #[derive(Resource, Default)]
-    struct NetEventCount {
+    struct ClientEventCount {
         current: usize,
     }
 
-    fn reset_count(mut count: ResMut<NetEventCount>) {
+    fn reset_count(mut count: ResMut<ClientEventCount>) {
         count.current = 0;
     }
 
-    fn count_net_events(mut reader: MessageReader<NetEvent>, mut count: ResMut<NetEventCount>) {
+    fn count_net_events(
+        mut reader: MessageReader<ClientEvent>,
+        mut count: ResMut<ClientEventCount>,
+    ) {
         for _event in reader.read() {
             count.current += 1;
         }
@@ -282,18 +332,18 @@ mod tests {
         // Set up the channel manually
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-        app.insert_resource(NetEventReceiver(event_rx));
-        app.init_resource::<NetEventCount>();
-        app.add_message::<NetEvent>();
+        app.insert_resource(ClientEventReceiver(event_rx));
+        app.init_resource::<ClientEventCount>();
+        app.add_message::<ClientEvent>();
         app.add_systems(
             Update,
-            (reset_count, drain_net_events, count_net_events).chain(),
+            (reset_count, drain_client_events, count_net_events).chain(),
         );
 
         // Send more events than the cap
         for i in 0..(MAX_NET_EVENTS_PER_FRAME + 50) {
             event_tx
-                .send(NetEvent::Error(format!("Test event {}", i)))
+                .send(ClientEvent::Error(format!("Test event {}", i)))
                 .expect("Failed to send event");
         }
 
@@ -301,7 +351,7 @@ mod tests {
         app.update();
 
         // Read all the events that were processed
-        let count = app.world().resource::<NetEventCount>().current;
+        let count = app.world().resource::<ClientEventCount>().current;
 
         // Should have processed exactly MAX_NET_EVENTS_PER_FRAME events
         assert_eq!(
@@ -312,7 +362,7 @@ mod tests {
         // Run another frame to process remaining events
         app.update();
 
-        let count2 = app.world().resource::<NetEventCount>().current;
+        let count2 = app.world().resource::<ClientEventCount>().current;
 
         // Should have processed the remaining 50 events
         assert_eq!(count2, 50, "Should process remaining events in next frame");

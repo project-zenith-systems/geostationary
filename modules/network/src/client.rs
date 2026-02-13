@@ -8,26 +8,26 @@ use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 
-use crate::NetEvent;
+use crate::ClientEvent;
 use crate::config;
 use crate::protocol::{ClientMessage, ServerMessage, decode, encode};
 
 pub(crate) async fn run_client(
     addr: SocketAddr,
-    event_tx: mpsc::UnboundedSender<NetEvent>,
+    event_tx: mpsc::UnboundedSender<ClientEvent>,
     client_msg_rx: mpsc::Receiver<ClientMessage>,
     cancel_token: CancellationToken,
 ) {
     if let Err(e) = run_client_inner(addr, &event_tx, client_msg_rx, cancel_token).await {
         let reason = format!("Client error: {e}");
-        let _ = event_tx.send(NetEvent::Error(reason.clone()));
-        let _ = event_tx.send(NetEvent::Disconnected { reason });
+        let _ = event_tx.send(ClientEvent::Error(reason.clone()));
+        let _ = event_tx.send(ClientEvent::Disconnected { reason });
     }
 }
 
 async fn run_client_inner(
     addr: SocketAddr,
-    event_tx: &mpsc::UnboundedSender<NetEvent>,
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
     mut client_msg_rx: mpsc::Receiver<ClientMessage>,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -44,7 +44,7 @@ async fn run_client_inner(
     let connection = endpoint.connect(addr, "localhost")?.await?;
     log::info!("Connected to {addr}");
 
-    let _ = event_tx.send(NetEvent::Connected);
+    let _ = event_tx.send(ClientEvent::Connected);
 
     // Open bi-directional stream
     let open_result = tokio::select! {
@@ -52,14 +52,14 @@ async fn run_client_inner(
         _ = cancel_token.cancelled() => {
             log::info!("Client disconnect requested before opening stream");
             connection.close(0u32.into(), b"disconnect requested");
-            let _ = event_tx.send(NetEvent::Disconnected {
+            let _ = event_tx.send(ClientEvent::Disconnected {
                 reason: "Disconnect requested".into(),
             });
             return Ok(());
         }
         _ = connection.closed() => {
             log::info!("Connection closed before opening bi-directional stream");
-            let _ = event_tx.send(NetEvent::Disconnected {
+            let _ = event_tx.send(ClientEvent::Disconnected {
                 reason: "Connection closed by remote".into(),
             });
             return Ok(());
@@ -70,7 +70,7 @@ async fn run_client_inner(
         Ok(streams) => streams,
         Err(e) => {
             log::warn!("Failed to open bi-directional stream: {}", e);
-            let _ = event_tx.send(NetEvent::Disconnected {
+            let _ = event_tx.send(ClientEvent::Disconnected {
                 reason: format!("Failed to open stream: {}", e),
             });
             return Ok(());
@@ -105,7 +105,7 @@ async fn run_client_inner(
                             // Decode ServerMessage
                             match decode::<ServerMessage>(&bytes) {
                                 Ok(message) => {
-                                    let _ = event_tx_read.send(NetEvent::ServerMessageReceived(message));
+                                    let _ = event_tx_read.send(ClientEvent::ServerMessageReceived(message));
                                 }
                                 Err(e) => {
                                     log::warn!("Failed to decode message from host: {}", e);
@@ -213,7 +213,7 @@ async fn run_client_inner(
     }
 
     log::info!("Disconnected from {addr}");
-    let _ = event_tx.send(NetEvent::Disconnected {
+    let _ = event_tx.send(ClientEvent::Disconnected {
         reason: reason.into(),
     });
 

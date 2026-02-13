@@ -11,7 +11,12 @@ quinn = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 futures-util = { version = "0.3", features = ["sink"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+] }
 rcgen = "0.14"
-bincode = { version = "3" }
-bytes = "1"
+
+wincode = { version = "0.4", features = ["derive"] }
+bytes = "1.11"

@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config;
 use crate::protocol::{ClientMessage, decode, encode};
 use crate::runtime::ServerCommand;
-use crate::{ClientId, NetEvent};
+use crate::{ClientId, ServerEvent};
 
 /// Bounded channel buffer size per client to prevent memory exhaustion from slow clients.
 /// Allows brief bursts while providing backpressure.
@@ -22,19 +22,19 @@ const PER_PEER_BUFFER_SIZE: usize = 100;
 
 pub(crate) async fn run_server(
     port: u16,
-    event_tx: mpsc::UnboundedSender<NetEvent>,
+    event_tx: mpsc::UnboundedSender<ServerEvent>,
     server_cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
     cancel_token: CancellationToken,
 ) {
     if let Err(e) = run_server_inner(port, &event_tx, server_cmd_rx, cancel_token).await {
-        let _ = event_tx.send(NetEvent::Error(format!("Server error: {e}")));
-        let _ = event_tx.send(NetEvent::HostingStopped);
+        let _ = event_tx.send(ServerEvent::Error(format!("Server error: {e}")));
+        let _ = event_tx.send(ServerEvent::HostingStopped);
     }
 }
 
 async fn run_server_inner(
     port: u16,
-    event_tx: &mpsc::UnboundedSender<NetEvent>,
+    event_tx: &mpsc::UnboundedSender<ServerEvent>,
     mut server_cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -43,7 +43,7 @@ async fn run_server_inner(
     let endpoint = quinn::Endpoint::server(server_config, addr)?;
 
     log::info!("Server listening on {addr}");
-    let _ = event_tx.send(NetEvent::HostingStarted { port });
+    let _ = event_tx.send(ServerEvent::HostingStarted { port });
 
     // Shared state for client ID assignment and per-client write channels
     let next_client_id = Arc::new(AtomicU64::new(1));
@@ -111,7 +111,7 @@ async fn run_server_inner(
                                         senders.insert(client_id, write_tx);
                                     }
 
-                                    let _ = event_tx.send(NetEvent::ClientConnected {
+                                    let _ = event_tx.send(ServerEvent::ClientConnected {
                                         id: client_id,
                                         addr,
                                     });
@@ -143,7 +143,7 @@ async fn run_server_inner(
                                                             // Decode ClientMessage
                                                             match decode::<ClientMessage>(&bytes) {
                                                                 Ok(message) => {
-                                                                    let _ = event_tx_read.send(NetEvent::ClientMessageReceived {
+                                                                    let _ = event_tx_read.send(ServerEvent::ClientMessageReceived {
                                                                         from: client_id,
                                                                         message,
                                                                     });
@@ -229,7 +229,7 @@ async fn run_server_inner(
                                         senders.remove(&client_id);
                                     }
 
-                                    let _ = event_tx.send(NetEvent::ClientDisconnected { id: client_id });
+                                    let _ = event_tx.send(ServerEvent::ClientDisconnected { id: client_id });
                                 }
                                 Err(e) => {
                                     log::warn!("Failed to accept bi-directional stream from {}: {}", addr, e);
@@ -255,14 +255,14 @@ async fn run_server_inner(
                                     // 2. Client disconnections are already reported via ClientDisconnected events
                                     // 3. With bounded channels, send failures can indicate backpressure or disconnection
                                     if let Err(e) = sender.try_send(Bytes::from(bytes)) {
-                                        log::debug!("Failed to route message to client {} (buffer full or disconnecting): {}", client.0, e);
+                                        log::error!("Failed to route message to client {} (buffer full or disconnecting): {}", client.0, e);
                                     }
                                 } else {
-                                    log::debug!("Client {} not found for send_to (already disconnected)", client.0);
+                                    log::warn!("Client {} not found for send_to (already disconnected)", client.0);
                                 }
                             }
                             Err(e) => {
-                                log::warn!("Failed to encode message for client {}: {}", client.0, e);
+                                log::error!("Failed to encode message for client {}: {}", client.0, e);
                             }
                         }
                     }
@@ -277,12 +277,12 @@ async fn run_server_inner(
                                 // Disconnections are reported separately via ClientDisconnected events.
                                 for (client_id, sender) in senders.iter() {
                                     if let Err(e) = sender.try_send(bytes.clone()) {
-                                        log::debug!("Failed to broadcast to client {} (buffer full or disconnecting): {}", client_id.0, e);
+                                        log::error!("Failed to broadcast to client {} (buffer full or disconnecting): {}", client_id.0, e);
                                     }
                                 }
                             }
                             Err(e) => {
-                                log::warn!("Failed to encode broadcast message: {}", e);
+                                log::error!("Failed to encode broadcast message: {}", e);
                             }
                         }
                     }
@@ -295,6 +295,6 @@ async fn run_server_inner(
         }
     }
 
-    let _ = event_tx.send(NetEvent::HostingStopped);
+    let _ = event_tx.send(ServerEvent::HostingStopped);
     Ok(())
 }

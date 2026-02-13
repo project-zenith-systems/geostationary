@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use network::{
-    ClientId, ClientMessage, EntityState, NetEvent, NetId, NetServerSender, ServerMessage,
+    ClientId, ClientMessage, EntityState, NetId, NetServerSender, ServerEvent, ServerMessage,
 };
 use physics::LinearVelocity;
 
@@ -70,7 +70,7 @@ impl Default for StateBroadcastTimer {
 
 fn receive_client_messages(
     mut commands: Commands,
-    mut messages: MessageReader<NetEvent>,
+    mut messages: MessageReader<ServerEvent>,
     server_sender: Option<Res<NetServerSender>>,
     mut server: ResMut<Server>,
     existing_entities: Query<(&NetId, &Transform, &LinearVelocity)>,
@@ -80,7 +80,7 @@ fn receive_client_messages(
     };
 
     for event in messages.read() {
-        let NetEvent::ClientConnected { id, addr } = event else {
+        let ServerEvent::ClientConnected { id, addr } = event else {
             continue;
         };
 
@@ -155,11 +155,11 @@ fn receive_client_messages(
 
 /// System that applies remote input to entities controlled by remote clients.
 fn apply_remote_input(
-    mut messages: MessageReader<NetEvent>,
+    mut messages: MessageReader<ServerEvent>,
     mut players: Query<(&ControlledByClient, &mut LinearVelocity, &MovementSpeed), With<Creature>>,
 ) {
     for event in messages.read() {
-        if let NetEvent::ClientMessageReceived { from, message } = event {
+        if let ServerEvent::ClientMessageReceived { from, message } = event {
             let ClientMessage::Input { direction } = message;
             for (controlled_by, mut velocity, movement_speed) in players.iter_mut() {
                 if controlled_by.0 == *from {

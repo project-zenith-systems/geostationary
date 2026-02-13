@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use network::{ClientMessage, NetClientSender, NetEvent, NetId, ServerMessage};
+use network::{ClientEvent, ClientMessage, NetClientSender, NetId, ServerMessage};
 use physics::{Collider, GravityScale, LockedAxes, RigidBody};
 use things::Thing;
 
@@ -86,11 +86,11 @@ fn receive_server_messages(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut messages: MessageReader<NetEvent>,
+    mut messages: MessageReader<ClientEvent>,
     mut entities: Query<(Entity, &NetId, &mut Transform), With<Creature>>,
 ) {
     for event in messages.read() {
-        let NetEvent::ServerMessageReceived(message) = event else {
+        let ClientEvent::ServerMessageReceived(message) = event else {
             continue;
         };
 
