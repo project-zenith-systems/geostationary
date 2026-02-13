@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use main_menu::{MainMenuPlugin, MenuEvent};
-use network::{NetCommand, NetEvent, NetworkPlugin, NetworkSet};
+use network::{NetCommand, NetEvent, NetId, NetworkPlugin, NetworkSet};
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
@@ -10,10 +10,11 @@ use ui::UiPlugin;
 
 mod app_state;
 mod camera;
+mod client;
 mod config;
 mod creatures;
 mod main_menu;
-mod net_game;
+mod server;
 mod world_setup;
 
 fn main() {
@@ -38,7 +39,8 @@ fn main() {
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(camera::CameraPlugin)
         .add_plugins(world_setup::WorldSetupPlugin)
-        .add_plugins(net_game::NetGamePlugin)
+        .add_plugins(server::ServerPlugin)
+        .add_plugins(client::ClientPlugin)
         .init_state::<app_state::AppState>()
         .add_systems(
             PreUpdate,
@@ -55,32 +57,36 @@ fn handle_net_events(
     mut net_commands: MessageWriter<NetCommand>,
     mut menu_events: MessageWriter<MenuEvent>,
     mut next_state: ResMut<NextState<app_state::AppState>>,
-    network_role: Option<Res<net_game::NetworkRole>>,
+    server: Option<Res<server::Server>>,
 ) {
     for event in messages.read() {
         match event {
             NetEvent::HostingStarted { port } => {
-                // Set NetworkRole to ListenServer when hosting starts
-                commands.insert_resource(net_game::NetworkRole::ListenServer);
+                info!("Hosting started on port {port}, setting role to ListenServer");
                 let addr: SocketAddr = ([127, 0, 0, 1], *port).into();
+
+                info!("Connecting to self at {addr}");
                 net_commands.write(NetCommand::Connect { addr });
             }
             NetEvent::Connected => {
-                // If we're not already a ListenServer, we're a Client
-                if !network_role.as_ref().map_or(false, |r| **r == net_game::NetworkRole::ListenServer) {
-                    commands.insert_resource(net_game::NetworkRole::Client);
+                if server.is_none() {
+                    info!("Connected to server, setting role to Client");
+                    commands.insert_resource(client::Client {
+                        local_net_id: NetId(0),
+                    });
+                } else {
+                    info!("Self-connection established (ListenServer)");
                 }
 
                 next_state.set(app_state::AppState::InGame);
             }
-            NetEvent::Disconnected { .. } => {
-                // If we were a listen server, stop hosting
-                if network_role.as_ref().map_or(false, |r| **r == net_game::NetworkRole::ListenServer) {
+            NetEvent::Disconnected { reason } => {
+                info!("Disconnected: {reason}");
+                if server.is_some() {
                     net_commands.write(NetCommand::StopHosting);
+                    commands.remove_resource::<server::Server>();
                 }
-                // Reset NetworkRole to None when disconnected and return to the main menu
-                commands.insert_resource(net_game::NetworkRole::None);
-                commands.remove_resource::<net_game::LocalPeerId>();
+
                 next_state.set(app_state::AppState::MainMenu);
                 menu_events.write(MenuEvent::Title);
             }

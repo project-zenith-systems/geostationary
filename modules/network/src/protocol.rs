@@ -1,34 +1,46 @@
+use bevy::ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
-/// Unique identifier for a peer in the network.
+/// Unique identifier for a client in the network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PeerId(pub u64);
+pub struct ClientId(pub u64);
 
-/// Spatial state of a peer, sent in authoritative updates from host to clients.
+/// Unique identifier for a replicated entity, server-assigned.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NetId(pub u64);
+
+/// Spatial state of a replicated entity, sent in authoritative updates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerState {
-    pub id: PeerId,
+pub struct EntityState {
+    pub net_id: NetId,
     pub position: [f32; 3],
     pub velocity: [f32; 3],
 }
 
-/// Messages sent from host to peers.
+/// Messages sent from Server to clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum HostMessage {
-    /// Assigns the connecting peer their identity.
-    Welcome { peer_id: PeerId },
-    /// Notifies that a new peer entered the game.
-    PeerJoined { id: PeerId, position: [f32; 3] },
-    /// Notifies that a peer disconnected.
-    PeerLeft { id: PeerId },
-    /// Authoritative spatial state update for all peers.
-    StateUpdate { peers: Vec<PeerState> },
+pub enum ServerMessage {
+    /// Assigns the connecting client their identity.
+    Welcome { client_id: ClientId },
+    /// A replicated entity was spawned. `kind` is an opaque tag for future use.
+    EntitySpawned {
+        net_id: NetId,
+        kind: u16,
+        position: [f32; 3],
+        velocity: [f32; 3],
+    },
+    /// A replicated entity was despawned.
+    EntityDespawned { net_id: NetId },
+    /// Authoritative spatial state update for all replicated entities.
+    StateUpdate { entities: Vec<EntityState> },
+    /// Tells a client which entity they control (camera, input).
+    AssignControl { net_id: NetId },
 }
 
-/// Messages sent from peers to host.
+/// Messages sent from clients to server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PeerMessage {
-    /// Input vector from the peer.
+pub enum ClientMessage {
+    /// Input vector from the client.
     Input { direction: [f32; 3] },
 }
 
@@ -47,113 +59,143 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_peer_id_roundtrip() {
-        let peer_id = PeerId(42);
-        let encoded = encode(&peer_id).unwrap();
-        let decoded: PeerId = decode(&encoded).unwrap();
-        assert_eq!(peer_id, decoded);
+    fn test_client_id_roundtrip() {
+        let client_id = ClientId(42);
+        let encoded = encode(&client_id).unwrap();
+        let decoded: ClientId = decode(&encoded).unwrap();
+        assert_eq!(client_id, decoded);
     }
 
     #[test]
-    fn test_peer_state_roundtrip() {
-        let state = PeerState {
-            id: PeerId(123),
+    fn test_net_id_roundtrip() {
+        let net_id = NetId(99);
+        let encoded = encode(&net_id).unwrap();
+        let decoded: NetId = decode(&encoded).unwrap();
+        assert_eq!(net_id, decoded);
+    }
+
+    #[test]
+    fn test_entity_state_roundtrip() {
+        let state = EntityState {
+            net_id: NetId(123),
             position: [1.0, 2.0, 3.0],
             velocity: [0.5, 0.0, -0.5],
         };
         let encoded = encode(&state).unwrap();
-        let decoded: PeerState = decode(&encoded).unwrap();
-        assert_eq!(state.id, decoded.id);
+        let decoded: EntityState = decode(&encoded).unwrap();
+        assert_eq!(state.net_id, decoded.net_id);
         assert_eq!(state.position, decoded.position);
         assert_eq!(state.velocity, decoded.velocity);
     }
 
     #[test]
-    fn test_host_message_welcome_roundtrip() {
-        let msg = HostMessage::Welcome {
-            peer_id: PeerId(99),
+    fn test_server_message_welcome_roundtrip() {
+        let msg = ServerMessage::Welcome {
+            client_id: ClientId(99),
         };
         let encoded = encode(&msg).unwrap();
-        let decoded: HostMessage = decode(&encoded).unwrap();
+        let decoded: ServerMessage = decode(&encoded).unwrap();
         match decoded {
-            HostMessage::Welcome { peer_id } => {
-                assert_eq!(peer_id, PeerId(99));
+            ServerMessage::Welcome { client_id } => {
+                assert_eq!(client_id, ClientId(99));
             }
             _ => panic!("Expected Welcome variant"),
         }
     }
 
     #[test]
-    fn test_host_message_peer_joined_roundtrip() {
-        let msg = HostMessage::PeerJoined {
-            id: PeerId(5),
+    fn test_server_message_entity_spawned_roundtrip() {
+        let msg = ServerMessage::EntitySpawned {
+            net_id: NetId(5),
+            kind: 1,
             position: [10.0, 20.0, 30.0],
+            velocity: [0.1, 0.2, 0.3],
         };
         let encoded = encode(&msg).unwrap();
-        let decoded: HostMessage = decode(&encoded).unwrap();
+        let decoded: ServerMessage = decode(&encoded).unwrap();
         match decoded {
-            HostMessage::PeerJoined { id, position } => {
-                assert_eq!(id, PeerId(5));
+            ServerMessage::EntitySpawned {
+                net_id,
+                kind,
+                position,
+                velocity,
+            } => {
+                assert_eq!(net_id, NetId(5));
+                assert_eq!(kind, 1);
                 assert_eq!(position, [10.0, 20.0, 30.0]);
+                assert_eq!(velocity, [0.1, 0.2, 0.3]);
             }
-            _ => panic!("Expected PeerJoined variant"),
+            _ => panic!("Expected EntitySpawned variant"),
         }
     }
 
     #[test]
-    fn test_host_message_peer_left_roundtrip() {
-        let msg = HostMessage::PeerLeft { id: PeerId(7) };
+    fn test_server_message_entity_despawned_roundtrip() {
+        let msg = ServerMessage::EntityDespawned { net_id: NetId(7) };
         let encoded = encode(&msg).unwrap();
-        let decoded: HostMessage = decode(&encoded).unwrap();
+        let decoded: ServerMessage = decode(&encoded).unwrap();
         match decoded {
-            HostMessage::PeerLeft { id } => {
-                assert_eq!(id, PeerId(7));
+            ServerMessage::EntityDespawned { net_id } => {
+                assert_eq!(net_id, NetId(7));
             }
-            _ => panic!("Expected PeerLeft variant"),
+            _ => panic!("Expected EntityDespawned variant"),
         }
     }
 
     #[test]
-    fn test_host_message_state_update_roundtrip() {
-        let msg = HostMessage::StateUpdate {
-            peers: vec![
-                PeerState {
-                    id: PeerId(1),
+    fn test_server_message_state_update_roundtrip() {
+        let msg = ServerMessage::StateUpdate {
+            entities: vec![
+                EntityState {
+                    net_id: NetId(1),
                     position: [1.0, 2.0, 3.0],
                     velocity: [0.1, 0.2, 0.3],
                 },
-                PeerState {
-                    id: PeerId(2),
+                EntityState {
+                    net_id: NetId(2),
                     position: [4.0, 5.0, 6.0],
                     velocity: [0.4, 0.5, 0.6],
                 },
             ],
         };
         let encoded = encode(&msg).unwrap();
-        let decoded: HostMessage = decode(&encoded).unwrap();
+        let decoded: ServerMessage = decode(&encoded).unwrap();
         match decoded {
-            HostMessage::StateUpdate { peers } => {
-                assert_eq!(peers.len(), 2);
-                assert_eq!(peers[0].id, PeerId(1));
-                assert_eq!(peers[0].position, [1.0, 2.0, 3.0]);
-                assert_eq!(peers[0].velocity, [0.1, 0.2, 0.3]);
-                assert_eq!(peers[1].id, PeerId(2));
-                assert_eq!(peers[1].position, [4.0, 5.0, 6.0]);
-                assert_eq!(peers[1].velocity, [0.4, 0.5, 0.6]);
+            ServerMessage::StateUpdate { entities } => {
+                assert_eq!(entities.len(), 2);
+                assert_eq!(entities[0].net_id, NetId(1));
+                assert_eq!(entities[0].position, [1.0, 2.0, 3.0]);
+                assert_eq!(entities[0].velocity, [0.1, 0.2, 0.3]);
+                assert_eq!(entities[1].net_id, NetId(2));
+                assert_eq!(entities[1].position, [4.0, 5.0, 6.0]);
+                assert_eq!(entities[1].velocity, [0.4, 0.5, 0.6]);
             }
             _ => panic!("Expected StateUpdate variant"),
         }
     }
 
     #[test]
-    fn test_peer_message_input_roundtrip() {
-        let msg = PeerMessage::Input {
+    fn test_server_message_assign_control_roundtrip() {
+        let msg = ServerMessage::AssignControl { net_id: NetId(42) };
+        let encoded = encode(&msg).unwrap();
+        let decoded: ServerMessage = decode(&encoded).unwrap();
+        match decoded {
+            ServerMessage::AssignControl { net_id } => {
+                assert_eq!(net_id, NetId(42));
+            }
+            _ => panic!("Expected AssignControl variant"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_input_roundtrip() {
+        let msg = ClientMessage::Input {
             direction: [1.0, 0.0, -1.0],
         };
         let encoded = encode(&msg).unwrap();
-        let decoded: PeerMessage = decode(&encoded).unwrap();
+        let decoded: ClientMessage = decode(&encoded).unwrap();
         match decoded {
-            PeerMessage::Input { direction } => {
+            ClientMessage::Input { direction } => {
                 assert_eq!(direction, [1.0, 0.0, -1.0]);
             }
         }
@@ -161,12 +203,12 @@ mod tests {
 
     #[test]
     fn test_empty_state_update_roundtrip() {
-        let msg = HostMessage::StateUpdate { peers: vec![] };
+        let msg = ServerMessage::StateUpdate { entities: vec![] };
         let encoded = encode(&msg).unwrap();
-        let decoded: HostMessage = decode(&encoded).unwrap();
+        let decoded: ServerMessage = decode(&encoded).unwrap();
         match decoded {
-            HostMessage::StateUpdate { peers } => {
-                assert_eq!(peers.len(), 0);
+            ServerMessage::StateUpdate { entities } => {
+                assert_eq!(entities.len(), 0);
             }
             _ => panic!("Expected StateUpdate variant"),
         }
@@ -174,13 +216,13 @@ mod tests {
 
     #[test]
     fn test_zero_direction_input() {
-        let msg = PeerMessage::Input {
+        let msg = ClientMessage::Input {
             direction: [0.0, 0.0, 0.0],
         };
         let encoded = encode(&msg).unwrap();
-        let decoded: PeerMessage = decode(&encoded).unwrap();
+        let decoded: ClientMessage = decode(&encoded).unwrap();
         match decoded {
-            PeerMessage::Input { direction } => {
+            ClientMessage::Input { direction } => {
                 assert_eq!(direction, [0.0, 0.0, 0.0]);
             }
         }

@@ -2,20 +2,20 @@ use std::net::SocketAddr;
 
 use bevy::log;
 use bytes::Bytes;
-use futures_util::stream::StreamExt;
 use futures_util::sink::SinkExt;
+use futures_util::stream::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 
 use crate::NetEvent;
 use crate::config;
-use crate::protocol::{decode, encode, HostMessage, PeerMessage};
+use crate::protocol::{ClientMessage, ServerMessage, decode, encode};
 
 pub(crate) async fn run_client(
     addr: SocketAddr,
     event_tx: mpsc::UnboundedSender<NetEvent>,
-    client_msg_rx: mpsc::Receiver<PeerMessage>,
+    client_msg_rx: mpsc::Receiver<ClientMessage>,
     cancel_token: CancellationToken,
 ) {
     if let Err(e) = run_client_inner(addr, &event_tx, client_msg_rx, cancel_token).await {
@@ -28,7 +28,7 @@ pub(crate) async fn run_client(
 async fn run_client_inner(
     addr: SocketAddr,
     event_tx: &mpsc::UnboundedSender<NetEvent>,
-    mut client_msg_rx: mpsc::Receiver<PeerMessage>,
+    mut client_msg_rx: mpsc::Receiver<ClientMessage>,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client_config = config::build_client_config()?;
@@ -102,10 +102,10 @@ async fn run_client_inner(
                 frame = framed_read.next() => {
                     match frame {
                         Some(Ok(bytes)) => {
-                            // Decode HostMessage
-                            match decode::<HostMessage>(&bytes) {
+                            // Decode ServerMessage
+                            match decode::<ServerMessage>(&bytes) {
                                 Ok(message) => {
-                                    let _ = event_tx_read.send(NetEvent::HostMessageReceived(message));
+                                    let _ = event_tx_read.send(NetEvent::ServerMessageReceived(message));
                                 }
                                 Err(e) => {
                                     log::warn!("Failed to decode message from host: {}", e);
@@ -143,7 +143,7 @@ async fn run_client_inner(
                 message = client_msg_rx.recv() => {
                     match message {
                         Some(message) => {
-                            // Encode PeerMessage
+                            // Encode ClientMessage
                             match encode(&message) {
                                 Ok(bytes) => {
                                     // Wrap send in select to observe cancellation during send
@@ -219,5 +219,3 @@ async fn run_client_inner(
 
     Ok(())
 }
-
-

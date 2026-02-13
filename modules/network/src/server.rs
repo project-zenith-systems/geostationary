@@ -5,18 +5,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::log;
 use bytes::Bytes;
-use futures_util::stream::StreamExt;
 use futures_util::sink::SinkExt;
+use futures_util::stream::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 
-use crate::{NetEvent, PeerId};
 use crate::config;
-use crate::protocol::{decode, encode, PeerMessage};
+use crate::protocol::{ClientMessage, decode, encode};
 use crate::runtime::ServerCommand;
+use crate::{ClientId, NetEvent};
 
-/// Bounded channel buffer size per peer to prevent memory exhaustion from slow peers.
+/// Bounded channel buffer size per client to prevent memory exhaustion from slow clients.
 /// Allows brief bursts while providing backpressure.
 const PER_PEER_BUFFER_SIZE: usize = 100;
 
@@ -45,9 +45,9 @@ async fn run_server_inner(
     log::info!("Server listening on {addr}");
     let _ = event_tx.send(NetEvent::HostingStarted { port });
 
-    // Shared state for peer ID assignment and per-peer write channels
-    let next_peer_id = Arc::new(AtomicU64::new(1));
-    let peer_senders: Arc<tokio::sync::Mutex<HashMap<PeerId, mpsc::Sender<Bytes>>>> = 
+    // Shared state for client ID assignment and per-client write channels
+    let next_client_id = Arc::new(AtomicU64::new(1));
+    let client_senders: Arc<tokio::sync::Mutex<HashMap<ClientId, mpsc::Sender<Bytes>>>> =
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     loop {
@@ -64,31 +64,31 @@ async fn run_server_inner(
 
                 let event_tx = event_tx.clone();
                 let cancel_token_clone = cancel_token.clone();
-                let next_peer_id = next_peer_id.clone();
-                let peer_senders = peer_senders.clone();
-                
+                let next_client_id = next_client_id.clone();
+                let client_senders = client_senders.clone();
+
                 tokio::spawn(async move {
                     match incoming.await {
                         Ok(connection) => {
                             let addr = connection.remote_address();
-                            
-                            // Assign incrementing PeerId
-                            let peer_id = PeerId(next_peer_id.fetch_add(1, Ordering::SeqCst));
-                            log::info!("Client connected from {} with PeerId {}", addr, peer_id.0);
-                            
+
+                            // Assign incrementing ClientId
+                            let client_id = ClientId(next_client_id.fetch_add(1, Ordering::SeqCst));
+                            log::info!("Client connected from {} with ClientId {}", addr, client_id.0);
+
                             // Open bi-directional stream (with cancellation support).
-                            // PeerConnected is deferred until the write channel is
+                            // ClientConnected is deferred until the write channel is
                             // registered so that game code can send messages (e.g.
                             // Welcome) immediately upon seeing the event.
                             let accept_result = tokio::select! {
                                 result = connection.accept_bi() => result,
                                 _ = cancel_token_clone.cancelled() => {
-                                    log::info!("Server shutdown while waiting for bi-directional stream from peer {}", peer_id.0);
+                                    log::info!("Server shutdown while waiting for bi-directional stream from client {}", client_id.0);
                                     connection.close(0u32.into(), b"server shutdown");
                                     return;
                                 }
                                 _ = connection.closed() => {
-                                    log::info!("Connection closed before bi-directional stream opened for peer {}", peer_id.0);
+                                    log::info!("Connection closed before bi-directional stream opened for client {}", client_id.0);
                                     return;
                                 }
                             };
@@ -99,66 +99,66 @@ async fn run_server_inner(
                                     let mut framed_read = FramedRead::new(recv_stream, LengthDelimitedCodec::new());
                                     let mut framed_write = FramedWrite::new(send_stream, LengthDelimitedCodec::new());
 
-                                    // Create bounded channel for this peer's write loop
+                                    // Create bounded channel for this client's write loop
                                     let (write_tx, mut write_rx) = mpsc::channel::<Bytes>(PER_PEER_BUFFER_SIZE);
-                                    
-                                    // Register peer sender, then announce the
+
+                                    // Register client sender, then announce the
                                     // connection so game code can send messages
                                     // (e.g. Welcome) that will be deliverable
                                     // immediately.
                                     {
-                                        let mut senders = peer_senders.lock().await;
-                                        senders.insert(peer_id, write_tx);
+                                        let mut senders = client_senders.lock().await;
+                                        senders.insert(client_id, write_tx);
                                     }
 
-                                    let _ = event_tx.send(NetEvent::PeerConnected {
-                                        id: peer_id,
+                                    let _ = event_tx.send(NetEvent::ClientConnected {
+                                        id: client_id,
                                         addr,
                                     });
 
                                     let event_tx_read = event_tx.clone();
                                     let cancel_token_read = cancel_token_clone.clone();
                                     let cancel_token_write = cancel_token_clone.clone();
-                                    let peer_senders_cleanup = peer_senders.clone();
+                                    let client_senders_cleanup = client_senders.clone();
 
-                                    // Create per-peer cancellation token to coordinate shutdown
-                                    let peer_cancel = CancellationToken::new();
+                                    // Create per-client cancellation token to coordinate shutdown
+                                    let client_cancel = CancellationToken::new();
 
-                                    // Spawn per-peer read loop
-                                    let peer_cancel_read = peer_cancel.clone();
+                                    // Spawn per-client read loop
+                                    let client_cancel_read = client_cancel.clone();
                                     let mut read_handle = tokio::spawn(async move {
                                         loop {
                                             tokio::select! {
                                                 _ = cancel_token_read.cancelled() => {
-                                                    log::debug!("Read loop cancelled for peer {} (server shutdown)", peer_id.0);
+                                                    log::debug!("Read loop cancelled for client {} (server shutdown)", client_id.0);
                                                     break;
                                                 }
-                                                _ = peer_cancel_read.cancelled() => {
-                                                    log::debug!("Read loop cancelled for peer {} (peer shutdown)", peer_id.0);
+                                                _ = client_cancel_read.cancelled() => {
+                                                    log::debug!("Read loop cancelled for client {} (client shutdown)", client_id.0);
                                                     break;
                                                 }
                                                 frame = framed_read.next() => {
                                                     match frame {
                                                         Some(Ok(bytes)) => {
-                                                            // Decode PeerMessage
-                                                            match decode::<PeerMessage>(&bytes) {
+                                                            // Decode ClientMessage
+                                                            match decode::<ClientMessage>(&bytes) {
                                                                 Ok(message) => {
-                                                                    let _ = event_tx_read.send(NetEvent::PeerMessageReceived {
-                                                                        from: peer_id,
+                                                                    let _ = event_tx_read.send(NetEvent::ClientMessageReceived {
+                                                                        from: client_id,
                                                                         message,
                                                                     });
                                                                 }
                                                                 Err(e) => {
-                                                                    log::warn!("Failed to decode message from peer {}: {}", peer_id.0, e);
+                                                                    log::warn!("Failed to decode message from client {}: {}", client_id.0, e);
                                                                 }
                                                             }
                                                         }
                                                         Some(Err(e)) => {
-                                                            log::warn!("Stream error from peer {}: {}", peer_id.0, e);
+                                                            log::warn!("Stream error from client {}: {}", client_id.0, e);
                                                             break;
                                                         }
                                                         None => {
-                                                            log::info!("Peer {} disconnected (read stream closed)", peer_id.0);
+                                                            log::info!("Client {} disconnected (read stream closed)", client_id.0);
                                                             break;
                                                         }
                                                     }
@@ -167,29 +167,29 @@ async fn run_server_inner(
                                         }
                                     });
 
-                                    // Spawn per-peer write loop
-                                    let peer_cancel_write = peer_cancel.clone();
+                                    // Spawn per-client write loop
+                                    let client_cancel_write = client_cancel.clone();
                                     let mut write_handle = tokio::spawn(async move {
                                         loop {
                                             tokio::select! {
                                                 _ = cancel_token_write.cancelled() => {
-                                                    log::debug!("Write loop cancelled for peer {} (server shutdown)", peer_id.0);
+                                                    log::debug!("Write loop cancelled for client {} (server shutdown)", client_id.0);
                                                     break;
                                                 }
-                                                _ = peer_cancel_write.cancelled() => {
-                                                    log::debug!("Write loop cancelled for peer {} (peer shutdown)", peer_id.0);
+                                                _ = client_cancel_write.cancelled() => {
+                                                    log::debug!("Write loop cancelled for client {} (client shutdown)", client_id.0);
                                                     break;
                                                 }
                                                 bytes = write_rx.recv() => {
                                                     match bytes {
                                                         Some(bytes) => {
                                                             if let Err(e) = framed_write.send(bytes).await {
-                                                                log::warn!("Failed to send to peer {} (stream error): {}", peer_id.0, e);
+                                                                log::warn!("Failed to send to client {} (stream error): {}", client_id.0, e);
                                                                 break;
                                                             }
                                                         }
                                                         None => {
-                                                            log::debug!("Write channel closed for peer {}", peer_id.0);
+                                                            log::debug!("Write channel closed for client {}", client_id.0);
                                                             break;
                                                         }
                                                     }
@@ -198,38 +198,38 @@ async fn run_server_inner(
                                         }
                                     });
 
-                                    // Wait for any task to complete or connection to close, then cancel peer tasks
+                                    // Wait for any task to complete or connection to close, then cancel client tasks
                                     tokio::select! {
                                         _ = &mut read_handle => {
-                                            log::debug!("Read task completed for peer {}", peer_id.0);
+                                            log::debug!("Read task completed for client {}", client_id.0);
                                         }
                                         _ = &mut write_handle => {
-                                            log::debug!("Write task completed for peer {}", peer_id.0);
+                                            log::debug!("Write task completed for client {}", client_id.0);
                                         }
                                         _ = connection.closed() => {
-                                            log::info!("Connection closed for peer {}", peer_id.0);
+                                            log::info!("Connection closed for client {}", client_id.0);
                                         }
                                     }
 
-                                    // Cancel peer tasks to ensure both stop cleanly
-                                    peer_cancel.cancel();
+                                    // Cancel client tasks to ensure both stop cleanly
+                                    client_cancel.cancel();
 
                                     // Wait for both tasks to complete (prevents events after disconnect)
                                     let (read_result, write_result) = tokio::join!(read_handle, write_handle);
                                     if let Err(e) = read_result {
-                                        log::warn!("Read task for peer {} panicked: {}", peer_id.0, e);
+                                        log::warn!("Read task for client {} panicked: {}", client_id.0, e);
                                     }
                                     if let Err(e) = write_result {
-                                        log::warn!("Write task for peer {} panicked: {}", peer_id.0, e);
+                                        log::warn!("Write task for client {} panicked: {}", client_id.0, e);
                                     }
 
-                                    // Cleanup: remove peer sender and emit disconnect event
+                                    // Cleanup: remove client sender and emit disconnect event
                                     {
-                                        let mut senders = peer_senders_cleanup.lock().await;
-                                        senders.remove(&peer_id);
+                                        let mut senders = client_senders_cleanup.lock().await;
+                                        senders.remove(&client_id);
                                     }
-                                    
-                                    let _ = event_tx.send(NetEvent::PeerDisconnected { id: peer_id });
+
+                                    let _ = event_tx.send(NetEvent::ClientDisconnected { id: client_id });
                                 }
                                 Err(e) => {
                                     log::warn!("Failed to accept bi-directional stream from {}: {}", addr, e);
@@ -244,25 +244,25 @@ async fn run_server_inner(
             }
             cmd = server_cmd_rx.recv() => {
                 match cmd {
-                    Some(ServerCommand::SendTo { peer, message }) => {
+                    Some(ServerCommand::SendTo { client, message }) => {
                         // Encode message
                         match encode(&message) {
                             Ok(bytes) => {
-                                let senders = peer_senders.lock().await;
-                                if let Some(sender) = senders.get(&peer) {
+                                let senders = client_senders.lock().await;
+                                if let Some(sender) = senders.get(&client) {
                                     // Note: Send failures are logged but not surfaced as errors because:
                                     // 1. Sends are fire-and-forget from the caller's perspective
-                                    // 2. Peer disconnections are already reported via PeerDisconnected events
+                                    // 2. Client disconnections are already reported via ClientDisconnected events
                                     // 3. With bounded channels, send failures can indicate backpressure or disconnection
                                     if let Err(e) = sender.try_send(Bytes::from(bytes)) {
-                                        log::debug!("Failed to route message to peer {} (buffer full or disconnecting): {}", peer.0, e);
+                                        log::debug!("Failed to route message to client {} (buffer full or disconnecting): {}", client.0, e);
                                     }
                                 } else {
-                                    log::debug!("Peer {} not found for send_to (already disconnected)", peer.0);
+                                    log::debug!("Client {} not found for send_to (already disconnected)", client.0);
                                 }
                             }
                             Err(e) => {
-                                log::warn!("Failed to encode message for peer {}: {}", peer.0, e);
+                                log::warn!("Failed to encode message for client {}: {}", client.0, e);
                             }
                         }
                     }
@@ -271,13 +271,13 @@ async fn run_server_inner(
                         match encode(&message) {
                             Ok(bytes) => {
                                 let bytes = Bytes::from(bytes);
-                                let senders = peer_senders.lock().await;
+                                let senders = client_senders.lock().await;
                                 // Note: Individual broadcast failures are logged but don't fail the whole broadcast.
-                                // This is intentional - some peers may be disconnecting while others are healthy.
-                                // Disconnections are reported separately via PeerDisconnected events.
-                                for (peer_id, sender) in senders.iter() {
+                                // This is intentional - some clients may be disconnecting while others are healthy.
+                                // Disconnections are reported separately via ClientDisconnected events.
+                                for (client_id, sender) in senders.iter() {
                                     if let Err(e) = sender.try_send(bytes.clone()) {
-                                        log::debug!("Failed to broadcast to peer {} (buffer full or disconnecting): {}", peer_id.0, e);
+                                        log::debug!("Failed to broadcast to client {} (buffer full or disconnecting): {}", client_id.0, e);
                                     }
                                 }
                             }

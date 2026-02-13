@@ -10,7 +10,7 @@ mod protocol;
 mod runtime;
 mod server;
 
-pub use protocol::{HostMessage, PeerId, PeerMessage, PeerState};
+pub use protocol::{ClientId, ClientMessage, EntityState, NetId, ServerMessage};
 use runtime::{NetEventReceiver, NetEventSender, NetworkRuntime, NetworkTasks, ServerCommand};
 
 /// Bounded channel buffer size for client outbound messages.
@@ -40,14 +40,26 @@ pub enum NetCommand {
 /// Events emitted by the network layer back to game code.
 #[derive(Message, Clone, Debug)]
 pub enum NetEvent {
-    HostingStarted { port: u16 },
+    HostingStarted {
+        port: u16,
+    },
     HostingStopped,
-    PeerConnected { id: PeerId, addr: SocketAddr },
+    ClientConnected {
+        id: ClientId,
+        addr: SocketAddr,
+    },
     Connected,
-    Disconnected { reason: String },
-    HostMessageReceived(HostMessage),
-    PeerMessageReceived { from: PeerId, message: PeerMessage },
-    PeerDisconnected { id: PeerId },
+    Disconnected {
+        reason: String,
+    },
+    ServerMessageReceived(ServerMessage),
+    ClientMessageReceived {
+        from: ClientId,
+        message: ClientMessage,
+    },
+    ClientDisconnected {
+        id: ClientId,
+    },
     Error(String),
 }
 
@@ -64,16 +76,21 @@ impl NetServerSender {
         Self { tx }
     }
 
-    /// Send a message to a specific peer.
-    pub fn send_to(&self, peer: PeerId, message: &HostMessage) {
-        if let Err(e) = self.tx.send(ServerCommand::SendTo { peer, message: message.clone() }) {
-            log::warn!("Failed to send message to peer {}: {}", peer.0, e);
+    /// Send a message to a specific client.
+    pub fn send_to(&self, client: ClientId, message: &ServerMessage) {
+        if let Err(e) = self.tx.send(ServerCommand::SendTo {
+            client,
+            message: message.clone(),
+        }) {
+            log::warn!("Failed to send message to client {}: {}", client.0, e);
         }
     }
 
-    /// Broadcast a message to all connected peers.
-    pub fn broadcast(&self, message: &HostMessage) {
-        if let Err(e) = self.tx.send(ServerCommand::Broadcast { message: message.clone() }) {
+    /// Broadcast a message to all connected clients.
+    pub fn broadcast(&self, message: &ServerMessage) {
+        if let Err(e) = self.tx.send(ServerCommand::Broadcast {
+            message: message.clone(),
+        }) {
             log::warn!("Failed to broadcast message: {}", e);
         }
     }
@@ -83,18 +100,18 @@ impl NetServerSender {
 /// Inserted when the client task starts, removed on disconnect.
 #[derive(Resource, Clone)]
 pub struct NetClientSender {
-    tx: mpsc::Sender<PeerMessage>,
+    tx: mpsc::Sender<ClientMessage>,
 }
 
 impl NetClientSender {
     /// Create a new client sender from a channel.
-    pub(crate) fn new(tx: mpsc::Sender<PeerMessage>) -> Self {
+    pub(crate) fn new(tx: mpsc::Sender<ClientMessage>) -> Self {
         Self { tx }
     }
 
     /// Send a message to the server.
     /// Returns true if the message was sent, false if the channel is full or closed.
-    pub fn send(&self, message: &PeerMessage) -> bool {
+    pub fn send(&self, message: &ClientMessage) -> bool {
         match self.tx.try_send(message.clone()) {
             Ok(_) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -151,7 +168,7 @@ fn drain_net_events(
                 if matches!(&event, NetEvent::Disconnected { .. }) {
                     commands.remove_resource::<NetClientSender>();
                 }
-                
+
                 writer.write(event);
                 count += 1;
             }
@@ -202,7 +219,8 @@ fn process_net_commands(
                 let tx = event_tx.0.clone();
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
-                let handle = runtime.spawn(server::run_server(*port, tx, server_cmd_rx, token_clone));
+                let handle =
+                    runtime.spawn(server::run_server(*port, tx, server_cmd_rx, token_clone));
                 tasks.server_task = Some((handle, cancel_token));
             }
             NetCommand::Connect { addr } => {
@@ -223,7 +241,8 @@ fn process_net_commands(
                 let addr = *addr;
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
-                let handle = runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone));
+                let handle =
+                    runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone));
                 tasks.client_task = Some((handle, cancel_token));
             }
             NetCommand::StopHosting => {
@@ -304,18 +323,21 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let sender = NetServerSender::new(tx);
 
-        let peer = PeerId(42);
-        let message = HostMessage::Welcome { peer_id: peer };
+        let client = ClientId(42);
+        let message = ServerMessage::Welcome { client_id: client };
 
-        sender.send_to(peer, &message);
+        sender.send_to(client, &message);
 
         let received = rx.try_recv().expect("Should receive command");
         match received {
-            ServerCommand::SendTo { peer: recv_peer, message: recv_msg } => {
-                assert_eq!(recv_peer, peer);
+            ServerCommand::SendTo {
+                client: recv_client,
+                message: recv_msg,
+            } => {
+                assert_eq!(recv_client, client);
                 match recv_msg {
-                    HostMessage::Welcome { peer_id } => {
-                        assert_eq!(peer_id, peer);
+                    ServerMessage::Welcome { client_id } => {
+                        assert_eq!(client_id, client);
                     }
                     _ => panic!("Expected Welcome message"),
                 }
@@ -329,20 +351,18 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let sender = NetServerSender::new(tx);
 
-        let message = HostMessage::PeerLeft { id: PeerId(7) };
+        let message = ServerMessage::EntityDespawned { net_id: NetId(7) };
 
         sender.broadcast(&message);
 
         let received = rx.try_recv().expect("Should receive command");
         match received {
-            ServerCommand::Broadcast { message: recv_msg } => {
-                match recv_msg {
-                    HostMessage::PeerLeft { id } => {
-                        assert_eq!(id, PeerId(7));
-                    }
-                    _ => panic!("Expected PeerLeft message"),
+            ServerCommand::Broadcast { message: recv_msg } => match recv_msg {
+                ServerMessage::EntityDespawned { net_id } => {
+                    assert_eq!(net_id, NetId(7));
                 }
-            }
+                _ => panic!("Expected EntityDespawned message"),
+            },
             _ => panic!("Expected Broadcast command"),
         }
     }
@@ -352,7 +372,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
         let sender = NetClientSender::new(tx);
 
-        let message = PeerMessage::Input {
+        let message = ClientMessage::Input {
             direction: [1.0, 0.0, -1.0],
         };
 
@@ -361,7 +381,7 @@ mod tests {
 
         let received = rx.try_recv().expect("Should receive message");
         match received {
-            PeerMessage::Input { direction } => {
+            ClientMessage::Input { direction } => {
                 assert_eq!(direction, [1.0, 0.0, -1.0]);
             }
         }
@@ -372,14 +392,16 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let sender = NetClientSender::new(tx);
 
-        let message = PeerMessage::Input {
+        let message = ClientMessage::Input {
             direction: [1.0, 0.0, -1.0],
         };
 
         // First send should succeed
         assert!(sender.send(&message), "First send should succeed");
         // Second send should fail because buffer is full
-        assert!(!sender.send(&message), "Second send should fail when buffer full");
+        assert!(
+            !sender.send(&message),
+            "Second send should fail when buffer full"
+        );
     }
-
 }

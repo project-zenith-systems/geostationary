@@ -5,14 +5,19 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::{HostMessage, NetEvent};
+use crate::{NetEvent, ServerMessage};
 
 /// Internal commands for server message sending.
 /// Bevy → server task bridge: sent from game systems to server task.
 #[derive(Clone, Debug)]
 pub(crate) enum ServerCommand {
-    SendTo { peer: crate::PeerId, message: HostMessage },
-    Broadcast { message: HostMessage },
+    SendTo {
+        client: crate::ClientId,
+        message: ServerMessage,
+    },
+    Broadcast {
+        message: ServerMessage,
+    },
 }
 
 #[derive(Resource)]

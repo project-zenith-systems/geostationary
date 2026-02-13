@@ -112,23 +112,25 @@ mod tests {
 
         // Player at a known position
         let player_pos = Vec3::new(5.0, 0.0, 5.0);
-        app.world_mut().spawn((
-            Transform::from_translation(player_pos),
-            PlayerControlled,
-        ));
+        app.world_mut()
+            .spawn((Transform::from_translation(player_pos), PlayerControlled));
 
         // Camera starts far away
         let camera_start = Vec3::new(50.0, 50.0, 50.0);
-        let camera_entity = app.world_mut().spawn((
-            Transform::from_translation(camera_start),
-            FollowCamera,
-        )).id();
+        let camera_entity = app
+            .world_mut()
+            .spawn((Transform::from_translation(camera_start), FollowCamera))
+            .id();
 
         // First update initialises Time (delta ≈ 0), second has real delta
         app.update();
         app.update();
 
-        let camera_pos = app.world().get::<Transform>(camera_entity).unwrap().translation;
+        let camera_pos = app
+            .world()
+            .get::<Transform>(camera_entity)
+            .unwrap()
+            .translation;
         let target = player_pos + offset;
 
         // With follow_speed=10000, lerp_factor clamps to 1.0 → camera snaps
