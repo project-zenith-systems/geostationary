@@ -3,3 +3,7 @@ title = "Geostationary"
 
 [network]
 port = 7777
+
+[debug]
+# Enable physics debug rendering (collider wireframes)
+physics_debug = false
