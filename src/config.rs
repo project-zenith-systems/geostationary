@@ -77,16 +77,4 @@ mod tests {
         assert_eq!(config.window.title, "Geostationary");
         assert_eq!(config.debug.physics_debug, false);
     }
-
-    #[test]
-    fn test_debug_config_default() {
-        let config = DebugConfig { physics_debug: false };
-        assert_eq!(config.physics_debug, false);
-    }
-
-    #[test]
-    fn test_debug_config_enabled() {
-        let config = DebugConfig { physics_debug: true };
-        assert_eq!(config.physics_debug, true);
-    }
 }
