@@ -67,7 +67,13 @@ impl Server {
 /// Resource to track the state of the client.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Client {
-    pub local_net_id: NetId,
+    pub local_id: Option<ClientId>,
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self { local_id: None }
+    }
 }
 
 /// Component: which client's input controls this entity (server-side only).
@@ -153,6 +159,7 @@ impl NetClientSender {
     /// Send a message to the server.
     /// Returns true if the message was sent, false if the channel is full or closed.
     pub fn send(&self, message: &ClientMessage) -> bool {
+        // TODO return an error
         match self.tx.try_send(message.clone()) {
             Ok(_) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -468,6 +475,7 @@ mod tests {
             ClientMessage::Input { direction } => {
                 assert_eq!(direction, [1.0, 0.0, -1.0]);
             }
+            ClientMessage::Hello => panic!("Expected Input message"),
         }
     }
 

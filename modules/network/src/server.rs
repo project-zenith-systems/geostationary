@@ -27,8 +27,12 @@ pub(crate) async fn run_server(
     cancel_token: CancellationToken,
 ) {
     if let Err(e) = run_server_inner(port, &event_tx, server_cmd_rx, cancel_token).await {
-        let _ = event_tx.send(ServerEvent::Error(format!("Server error: {e}")));
-        let _ = event_tx.send(ServerEvent::HostingStopped);
+        if let Err(err) = event_tx.send(ServerEvent::Error(format!("Server error: {e}"))) {
+            log::error!("Failed to send ServerEvent::Error: {}", err);
+        }
+        if let Err(err) = event_tx.send(ServerEvent::HostingStopped) {
+            log::error!("Failed to send ServerEvent::HostingStopped: {}", err);
+        }
     }
 }
 
@@ -43,7 +47,9 @@ async fn run_server_inner(
     let endpoint = quinn::Endpoint::server(server_config, addr)?;
 
     log::info!("Server listening on {addr}");
-    let _ = event_tx.send(ServerEvent::HostingStarted { port });
+    if let Err(e) = event_tx.send(ServerEvent::HostingStarted { port }) {
+        log::error!("Failed to send HostingStarted event: {}", e);
+    }
 
     // Shared state for client ID assignment and per-client write channels
     let next_client_id = Arc::new(AtomicU64::new(1));
@@ -111,10 +117,12 @@ async fn run_server_inner(
                                         senders.insert(client_id, write_tx);
                                     }
 
-                                    let _ = event_tx.send(ServerEvent::ClientConnected {
+                                    if let Err(err) = event_tx.send(ServerEvent::ClientConnected {
                                         id: client_id,
                                         addr,
-                                    });
+                                    }) {
+                                        log::error!("Failed to send ClientConnected event: {}", err);
+                                    }
 
                                     let event_tx_read = event_tx.clone();
                                     let cancel_token_read = cancel_token_clone.clone();
@@ -143,18 +151,20 @@ async fn run_server_inner(
                                                             // Decode ClientMessage
                                                             match decode::<ClientMessage>(&bytes) {
                                                                 Ok(message) => {
-                                                                    let _ = event_tx_read.send(ServerEvent::ClientMessageReceived {
+                                                                    if let Err(err) = event_tx_read.send(ServerEvent::ClientMessageReceived {
                                                                         from: client_id,
                                                                         message,
-                                                                    });
+                                                                    }) {
+                                                                        log::error!("Failed to send ClientMessageReceived event: {}", err);
+                                                                    }
                                                                 }
                                                                 Err(e) => {
-                                                                    log::warn!("Failed to decode message from client {}: {}", client_id.0, e);
+                                                                    log::error!("Failed to decode message from client {}: {}", client_id.0, e);
                                                                 }
                                                             }
                                                         }
                                                         Some(Err(e)) => {
-                                                            log::warn!("Stream error from client {}: {}", client_id.0, e);
+                                                            log::error!("Stream error from client {}: {}", client_id.0, e);
                                                             break;
                                                         }
                                                         None => {
@@ -184,7 +194,7 @@ async fn run_server_inner(
                                                     match bytes {
                                                         Some(bytes) => {
                                                             if let Err(e) = framed_write.send(bytes).await {
-                                                                log::warn!("Failed to send to client {} (stream error): {}", client_id.0, e);
+                                                                log::error!("Failed to send to client {} (stream error): {}", client_id.0, e);
                                                                 break;
                                                             }
                                                         }
@@ -217,10 +227,10 @@ async fn run_server_inner(
                                     // Wait for both tasks to complete (prevents events after disconnect)
                                     let (read_result, write_result) = tokio::join!(read_handle, write_handle);
                                     if let Err(e) = read_result {
-                                        log::warn!("Read task for client {} panicked: {}", client_id.0, e);
+                                        log::error!("Read task for client {} panicked: {}", client_id.0, e);
                                     }
                                     if let Err(e) = write_result {
-                                        log::warn!("Write task for client {} panicked: {}", client_id.0, e);
+                                        log::error!("Write task for client {} panicked: {}", client_id.0, e);
                                     }
 
                                     // Cleanup: remove client sender and emit disconnect event
@@ -229,15 +239,17 @@ async fn run_server_inner(
                                         senders.remove(&client_id);
                                     }
 
-                                    let _ = event_tx.send(ServerEvent::ClientDisconnected { id: client_id });
+                                    if let Err(err) = event_tx.send(ServerEvent::ClientDisconnected { id: client_id }) {
+                                        log::error!("Failed to send ClientDisconnected event: {}", err);
+                                    }
                                 }
                                 Err(e) => {
-                                    log::warn!("Failed to accept bi-directional stream from {}: {}", addr, e);
+                                    log::error!("Failed to accept bi-directional stream from {}: {}", addr, e);
                                 }
                             }
                         }
                         Err(e) => {
-                            log::warn!("Failed to accept connection: {e}");
+                            log::error!("Failed to accept connection: {}", e);
                         }
                     }
                 });
@@ -250,15 +262,11 @@ async fn run_server_inner(
                             Ok(bytes) => {
                                 let senders = client_senders.lock().await;
                                 if let Some(sender) = senders.get(&client) {
-                                    // Note: Send failures are logged but not surfaced as errors because:
-                                    // 1. Sends are fire-and-forget from the caller's perspective
-                                    // 2. Client disconnections are already reported via ClientDisconnected events
-                                    // 3. With bounded channels, send failures can indicate backpressure or disconnection
                                     if let Err(e) = sender.try_send(Bytes::from(bytes)) {
                                         log::error!("Failed to route message to client {} (buffer full or disconnecting): {}", client.0, e);
                                     }
                                 } else {
-                                    log::warn!("Client {} not found for send_to (already disconnected)", client.0);
+                                    log::error!("Client {} not found for send_to (already disconnected)", client.0);
                                 }
                             }
                             Err(e) => {
@@ -295,6 +303,8 @@ async fn run_server_inner(
         }
     }
 
-    let _ = event_tx.send(ServerEvent::HostingStopped);
+    if let Err(err) = event_tx.send(ServerEvent::HostingStopped) {
+        log::error!("Failed to send ServerEvent::HostingStopped: {}", err);
+    }
     Ok(())
 }

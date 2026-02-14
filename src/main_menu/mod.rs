@@ -1,5 +1,5 @@
 use bevy::{app::AppExit, prelude::*, state::state_scoped::DespawnOnExit};
-use network::NetCommand;
+use network::{Client, NetCommand, Server};
 use ui::*;
 
 use crate::app_state::AppState;
@@ -84,6 +84,8 @@ fn menu_message_reader(
                 theme.as_ref(),
             )),
             MenuEvent::Play => {
+                commands.insert_resource(Server::default());
+                commands.insert_resource(Client::default());
                 net_commands.write(NetCommand::Host {
                     port: config.network.port,
                 });
@@ -93,8 +95,10 @@ fn menu_message_reader(
                 ))
             }
             MenuEvent::Join => {
-                let addr = ([127, 0, 0, 1], config.network.port).into();
-                net_commands.write(NetCommand::Connect { addr });
+                commands.insert_resource(Client::default());
+                net_commands.write(NetCommand::Connect {
+                    addr: ([127u8, 0u8, 0u8, 1u8], config.network.port).into(),
+                });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,
                     theme.as_ref(),

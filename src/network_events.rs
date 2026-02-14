@@ -28,10 +28,7 @@ impl Plugin for NetworkEventsPlugin {
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
         );
-        app.add_systems(
-            Update,
-            (apply_remote_input, broadcast_state).run_if(resource_exists::<Server>),
-        );
+        app.add_systems(Update, broadcast_state.run_if(resource_exists::<Server>));
     }
 }
 
@@ -55,7 +52,13 @@ fn handle_server_events(
     mut menu_events: MessageWriter<MenuEvent>,
     mut sender: Option<ResMut<NetServerSender>>,
     mut server: ResMut<Server>,
-    existing_entities: Query<(&NetId, &Transform, &LinearVelocity)>,
+    mut entities: Query<(
+        &NetId,
+        &ControlledByClient,
+        &Transform,
+        &mut LinearVelocity,
+        &MovementSpeed,
+    )>,
 ) {
     for event in messages.read() {
         match event {
@@ -92,7 +95,7 @@ fn handle_server_events(
                 sender.send_to(*id, &ServerMessage::Welcome { client_id: *id });
 
                 // 2. Catch-up: send EntitySpawned for every existing replicated entity
-                for (net_id, transform, velocity) in existing_entities.iter() {
+                for (net_id, _, transform, velocity, _) in entities.iter() {
                     sender.send_to(
                         *id,
                         &ServerMessage::EntitySpawned {
@@ -127,7 +130,7 @@ fn handle_server_events(
                 info!("Client {} disconnected", id.0);
             }
             ServerEvent::ClientMessageReceived { from, message } => {
-                handle_client_message(from, message);
+                handle_client_message(from, message, &mut entities);
             }
         }
     }
@@ -140,7 +143,8 @@ fn handle_client_events(
     mut next_state: ResMut<NextState<AppState>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut entities: Query<(Entity, &NetId, &mut Transform), With<Creature>>,
+    mut entities: Query<(Entity, &NetId, &ControlledByClient, &mut Transform), With<Creature>>,
+    mut client: ResMut<Client>,
 ) {
     for event in messages.read() {
         match event {
@@ -179,28 +183,62 @@ fn handle_client_events(
                     &mut entities,
                     &mut meshes,
                     &mut materials,
+                    &mut client,
                 );
             }
         }
     }
 }
 
-fn handle_client_message(from: &ClientId, message: &ClientMessage) {
-    _ = from;
-    _ = message;
-    // TODO handle client messages on the server, e.g. update player velocity based on input
+fn handle_client_message(
+    from: &ClientId,
+    message: &ClientMessage,
+    entities: &mut Query<(
+        &NetId,
+        &ControlledByClient,
+        &Transform,
+        &mut LinearVelocity,
+        &MovementSpeed,
+    )>,
+) {
+    match message {
+        ClientMessage::Hello => {
+            info!("Received client hello from ClientId({})", from.0);
+        }
+        ClientMessage::Input { direction } => {
+            for (_, controlled_by, _, mut velocity, movement_speed) in entities.iter_mut() {
+                if controlled_by.0 == *from {
+                    info!(
+                        "Applying input from ClientId({}): direction={:?}",
+                        from.0, direction
+                    );
+                    let dir = Vec3::from_array(*direction);
+                    let desired = if dir.length_squared() > 0.0 {
+                        dir.normalize() * movement_speed.speed
+                    } else {
+                        Vec3::ZERO
+                    };
+                    velocity.x = desired.x;
+                    velocity.z = desired.z;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 fn handle_server_message(
     message: &ServerMessage,
     commands: &mut Commands,
-    entities: &mut Query<(Entity, &NetId, &mut Transform), With<Creature>>,
+    entities: &mut Query<(Entity, &NetId, &ControlledByClient, &mut Transform), With<Creature>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
+    client: &mut ResMut<Client>,
 ) {
     match message {
         ServerMessage::Welcome { client_id } => {
             info!("Received Welcome, local ClientId assigned: {}", client_id.0);
+            client.local_id = Some(*client_id);
         }
         ServerMessage::EntitySpawned {
             net_id,
@@ -209,7 +247,7 @@ fn handle_server_message(
             velocity: _,
         } => {
             // Skip if entity already exists (e.g. duplicate message)
-            let already_exists = entities.iter().any(|(_, id, _)| id.0 == net_id.0);
+            let already_exists = entities.iter().any(|(_, id, _, _)| id.0 == net_id.0);
             if already_exists {
                 debug!(
                     "EntitySpawned for NetId({}) but already exists, skipping",
@@ -241,7 +279,7 @@ fn handle_server_message(
         }
         ServerMessage::EntityDespawned { net_id } => {
             info!("Despawning replica entity NetId({})", net_id.0);
-            for (entity, id, _) in entities.iter() {
+            for (entity, id, _, _) in entities.iter() {
                 if id.0 == net_id.0 {
                     commands.entity(entity).despawn();
                     break;
@@ -250,7 +288,7 @@ fn handle_server_message(
         }
         ServerMessage::StateUpdate { entities: states } => {
             for state in states.iter() {
-                for (_, id, mut transform) in entities.iter_mut() {
+                for (_, id, _, mut transform) in entities.iter_mut() {
                     if id.0 == state.net_id.0 {
                         transform.translation = Vec3::from_array(state.position);
                         break;
@@ -263,34 +301,18 @@ fn handle_server_message(
                 "AssignControl: NetId({}) is our controlled entity",
                 net_id.0
             );
-            for (entity, id, _) in entities.iter() {
+
+            let Some(local_client_id) = client.local_id else {
+                error!("Received AssignControl but local_id is not set, ignoring");
+                return;
+            };
+
+            for (entity, id, _, _) in entities.iter() {
                 if id.0 == net_id.0 {
                     commands.entity(entity).insert(PlayerControlled);
-                    break;
-                }
-            }
-        }
-    }
-}
-
-/// System that applies remote input to entities controlled by remote clients.
-fn apply_remote_input(
-    mut messages: MessageReader<ServerEvent>,
-    mut players: Query<(&ControlledByClient, &mut LinearVelocity, &MovementSpeed), With<Creature>>,
-) {
-    for event in messages.read() {
-        if let ServerEvent::ClientMessageReceived { from, message } = event {
-            let ClientMessage::Input { direction } = message;
-            for (controlled_by, mut velocity, movement_speed) in players.iter_mut() {
-                if controlled_by.0 == *from {
-                    let dir = Vec3::from_array(*direction);
-                    let desired = if dir.length_squared() > 0.0 {
-                        dir.normalize() * movement_speed.speed
-                    } else {
-                        Vec3::ZERO
-                    };
-                    velocity.x = desired.x;
-                    velocity.z = desired.z;
+                    commands
+                        .entity(entity)
+                        .insert(ControlledByClient(local_client_id));
                     break;
                 }
             }

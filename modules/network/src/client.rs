@@ -20,8 +20,12 @@ pub(crate) async fn run_client(
 ) {
     if let Err(e) = run_client_inner(addr, &event_tx, client_msg_rx, cancel_token).await {
         let reason = format!("Client error: {e}");
-        let _ = event_tx.send(ClientEvent::Error(reason.clone()));
-        let _ = event_tx.send(ClientEvent::Disconnected { reason });
+        if let Err(err) = event_tx.send(ClientEvent::Error(reason.clone())) {
+            log::error!("Failed to send ClientEvent::Error: {}", err);
+        }
+        if let Err(err) = event_tx.send(ClientEvent::Disconnected { reason }) {
+            log::error!("Failed to send ClientEvent::Disconnected: {}", err);
+        }
     }
 }
 
@@ -44,7 +48,9 @@ async fn run_client_inner(
     let connection = endpoint.connect(addr, "localhost")?.await?;
     log::info!("Connected to {addr}");
 
-    let _ = event_tx.send(ClientEvent::Connected);
+    if let Err(err) = event_tx.send(ClientEvent::Connected) {
+        log::error!("Failed to send Connected event: {}", err);
+    }
 
     // Open bi-directional stream
     let open_result = tokio::select! {
@@ -52,16 +58,20 @@ async fn run_client_inner(
         _ = cancel_token.cancelled() => {
             log::info!("Client disconnect requested before opening stream");
             connection.close(0u32.into(), b"disconnect requested");
-            let _ = event_tx.send(ClientEvent::Disconnected {
+            if let Err(err) = event_tx.send(ClientEvent::Disconnected {
                 reason: "Disconnect requested".into(),
-            });
+            }) {
+                log::error!("Failed to send Disconnected event: {}", err);
+            }
             return Ok(());
         }
         _ = connection.closed() => {
             log::info!("Connection closed before opening bi-directional stream");
-            let _ = event_tx.send(ClientEvent::Disconnected {
+            if let Err(err) = event_tx.send(ClientEvent::Disconnected {
                 reason: "Connection closed by remote".into(),
-            });
+            }) {
+                log::error!("Failed to send Disconnected event: {}", err);
+            }
             return Ok(());
         }
     };
@@ -70,9 +80,11 @@ async fn run_client_inner(
         Ok(streams) => streams,
         Err(e) => {
             log::warn!("Failed to open bi-directional stream: {}", e);
-            let _ = event_tx.send(ClientEvent::Disconnected {
+            if let Err(err) = event_tx.send(ClientEvent::Disconnected {
                 reason: format!("Failed to open stream: {}", e),
-            });
+            }) {
+                log::error!("Failed to send Disconnected event: {}", err);
+            }
             return Ok(());
         }
     };
@@ -80,6 +92,27 @@ async fn run_client_inner(
     // Wrap streams with LengthDelimitedCodec
     let mut framed_read = FramedRead::new(recv_stream, LengthDelimitedCodec::new());
     let mut framed_write = FramedWrite::new(send_stream, LengthDelimitedCodec::new());
+
+    // Important: notify peer about the opened stream immediately.
+    // Quinn only surfaces open_bi to accept_bi after data is written.
+    if let Ok(bytes) = encode(&ClientMessage::Hello) {
+        if let Err(e) = framed_write.send(Bytes::from(bytes)).await {
+            log::error!("Failed to send client hello: {}", e);
+            if let Err(err) = event_tx.send(ClientEvent::Disconnected {
+                reason: format!("Failed to send client hello: {e}"),
+            }) {
+                log::error!("Failed to send Disconnected event: {}", err);
+            }
+            return Ok(());
+        }
+    } else {
+        if let Err(err) = event_tx.send(ClientEvent::Disconnected {
+            reason: "Failed to encode client hello".into(),
+        }) {
+            log::error!("Failed to send Disconnected event: {}", err);
+        }
+        return Ok(());
+    }
 
     // Create per-client cancellation token to coordinate shutdown
     let client_cancel = CancellationToken::new();
@@ -105,15 +138,17 @@ async fn run_client_inner(
                             // Decode ServerMessage
                             match decode::<ServerMessage>(&bytes) {
                                 Ok(message) => {
-                                    let _ = event_tx_read.send(ClientEvent::ServerMessageReceived(message));
+                                    if let Err(err) = event_tx_read.send(ClientEvent::ServerMessageReceived(message)) {
+                                        log::error!("Failed to send ServerMessageReceived event: {}", err);
+                                    }
                                 }
                                 Err(e) => {
-                                    log::warn!("Failed to decode message from host: {}", e);
+                                    log::error!("Failed to decode message from host: {}", e);
                                 }
                             }
                         }
                         Some(Err(e)) => {
-                            log::warn!("Stream error from host: {}", e);
+                            log::error!("Stream error from host: {}", e);
                             break;
                         }
                         None => {
@@ -150,7 +185,7 @@ async fn run_client_inner(
                                     tokio::select! {
                                         result = framed_write.send(Bytes::from(bytes)) => {
                                             if let Err(e) = result {
-                                                log::warn!("Failed to send message to host (stream error): {}", e);
+                                                log::error!("Failed to send message to host (stream error): {}", e);
                                                 break;
                                             }
                                         }
@@ -165,7 +200,7 @@ async fn run_client_inner(
                                     }
                                 }
                                 Err(e) => {
-                                    log::warn!("Failed to encode message: {}", e);
+                                    log::error!("Failed to encode message: {}", e);
                                 }
                             }
                         }
@@ -213,9 +248,11 @@ async fn run_client_inner(
     }
 
     log::info!("Disconnected from {addr}");
-    let _ = event_tx.send(ClientEvent::Disconnected {
+    if let Err(err) = event_tx.send(ClientEvent::Disconnected {
         reason: reason.into(),
-    });
+    }) {
+        log::error!("Failed to send ClientEvent::Disconnected: {}", err);
+    }
 
     Ok(())
 }

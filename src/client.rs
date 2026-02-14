@@ -55,9 +55,11 @@ fn send_client_input(
         direction.x += 1.0;
     }
 
-    if !sender.send(&ClientMessage::Input {
-        direction: direction.into(),
-    }) {
-        error!("Failed to send client input: send buffer full or closed");
+    if direction != Vec3::ZERO {
+        if !sender.send(&ClientMessage::Input {
+            direction: direction.into(),
+        }) {
+            error!("Failed to send client input: send buffer full or closed");
+        }
     }
 }
