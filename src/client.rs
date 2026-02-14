@@ -6,6 +6,7 @@ pub struct ClientPlugin;
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InputSendTimer>();
+        app.init_resource::<LastSentDirection>();
         app.add_systems(Update, send_client_input.run_if(resource_exists::<Client>));
     }
 }
@@ -23,6 +24,10 @@ impl Default for InputSendTimer {
     }
 }
 
+/// Tracks the last input direction sent to avoid redundant messages.
+#[derive(Resource, Default)]
+struct LastSentDirection(Vec3);
+
 /// System that sends client input to the server.
 /// Reads keyboard and sends ClientMessage::Input via NetClientSender.
 /// Throttled to NETWORK_UPDATE_RATE to reduce network traffic.
@@ -31,6 +36,7 @@ fn send_client_input(
     mut timer: ResMut<InputSendTimer>,
     keyboard: Res<ButtonInput<KeyCode>>,
     client_sender: Option<Res<NetClientSender>>,
+    mut last_sent: ResMut<LastSentDirection>,
 ) {
     let Some(sender) = client_sender else {
         return;
@@ -55,11 +61,14 @@ fn send_client_input(
         direction.x += 1.0;
     }
 
-    if direction != Vec3::ZERO {
-        if !sender.send(&ClientMessage::Input {
-            direction: direction.into(),
-        }) {
-            error!("Failed to send client input: send buffer full or closed");
-        }
+    if direction == last_sent.0 {
+        return;
+    }
+
+    last_sent.0 = direction;
+    if !sender.send(&ClientMessage::Input {
+        direction: direction.into(),
+    }) {
+        error!("Failed to send client input: send buffer full or closed");
     }
 }

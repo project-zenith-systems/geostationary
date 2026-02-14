@@ -66,7 +66,7 @@ fn on_spawn_thing(
             ..default()
         })),
         Transform::from_translation(event.position),
-        RigidBody::Kinematic,
+        RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),
         LockedAxes::ROTATION_LOCKED.lock_translation_y(),
         GravityScale(0.0),
