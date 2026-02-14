@@ -44,8 +44,8 @@ pub enum ServerMessage {
         kind: u16,
         position: [f32; 3],
         velocity: [f32; 3],
-        /// When true, the receiving client should take control of this entity.
-        controlled: bool,
+        /// If set, the receiving client with this ID should take control of this entity.
+        owner: Option<ClientId>,
     },
     /// A replicated entity was despawned.
     EntityDespawned { net_id: NetId },

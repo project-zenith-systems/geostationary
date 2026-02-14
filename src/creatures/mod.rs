@@ -2,15 +2,12 @@ use bevy::prelude::*;
 use physics::LinearVelocity;
 use things::ThingRegistry;
 
+use crate::camera::PlayerControlled;
+
 /// Marker component for creatures - entities that can move and act in the world.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
 pub struct Creature;
-
-/// Marker component for player-controlled creatures.
-#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
-#[reflect(Component)]
-pub struct PlayerControlled;
 
 /// Component that defines how fast a creature can move (units per second).
 #[derive(Component, Debug, Clone, Copy, Reflect)]
@@ -31,15 +28,16 @@ impl Plugin for CreaturesPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Creature>();
         app.register_type::<MovementSpeed>();
-        app.register_type::<PlayerControlled>();
         app.add_systems(Update, creature_movement_system);
 
         app.world_mut()
             .resource_mut::<ThingRegistry>()
-            .register(0, |entity, commands| {
-                commands
-                    .entity(entity)
-                    .insert((Creature, MovementSpeed::default()));
+            .register(0, |entity, event, commands| {
+                let mut ec = commands.entity(entity);
+                ec.insert((Creature, MovementSpeed::default()));
+                if event.controlled {
+                    ec.insert(PlayerControlled);
+                }
             });
     }
 }

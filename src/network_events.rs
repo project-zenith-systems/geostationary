@@ -11,7 +11,7 @@ use physics::LinearVelocity;
 use things::SpawnThing;
 
 use crate::app_state::AppState;
-use crate::creatures::{Creature, MovementSpeed, PlayerControlled};
+use crate::creatures::{Creature, MovementSpeed};
 use crate::main_menu::MenuEvent;
 
 pub struct NetworkEventsPlugin;
@@ -151,7 +151,7 @@ fn handle_client_message(
             sender.send_to(*from, &ServerMessage::Welcome { client_id: *from });
 
             // Catch-up: send EntitySpawned for every existing replicated entity
-            for (net_id, _, transform, velocity, _) in entities.iter() {
+            for (net_id, controlled_by, transform, velocity, _) in entities.iter() {
                 sender.send_to(
                     *from,
                     &ServerMessage::EntitySpawned {
@@ -159,7 +159,11 @@ fn handle_client_message(
                         kind: 0,
                         position: transform.translation.into(),
                         velocity: [velocity.x, velocity.y, velocity.z],
-                        controlled: false,
+                        owner: if controlled_by.0 == *from {
+                            Some(*from)
+                        } else {
+                            None
+                        },
                     },
                 );
             }
@@ -172,25 +176,12 @@ fn handle_client_message(
                 net_id.0, from.0
             );
 
-            // Tell the owning client first (with control flag)
-            sender.send_to(
-                *from,
-                &ServerMessage::EntitySpawned {
-                    net_id,
-                    kind: 0,
-                    position: spawn_pos.into(),
-                    velocity: [0.0, 0.0, 0.0],
-                    controlled: true,
-                },
-            );
-
-            // Broadcast to all (owner will skip via duplicate check)
             sender.broadcast(&ServerMessage::EntitySpawned {
                 net_id,
                 kind: 0,
                 position: spawn_pos.into(),
                 velocity: [0.0, 0.0, 0.0],
-                controlled: false,
+                owner: Some(*from),
             });
         }
         ClientMessage::Input { direction } => {
@@ -227,7 +218,7 @@ fn handle_server_message(
             kind,
             position,
             velocity: _,
-            controlled,
+            owner,
         } => {
             // Skip if entity already exists (e.g. duplicate message)
             let already_exists = entities.iter().any(|(_, id, _)| id.0 == net_id.0);
@@ -242,6 +233,7 @@ fn handle_server_message(
             let pos = Vec3::from_array(*position);
             info!("Spawning replica entity NetId({}) at {pos}", net_id.0);
 
+            let controlled = *owner == client.local_id && owner.is_some();
             let entity = commands
                 .spawn((net_id.clone(), DespawnOnExit(AppState::InGame)))
                 .id();
@@ -249,17 +241,13 @@ fn handle_server_message(
                 entity,
                 kind: *kind,
                 position: pos,
+                controlled,
             });
 
-            if *controlled {
-                if let Some(local_client_id) = client.local_id {
-                    info!("Taking control of NetId({})", net_id.0);
-                    commands
-                        .entity(entity)
-                        .insert((PlayerControlled, ControlledByClient(local_client_id)));
-                } else {
-                    error!("EntitySpawned with controlled=true but local_id is not set");
-                }
+            if let Some(owner_id) = owner {
+                commands
+                    .entity(entity)
+                    .insert(ControlledByClient(*owner_id));
             }
         }
         ServerMessage::EntityDespawned { net_id } => {

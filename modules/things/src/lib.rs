@@ -16,9 +16,11 @@ pub struct SpawnThing {
     pub entity: Entity,
     pub kind: u16,
     pub position: Vec3,
+    /// Whether the local player controls this entity.
+    pub controlled: bool,
 }
 
-pub type ThingBuilder = Box<dyn Fn(Entity, &mut Commands) + Send + Sync>;
+pub type ThingBuilder = Box<dyn Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync>;
 
 /// Registry mapping `kind` values to template callbacks that insert
 /// type-specific components on a spawned entity.
@@ -31,7 +33,7 @@ impl ThingRegistry {
     pub fn register(
         &mut self,
         kind: u16,
-        builder: impl Fn(Entity, &mut Commands) + Send + Sync + 'static,
+        builder: impl Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync + 'static,
     ) {
         self.templates.insert(kind, Box::new(builder));
     }
@@ -72,7 +74,7 @@ fn on_spawn_thing(
     ));
 
     if let Some(builder) = registry.templates.get(&event.kind) {
-        builder(event.entity, &mut commands);
+        builder(event.entity, event, &mut commands);
     } else {
         warn!("No template registered for thing kind {}", event.kind);
     }
