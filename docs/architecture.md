@@ -40,6 +40,62 @@ Notably, **rendering is Bevy's responsibility**. The layers define what exists
 and how it behaves; Bevy draws it. Asset management may warrant its own module
 in the future, but the rendering pipeline itself is not ours to architect.
 
+## World Coordinate Conventions
+
+Geostationary uses a right-handed 3D coordinate system with the following
+conventions:
+
+### Axes
+
+- **Y-axis is up.** Positive Y points toward the ceiling; negative Y points
+  toward the floor. Gravity acts in the negative Y direction (`Vec3::NEG_Y`).
+- **X and Z axes form the horizontal plane.** The tilemap grid is laid out on
+  the XZ plane, with tile positions mapped as `world_x = tile.x` and
+  `world_z = tile.y`.
+
+### Floor Reference (y=0)
+
+**y=0 is the floor plane.** All floor tiles are positioned at `y=0.0` in their
+transform. However, floor tiles have a 0.1-unit-thick box collider (full
+dimensions 1.0 × 0.1 × 1.0), which means:
+
+- The **floor collider surface sits at y=0.05** (half the 0.1 thickness above
+  the origin).
+- The bottom of the floor collider is at y=-0.05.
+
+### Wall Positioning
+
+Wall tiles are positioned at **y=0.5** (transform origin). Walls are 1.0-unit
+cubes, so this places their bottom face at y=0 (flush with the floor plane)
+and their top face at y=1.0.
+
+### Spawn Height Calculations
+
+When spawning dynamic entities, their Y position must be calculated to avoid
+floor-offset bugs:
+
+1. **Identify the collider's vertical extent.** For a capsule of radius `r` and
+   cylinder height `h`, the total height is `h + 2r`.
+2. **Calculate the bottom position.** For a capsule with `y_position` at its
+   transform origin, the bottom of the capsule sits at
+   `y_position - (h/2 + r)`.
+3. **Set spawn height to clear the floor surface.** The entity must spawn with
+   its collider bottom above y=0.05. A safe formula for a capsule is:
+   ```
+   spawn_y = 0.05 + (h/2 + r) + safety_margin
+   ```
+   Example: A capsule with `radius=0.3, height=1.0` has a bottom offset of
+   `1.0/2 + 0.3 = 0.8`. To clear the floor surface at y=0.05 with a small
+   safety margin of 0.01, spawn at `y = 0.05 + 0.8 + 0.01 = 0.86`.
+
+### Rationale
+
+These conventions prevent the floor-offset class of bug where entities spawn
+inside colliders or fall through floors due to inconsistent Y-position
+assumptions. By documenting the floor surface height (y=0.05) and providing a
+formula for spawn heights, we establish a shared reference point across all
+systems that create or position entities.
+
 ## The Compile Horizon
 
 The eight layers are divided across a fundamental boundary - the **compile
