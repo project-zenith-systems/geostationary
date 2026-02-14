@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use physics::LinearVelocity;
+use things::ThingRegistry;
 
 /// Marker component for creatures - entities that can move and act in the world.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
@@ -32,6 +33,14 @@ impl Plugin for CreaturesPlugin {
         app.register_type::<MovementSpeed>();
         app.register_type::<PlayerControlled>();
         app.add_systems(Update, creature_movement_system);
+
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(0, |entity, commands| {
+                commands
+                    .entity(entity)
+                    .insert((Creature, MovementSpeed::default()));
+            });
     }
 }
 

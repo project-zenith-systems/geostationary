@@ -5566,6 +5566,7 @@ name = "things"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "physics",
 ]
 
 [[package]]

@@ -7,8 +7,8 @@ use network::{
     NETWORK_UPDATE_INTERVAL, NetCommand, NetId, NetServerSender, NetworkSet, Server, ServerEvent,
     ServerMessage,
 };
-use physics::{Collider, GravityScale, LinearVelocity, LockedAxes, RigidBody};
-use things::Thing;
+use physics::LinearVelocity;
+use things::SpawnThing;
 
 use crate::app_state::AppState;
 use crate::creatures::{Creature, MovementSpeed, PlayerControlled};
@@ -95,34 +95,17 @@ fn handle_client_events(
     mut messages: MessageReader<ClientEvent>,
     mut menu_events: MessageWriter<MenuEvent>,
     mut next_state: ResMut<NextState<AppState>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut entities: Query<(Entity, &NetId, &ControlledByClient, &mut Transform), With<Creature>>,
+    mut entities: Query<(Entity, &NetId, &mut Transform), With<Creature>>,
     mut client: ResMut<Client>,
 ) {
     for event in messages.read() {
         match event {
             ClientEvent::Connected => {
                 info!("Connected to server");
-
-                // if server.is_none() {
-                //     info!("Connected to server, setting role to Client");
-                //     commands.insert_resource(Client {
-                //         local_net_id: NetId(0),
-                //     });
-                // } else {
-                //     info!("Self-connection established (ListenServer)");
-                // }
-
                 next_state.set(AppState::InGame);
             }
             ClientEvent::Disconnected { reason } => {
                 info!("Disconnected: {reason}");
-                // if server.is_some() {
-                //     net_commands.write(NetCommand::StopHosting);
-                //     commands.remove_resource::<Server>();
-                // }
-
                 next_state.set(AppState::MainMenu);
                 menu_events.write(MenuEvent::Title);
             }
@@ -131,14 +114,7 @@ fn handle_client_events(
                 menu_events.write(MenuEvent::Title);
             }
             ClientEvent::ServerMessageReceived(message) => {
-                handle_server_message(
-                    message,
-                    &mut commands,
-                    &mut entities,
-                    &mut meshes,
-                    &mut materials,
-                    &mut client,
-                );
+                handle_server_message(message, &mut commands, &mut entities, &mut client);
             }
         }
     }
@@ -183,6 +159,7 @@ fn handle_client_message(
                         kind: 0,
                         position: transform.translation.into(),
                         velocity: [velocity.x, velocity.y, velocity.z],
+                        controlled: false,
                     },
                 );
             }
@@ -195,24 +172,30 @@ fn handle_client_message(
                 net_id.0, from.0
             );
 
-            // Broadcast EntitySpawned to all clients
+            // Tell the owning client first (with control flag)
+            sender.send_to(
+                *from,
+                &ServerMessage::EntitySpawned {
+                    net_id,
+                    kind: 0,
+                    position: spawn_pos.into(),
+                    velocity: [0.0, 0.0, 0.0],
+                    controlled: true,
+                },
+            );
+
+            // Broadcast to all (owner will skip via duplicate check)
             sender.broadcast(&ServerMessage::EntitySpawned {
-                net_id: net_id,
+                net_id,
                 kind: 0,
                 position: spawn_pos.into(),
                 velocity: [0.0, 0.0, 0.0],
+                controlled: false,
             });
-
-            // Tell this client which entity they control
-            sender.send_to(*from, &ServerMessage::AssignControl { net_id: net_id });
         }
         ClientMessage::Input { direction } => {
             for (_, controlled_by, _, mut velocity, movement_speed) in entities.iter_mut() {
                 if controlled_by.0 == *from {
-                    info!(
-                        "Applying input from ClientId({}): direction={:?}",
-                        from.0, direction
-                    );
                     let dir = Vec3::from_array(*direction);
                     let desired = if dir.length_squared() > 0.0 {
                         dir.normalize() * movement_speed.speed
@@ -231,9 +214,7 @@ fn handle_client_message(
 fn handle_server_message(
     message: &ServerMessage,
     commands: &mut Commands,
-    entities: &mut Query<(Entity, &NetId, &ControlledByClient, &mut Transform), With<Creature>>,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
+    entities: &mut Query<(Entity, &NetId, &mut Transform), With<Creature>>,
     client: &mut ResMut<Client>,
 ) {
     match message {
@@ -243,12 +224,13 @@ fn handle_server_message(
         }
         ServerMessage::EntitySpawned {
             net_id,
-            kind: _,
+            kind,
             position,
             velocity: _,
+            controlled,
         } => {
             // Skip if entity already exists (e.g. duplicate message)
-            let already_exists = entities.iter().any(|(_, id, _, _)| id.0 == net_id.0);
+            let already_exists = entities.iter().any(|(_, id, _)| id.0 == net_id.0);
             if already_exists {
                 debug!(
                     "EntitySpawned for NetId({}) but already exists, skipping",
@@ -260,27 +242,29 @@ fn handle_server_message(
             let pos = Vec3::from_array(*position);
             info!("Spawning replica entity NetId({}) at {pos}", net_id.0);
 
-            commands.spawn((
-                Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(0.8, 0.5, 0.2),
-                    ..default()
-                })),
-                Transform::from_translation(pos),
-                RigidBody::Kinematic,
-                Collider::capsule(0.3, 1.0),
-                LockedAxes::ROTATION_LOCKED.lock_translation_y(),
-                GravityScale(0.0),
-                NetId(net_id.0),
-                Creature,
-                MovementSpeed::default(),
-                Thing,
-                DespawnOnExit(AppState::InGame),
-            ));
+            let entity = commands
+                .spawn((net_id.clone(), DespawnOnExit(AppState::InGame)))
+                .id();
+            commands.trigger(SpawnThing {
+                entity,
+                kind: *kind,
+                position: pos,
+            });
+
+            if *controlled {
+                if let Some(local_client_id) = client.local_id {
+                    info!("Taking control of NetId({})", net_id.0);
+                    commands
+                        .entity(entity)
+                        .insert((PlayerControlled, ControlledByClient(local_client_id)));
+                } else {
+                    error!("EntitySpawned with controlled=true but local_id is not set");
+                }
+            }
         }
         ServerMessage::EntityDespawned { net_id } => {
             info!("Despawning replica entity NetId({})", net_id.0);
-            for (entity, id, _, _) in entities.iter() {
+            for (entity, id, _) in entities.iter() {
                 if id.0 == net_id.0 {
                     commands.entity(entity).despawn();
                     break;
@@ -289,32 +273,11 @@ fn handle_server_message(
         }
         ServerMessage::StateUpdate { entities: states } => {
             for state in states.iter() {
-                for (_, id, _, mut transform) in entities.iter_mut() {
+                for (_, id, mut transform) in entities.iter_mut() {
                     if id.0 == state.net_id.0 {
                         transform.translation = Vec3::from_array(state.position);
                         break;
                     }
-                }
-            }
-        }
-        ServerMessage::AssignControl { net_id } => {
-            info!(
-                "AssignControl: NetId({}) is our controlled entity",
-                net_id.0
-            );
-
-            let Some(local_client_id) = client.local_id else {
-                error!("Received AssignControl but local_id is not set, ignoring");
-                return;
-            };
-
-            for (entity, id, _, _) in entities.iter() {
-                if id.0 == net_id.0 {
-                    commands.entity(entity).insert(PlayerControlled);
-                    commands
-                        .entity(entity)
-                        .insert(ControlledByClient(local_client_id));
-                    break;
                 }
             }
         }
@@ -341,7 +304,7 @@ fn broadcast_state(
     let states = entities
         .iter()
         .map(|(net_id, transform, velocity)| EntityState {
-            net_id: network::NetId(net_id.0),
+            net_id: net_id.clone(),
             position: transform.translation.into(),
             velocity: [velocity.x, velocity.y, velocity.z],
         })

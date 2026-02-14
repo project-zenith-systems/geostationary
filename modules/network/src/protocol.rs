@@ -44,13 +44,13 @@ pub enum ServerMessage {
         kind: u16,
         position: [f32; 3],
         velocity: [f32; 3],
+        /// When true, the receiving client should take control of this entity.
+        controlled: bool,
     },
     /// A replicated entity was despawned.
     EntityDespawned { net_id: NetId },
     /// Authoritative spatial state update for all replicated entities.
     StateUpdate { entities: Vec<EntityState> },
-    /// Tells a client which entity they control (camera, input).
-    AssignControl { net_id: NetId },
 }
 
 /// Messages sent from clients to server.
