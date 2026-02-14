@@ -1,37 +1,21 @@
 use std::net::SocketAddr;
 
 use bevy::prelude::*;
-use bevy::state::state_scoped::DespawnOnExit;
 use network::{
-    Client, ClientEvent, ClientId, ClientMessage, ControlledByClient, EntityState,
-    NETWORK_UPDATE_INTERVAL, NetCommand, NetId, NetServerSender, NetworkSet, Server, ServerEvent,
-    ServerMessage,
+    ClientId, ClientMessage, ControlledByClient, EntityState, InputDirection, NetCommand, NetId,
+    NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage, NETWORK_UPDATE_INTERVAL,
 };
 use physics::LinearVelocity;
-use things::{SpawnThing, Thing};
 
-use crate::app_state::AppState;
-use crate::main_menu::MenuEvent;
+pub struct ServerPlugin;
 
-/// Current input direction for an entity. Written by input systems (client)
-/// or from received network messages (server). Read by creatures module
-/// to apply velocity.
-#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
-#[reflect(Component)]
-pub struct InputDirection(pub Vec3);
-
-pub struct NetworkEventsPlugin;
-
-impl Plugin for NetworkEventsPlugin {
+impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<InputDirection>();
         app.init_resource::<StateBroadcastTimer>();
         app.add_systems(
             PreUpdate,
-            (
-                handle_server_events.run_if(resource_exists::<Server>),
-                handle_client_events.run_if(resource_exists::<Client>),
-            )
+            handle_server_events
+                .run_if(resource_exists::<Server>)
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
         );
@@ -56,7 +40,6 @@ fn handle_server_events(
     mut commands: Commands,
     mut messages: MessageReader<ServerEvent>,
     mut net_commands: MessageWriter<NetCommand>,
-    mut menu_events: MessageWriter<MenuEvent>,
     mut sender: Option<ResMut<NetServerSender>>,
     mut server: ResMut<Server>,
     mut entities: Query<(
@@ -72,7 +55,6 @@ fn handle_server_events(
             ServerEvent::HostingStarted { port } => {
                 info!("Hosting started on port {port}");
                 let addr: SocketAddr = ([127, 0, 0, 1], *port).into();
-
                 info!("Connecting to self at {addr}");
                 net_commands.write(NetCommand::Connect { addr });
             }
@@ -81,8 +63,6 @@ fn handle_server_events(
             }
             ServerEvent::Error(msg) => {
                 error!("Network error: {msg}");
-                // TODO proper error handling and user feedback instead of just returning to main menu
-                menu_events.write(MenuEvent::Title);
             }
             ServerEvent::ClientConnected { id, addr } => {
                 info!("Client {} connected from {addr}", id.0);
@@ -92,36 +72,6 @@ fn handle_server_events(
             }
             ServerEvent::ClientMessageReceived { from, message } => {
                 handle_client_message(from, message, &mut sender, &mut server, &mut entities);
-            }
-        }
-    }
-}
-
-fn handle_client_events(
-    mut commands: Commands,
-    mut messages: MessageReader<ClientEvent>,
-    mut menu_events: MessageWriter<MenuEvent>,
-    mut next_state: ResMut<NextState<AppState>>,
-    mut entities: Query<(Entity, &NetId, &mut Transform), With<Thing>>,
-    mut client: ResMut<Client>,
-) {
-    for event in messages.read() {
-        match event {
-            ClientEvent::Connected => {
-                info!("Connected to server");
-                next_state.set(AppState::InGame);
-            }
-            ClientEvent::Disconnected { reason } => {
-                info!("Disconnected: {reason}");
-                next_state.set(AppState::MainMenu);
-                menu_events.write(MenuEvent::Title);
-            }
-            ClientEvent::Error(msg) => {
-                error!("Network error: {msg}");
-                menu_events.write(MenuEvent::Title);
-            }
-            ClientEvent::ServerMessageReceived(message) => {
-                handle_server_message(message, &mut commands, &mut entities, &mut client);
             }
         }
     }
@@ -196,76 +146,6 @@ fn handle_client_message(
                 if controlled_by.0 == *from {
                     input_dir.0 = Vec3::from_array(*direction);
                     break;
-                }
-            }
-        }
-    }
-}
-
-fn handle_server_message(
-    message: &ServerMessage,
-    commands: &mut Commands,
-    entities: &mut Query<(Entity, &NetId, &mut Transform), With<Thing>>,
-    client: &mut ResMut<Client>,
-) {
-    match message {
-        ServerMessage::Welcome { client_id } => {
-            info!("Received Welcome, local ClientId assigned: {}", client_id.0);
-            client.local_id = Some(*client_id);
-        }
-        ServerMessage::EntitySpawned {
-            net_id,
-            kind,
-            position,
-            velocity: _,
-            owner,
-        } => {
-            // Skip if entity already exists (e.g. duplicate message)
-            let already_exists = entities.iter().any(|(_, id, _)| id.0 == net_id.0);
-            if already_exists {
-                debug!(
-                    "EntitySpawned for NetId({}) but already exists, skipping",
-                    net_id.0
-                );
-                return;
-            }
-
-            let pos = Vec3::from_array(*position);
-            info!("Spawning replica entity NetId({}) at {pos}", net_id.0);
-
-            let controlled = *owner == client.local_id && owner.is_some();
-            let entity = commands
-                .spawn((net_id.clone(), DespawnOnExit(AppState::InGame)))
-                .id();
-            commands.trigger(SpawnThing {
-                entity,
-                kind: *kind,
-                position: pos,
-                controlled,
-            });
-
-            if let Some(owner_id) = owner {
-                commands
-                    .entity(entity)
-                    .insert(ControlledByClient(*owner_id));
-            }
-        }
-        ServerMessage::EntityDespawned { net_id } => {
-            info!("Despawning replica entity NetId({})", net_id.0);
-            for (entity, id, _) in entities.iter() {
-                if id.0 == net_id.0 {
-                    commands.entity(entity).despawn();
-                    break;
-                }
-            }
-        }
-        ServerMessage::StateUpdate { entities: states } => {
-            for state in states.iter() {
-                for (_, id, mut transform) in entities.iter_mut() {
-                    if id.0 == state.net_id.0 {
-                        transform.translation = Vec3::from_array(state.position);
-                        break;
-                    }
                 }
             }
         }

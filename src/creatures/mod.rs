@@ -3,7 +3,7 @@ use physics::LinearVelocity;
 use things::ThingRegistry;
 
 use crate::camera::PlayerControlled;
-use crate::network_events::InputDirection;
+use network::InputDirection;
 
 /// Marker component for creatures - entities that can move and act in the world.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]

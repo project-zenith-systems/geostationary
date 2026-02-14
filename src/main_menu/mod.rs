@@ -1,5 +1,5 @@
 use bevy::{app::AppExit, prelude::*, state::state_scoped::DespawnOnExit};
-use network::{Client, NetCommand, Server};
+use network::{Client, ClientEvent, NetCommand, Server, ServerEvent};
 use ui::*;
 
 use crate::app_state::AppState;
@@ -17,7 +17,12 @@ impl Plugin for MainMenuPlugin {
         app.add_systems(OnEnter(AppState::MainMenu), (menu_setup, menu_init));
         app.add_systems(
             PreUpdate,
-            menu_message_reader.run_if(in_state(AppState::MainMenu)),
+            (
+                handle_network_errors,
+                menu_message_reader,
+            )
+                .chain()
+                .run_if(in_state(AppState::MainMenu)),
         );
     }
 }
@@ -59,6 +64,25 @@ fn menu_setup(mut commands: Commands, theme: Res<UiTheme>) {
 
 fn menu_init(mut writer: MessageWriter<MenuEvent>) {
     writer.write(MenuEvent::Title);
+}
+
+/// Resets the menu to the title screen when network errors or disconnects
+/// occur while still in MainMenu state (e.g. during the loading screen).
+fn handle_network_errors(
+    mut client_events: MessageReader<ClientEvent>,
+    mut server_events: MessageReader<ServerEvent>,
+    mut menu_events: MessageWriter<MenuEvent>,
+) {
+    for event in client_events.read() {
+        if matches!(event, ClientEvent::Error(_) | ClientEvent::Disconnected { .. }) {
+            menu_events.write(MenuEvent::Title);
+        }
+    }
+    for event in server_events.read() {
+        if matches!(event, ServerEvent::Error(_)) {
+            menu_events.write(MenuEvent::Title);
+        }
+    }
 }
 
 fn menu_message_reader(

@@ -80,6 +80,13 @@ impl Default for Client {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ControlledByClient(pub ClientId);
 
+/// Current input direction for an entity. Written by input systems (client)
+/// or from received network messages (server). Read by creatures module
+/// to apply velocity.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct InputDirection(pub Vec3);
+
 /// Events emitted by the server side of the network layer.
 #[derive(Message, Clone, Debug)]
 pub enum ServerEvent {
@@ -187,6 +194,7 @@ impl Plugin for NetworkPlugin {
         let (server_event_tx, server_event_rx) = mpsc::unbounded_channel();
         let (client_event_tx, client_event_rx) = mpsc::unbounded_channel();
 
+        app.register_type::<InputDirection>();
         app.insert_resource(NetworkRuntime::new());
         app.insert_resource(NetworkTasks::default());
         app.insert_resource(ServerEventSender(server_event_tx));

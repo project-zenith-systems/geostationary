@@ -12,7 +12,7 @@ mod client;
 mod config;
 mod creatures;
 mod main_menu;
-mod network_events;
+mod server;
 mod world_setup;
 
 fn main() {
@@ -38,7 +38,7 @@ fn main() {
         .add_plugins(camera::CameraPlugin)
         .add_plugins(world_setup::WorldSetupPlugin)
         .add_plugins(client::ClientPlugin)
-        .add_plugins(network_events::NetworkEventsPlugin)
+        .add_plugins(server::ServerPlugin)
         .init_state::<app_state::AppState>()
         .run();
 }
