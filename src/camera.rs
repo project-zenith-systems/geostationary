@@ -2,11 +2,7 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
 use crate::app_state::AppState;
-
-/// Marker component for player-controlled entities (camera target, input receiver).
-#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
-#[reflect(Component)]
-pub struct PlayerControlled;
+use crate::client::PlayerControlled;
 
 /// Marker component for the follow camera.
 #[derive(Component)]

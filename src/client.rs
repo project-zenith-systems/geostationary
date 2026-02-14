@@ -7,12 +7,17 @@ use network::{
 use things::{SpawnThing, Thing};
 
 use crate::app_state::AppState;
-use crate::camera::PlayerControlled;
+
+/// Marker component for player-controlled entities (camera target, input receiver).
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct PlayerControlled;
 
 pub struct ClientPlugin;
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
+        app.register_type::<PlayerControlled>();
         app.init_resource::<InputSendTimer>();
         app.init_resource::<LastSentDirection>();
         app.add_systems(

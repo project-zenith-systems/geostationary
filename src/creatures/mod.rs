@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use physics::LinearVelocity;
 use things::ThingRegistry;
 
-use crate::camera::PlayerControlled;
+use crate::client::PlayerControlled;
 use network::InputDirection;
 
 /// Marker component for creatures - entities that can move and act in the world.
