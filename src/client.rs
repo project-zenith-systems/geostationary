@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 use network::{Client, ClientMessage, NETWORK_UPDATE_INTERVAL, NetClientSender};
 
+use crate::camera::PlayerControlled;
+use crate::network_events::InputDirection;
+
 pub struct ClientPlugin;
 
 impl Plugin for ClientPlugin {
@@ -28,15 +31,15 @@ impl Default for InputSendTimer {
 #[derive(Resource, Default)]
 struct LastSentDirection(Vec3);
 
-/// System that sends client input to the server.
-/// Reads keyboard and sends ClientMessage::Input via NetClientSender.
-/// Throttled to NETWORK_UPDATE_RATE to reduce network traffic.
+/// System that sends client input direction to the server.
+/// Reads InputDirection component (written by creatures module) and sends
+/// via NetClientSender. Throttled to NETWORK_UPDATE_RATE to reduce traffic.
 fn send_client_input(
     time: Res<Time>,
     mut timer: ResMut<InputSendTimer>,
-    keyboard: Res<ButtonInput<KeyCode>>,
     client_sender: Option<Res<NetClientSender>>,
     mut last_sent: ResMut<LastSentDirection>,
+    query: Query<&InputDirection, With<PlayerControlled>>,
 ) {
     let Some(sender) = client_sender else {
         return;
@@ -46,21 +49,11 @@ fn send_client_input(
         return;
     }
 
-    let mut direction = Vec3::ZERO;
+    let Ok(input) = query.single() else {
+        return;
+    };
 
-    if keyboard.pressed(KeyCode::KeyW) {
-        direction.z -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyS) {
-        direction.z += 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyA) {
-        direction.x -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyD) {
-        direction.x += 1.0;
-    }
-
+    let direction = input.0;
     if direction == last_sent.0 {
         return;
     }

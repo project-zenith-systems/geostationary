@@ -8,16 +8,23 @@ use network::{
     ServerMessage,
 };
 use physics::LinearVelocity;
-use things::SpawnThing;
+use things::{SpawnThing, Thing};
 
 use crate::app_state::AppState;
-use crate::creatures::{Creature, MovementSpeed};
 use crate::main_menu::MenuEvent;
+
+/// Current input direction for an entity. Written by input systems (client)
+/// or from received network messages (server). Read by creatures module
+/// to apply velocity.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct InputDirection(pub Vec3);
 
 pub struct NetworkEventsPlugin;
 
 impl Plugin for NetworkEventsPlugin {
     fn build(&self, app: &mut App) {
+        app.register_type::<InputDirection>();
         app.init_resource::<StateBroadcastTimer>();
         app.add_systems(
             PreUpdate,
@@ -56,8 +63,8 @@ fn handle_server_events(
         &NetId,
         &ControlledByClient,
         &Transform,
-        &mut LinearVelocity,
-        &MovementSpeed,
+        &LinearVelocity,
+        &mut InputDirection,
     )>,
 ) {
     for event in messages.read() {
@@ -95,7 +102,7 @@ fn handle_client_events(
     mut messages: MessageReader<ClientEvent>,
     mut menu_events: MessageWriter<MenuEvent>,
     mut next_state: ResMut<NextState<AppState>>,
-    mut entities: Query<(Entity, &NetId, &mut Transform), With<Creature>>,
+    mut entities: Query<(Entity, &NetId, &mut Transform), With<Thing>>,
     mut client: ResMut<Client>,
 ) {
     for event in messages.read() {
@@ -129,8 +136,8 @@ fn handle_client_message(
         &NetId,
         &ControlledByClient,
         &Transform,
-        &mut LinearVelocity,
-        &MovementSpeed,
+        &LinearVelocity,
+        &mut InputDirection,
     )>,
 ) {
     match message {
@@ -185,16 +192,9 @@ fn handle_client_message(
             });
         }
         ClientMessage::Input { direction } => {
-            for (_, controlled_by, _, mut velocity, movement_speed) in entities.iter_mut() {
+            for (_, controlled_by, _, _, mut input_dir) in entities.iter_mut() {
                 if controlled_by.0 == *from {
-                    let dir = Vec3::from_array(*direction);
-                    let desired = if dir.length_squared() > 0.0 {
-                        dir.normalize() * movement_speed.speed
-                    } else {
-                        Vec3::ZERO
-                    };
-                    velocity.x = desired.x;
-                    velocity.z = desired.z;
+                    input_dir.0 = Vec3::from_array(*direction);
                     break;
                 }
             }
@@ -205,7 +205,7 @@ fn handle_client_message(
 fn handle_server_message(
     message: &ServerMessage,
     commands: &mut Commands,
-    entities: &mut Query<(Entity, &NetId, &mut Transform), With<Creature>>,
+    entities: &mut Query<(Entity, &NetId, &mut Transform), With<Thing>>,
     client: &mut ResMut<Client>,
 ) {
     match message {
