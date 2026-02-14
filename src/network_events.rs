@@ -79,58 +79,12 @@ fn handle_server_events(
             }
             ServerEvent::ClientConnected { id, addr } => {
                 info!("Client {} connected from {addr}", id.0);
-
-                let sender = match sender.as_mut() {
-                    Some(s) => s,
-                    None => {
-                        warn!(
-                            "No NetServerSender available to send welcome message to ClientId({})",
-                            id.0
-                        );
-                        continue;
-                    }
-                };
-
-                // 1. Welcome
-                sender.send_to(*id, &ServerMessage::Welcome { client_id: *id });
-
-                // 2. Catch-up: send EntitySpawned for every existing replicated entity
-                for (net_id, _, transform, velocity, _) in entities.iter() {
-                    sender.send_to(
-                        *id,
-                        &ServerMessage::EntitySpawned {
-                            net_id: *net_id,
-                            kind: 0,
-                            position: transform.translation.into(),
-                            velocity: [velocity.x, velocity.y, velocity.z],
-                        },
-                    );
-                }
-
-                // 3. Spawn player entity
-                let net_id = server.next_net_id();
-                let spawn_pos = Vec3::new(6.0, 0.86, 3.0);
-                info!(
-                    "Spawning player entity NetId({}) for ClientId({}) at {spawn_pos}",
-                    net_id.0, id.0
-                );
-
-                // 4. Broadcast EntitySpawned to all clients
-                sender.broadcast(&ServerMessage::EntitySpawned {
-                    net_id: net_id,
-                    kind: 0,
-                    position: spawn_pos.into(),
-                    velocity: [0.0, 0.0, 0.0],
-                });
-
-                // 5. Tell this client which entity they control
-                sender.send_to(*id, &ServerMessage::AssignControl { net_id: net_id });
             }
             ServerEvent::ClientDisconnected { id } => {
                 info!("Client {} disconnected", id.0);
             }
             ServerEvent::ClientMessageReceived { from, message } => {
-                handle_client_message(from, message, &mut entities);
+                handle_client_message(from, message, &mut sender, &mut server, &mut entities);
             }
         }
     }
@@ -193,6 +147,8 @@ fn handle_client_events(
 fn handle_client_message(
     from: &ClientId,
     message: &ClientMessage,
+    sender: &mut Option<ResMut<NetServerSender>>,
+    server: &mut ResMut<Server>,
     entities: &mut Query<(
         &NetId,
         &ControlledByClient,
@@ -204,6 +160,51 @@ fn handle_client_message(
     match message {
         ClientMessage::Hello => {
             info!("Received client hello from ClientId({})", from.0);
+
+            let sender = match sender.as_mut() {
+                Some(s) => s,
+                None => {
+                    warn!(
+                        "No NetServerSender available to process hello for ClientId({})",
+                        from.0
+                    );
+                    return;
+                }
+            };
+
+            sender.send_to(*from, &ServerMessage::Welcome { client_id: *from });
+
+            // Catch-up: send EntitySpawned for every existing replicated entity
+            for (net_id, _, transform, velocity, _) in entities.iter() {
+                sender.send_to(
+                    *from,
+                    &ServerMessage::EntitySpawned {
+                        net_id: *net_id,
+                        kind: 0,
+                        position: transform.translation.into(),
+                        velocity: [velocity.x, velocity.y, velocity.z],
+                    },
+                );
+            }
+
+            // Spawn player entity
+            let net_id = server.next_net_id();
+            let spawn_pos = Vec3::new(6.0, 0.86, 3.0);
+            info!(
+                "Spawning player entity NetId({}) for ClientId({}) at {spawn_pos}",
+                net_id.0, from.0
+            );
+
+            // Broadcast EntitySpawned to all clients
+            sender.broadcast(&ServerMessage::EntitySpawned {
+                net_id: net_id,
+                kind: 0,
+                position: spawn_pos.into(),
+                velocity: [0.0, 0.0, 0.0],
+            });
+
+            // Tell this client which entity they control
+            sender.send_to(*from, &ServerMessage::AssignControl { net_id: net_id });
         }
         ClientMessage::Input { direction } => {
             for (_, controlled_by, _, mut velocity, movement_speed) in entities.iter_mut() {
