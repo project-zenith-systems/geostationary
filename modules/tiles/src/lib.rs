@@ -74,6 +74,33 @@ impl Tilemap {
         self.get(pos).is_some_and(|kind| kind.is_walkable())
     }
 
+    /// Creates a 12x10 test room with perimeter walls and internal obstacles.
+    pub fn test_room() -> Tilemap {
+        let mut tilemap = Tilemap::new(12, 10, TileKind::Floor);
+
+        // Perimeter walls
+        for x in 0..12 {
+            tilemap.set(IVec2::new(x, 0), TileKind::Wall);
+            tilemap.set(IVec2::new(x, 9), TileKind::Wall);
+        }
+        for y in 0..10 {
+            tilemap.set(IVec2::new(0, y), TileKind::Wall);
+            tilemap.set(IVec2::new(11, y), TileKind::Wall);
+        }
+
+        // Internal walls for collision testing
+        // Vertical wall segment
+        for y in 2..6 {
+            tilemap.set(IVec2::new(4, y), TileKind::Wall);
+        }
+        // Horizontal wall segment
+        for x in 7..10 {
+            tilemap.set(IVec2::new(x, 5), TileKind::Wall);
+        }
+
+        tilemap
+    }
+
     /// Returns an iterator over all tiles with their positions and kinds
     pub fn iter(&self) -> impl Iterator<Item = (IVec2, TileKind)> + '_ {
         (0..self.height).flat_map(move |y| {
@@ -166,13 +193,14 @@ fn spawn_tile_meshes(
 
         match kind {
             TileKind::Floor => {
+                // Collider is 0.1 tall (full dim), centered on transform.
+                // Offset y by -0.05 so the top surface sits at y=0.0.
                 commands.spawn((
                     Mesh3d(tile_meshes.floor_mesh.clone()),
                     MeshMaterial3d(tile_meshes.floor_material.clone()),
-                    Transform::from_xyz(world_x, 0.0, world_z),
+                    Transform::from_xyz(world_x, -0.05, world_z),
                     Tile { position: pos },
                     RigidBody::Static,
-                    // avian3d Collider::cuboid takes full dimensions, not half-extents
                     Collider::cuboid(1.0, 0.1, 1.0),
                 ));
             }
@@ -189,6 +217,7 @@ fn spawn_tile_meshes(
             }
         }
     }
+
 }
 
 #[cfg(test)]
@@ -258,6 +287,31 @@ mod tests {
         assert_eq!(tilemap.get(IVec2::new(0, 2)), Some(TileKind::Floor));
         assert_eq!(tilemap.get(IVec2::new(1, 2)), Some(TileKind::Floor));
         assert_eq!(tilemap.get(IVec2::new(2, 2)), Some(TileKind::Wall));
+    }
+
+    #[test]
+    fn test_tilemap_test_room() {
+        let room = Tilemap::test_room();
+        assert_eq!(room.width(), 12);
+        assert_eq!(room.height(), 10);
+
+        // Perimeter should be walls
+        for x in 0..12 {
+            assert_eq!(room.get(IVec2::new(x, 0)), Some(TileKind::Wall));
+            assert_eq!(room.get(IVec2::new(x, 9)), Some(TileKind::Wall));
+        }
+        for y in 0..10 {
+            assert_eq!(room.get(IVec2::new(0, y)), Some(TileKind::Wall));
+            assert_eq!(room.get(IVec2::new(11, y)), Some(TileKind::Wall));
+        }
+
+        // Interior should be floor (spot check)
+        assert_eq!(room.get(IVec2::new(5, 5)), Some(TileKind::Floor));
+        assert_eq!(room.get(IVec2::new(6, 3)), Some(TileKind::Floor));
+
+        // Internal walls
+        assert_eq!(room.get(IVec2::new(4, 3)), Some(TileKind::Wall));
+        assert_eq!(room.get(IVec2::new(8, 5)), Some(TileKind::Wall));
     }
 
     #[test]

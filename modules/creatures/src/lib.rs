@@ -1,9 +1,6 @@
 use bevy::prelude::*;
 use physics::LinearVelocity;
-use things::ThingRegistry;
-
-use crate::client::PlayerControlled;
-use network::InputDirection;
+use things::{InputDirection, ThingRegistry};
 
 /// Marker component for creatures - entities that can move and act in the world.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
@@ -23,46 +20,27 @@ impl Default for MovementSpeed {
     }
 }
 
+/// Plugin that registers creature components and movement systems.
+///
+/// Must be added after [`things::ThingsPlugin`] so that [`ThingRegistry`]
+/// is available for kind registration.
 pub struct CreaturesPlugin;
 
 impl Plugin for CreaturesPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Creature>();
         app.register_type::<MovementSpeed>();
-        app.add_systems(Update, (read_player_input, apply_input_velocity).chain());
+        app.add_systems(Update, apply_input_velocity);
 
         app.world_mut()
             .resource_mut::<ThingRegistry>()
-            .register(0, |entity, event, commands| {
-                let mut ec = commands.entity(entity);
-                ec.insert((Creature, MovementSpeed::default(), InputDirection::default()));
-                if event.controlled {
-                    ec.insert(PlayerControlled);
-                }
+            .register(0, |entity, _event, commands| {
+                commands.entity(entity).insert((
+                    Creature,
+                    MovementSpeed::default(),
+                    InputDirection::default(),
+                ));
             });
-    }
-}
-
-/// Reads keyboard input and writes InputDirection on PlayerControlled entities.
-fn read_player_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut query: Query<&mut InputDirection, With<PlayerControlled>>,
-) {
-    for mut input in query.iter_mut() {
-        let mut direction = Vec3::ZERO;
-        if keyboard.pressed(KeyCode::KeyW) {
-            direction.z -= 1.0;
-        }
-        if keyboard.pressed(KeyCode::KeyS) {
-            direction.z += 1.0;
-        }
-        if keyboard.pressed(KeyCode::KeyA) {
-            direction.x -= 1.0;
-        }
-        if keyboard.pressed(KeyCode::KeyD) {
-            direction.x += 1.0;
-        }
-        input.0 = direction;
     }
 }
 

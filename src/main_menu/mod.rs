@@ -1,5 +1,5 @@
 use bevy::{app::AppExit, prelude::*, state::state_scoped::DespawnOnExit};
-use network::{Client, ClientEvent, NetCommand, Server, ServerEvent};
+use network::{ClientEvent, NetCommand, NetworkSet, ServerEvent};
 use ui::*;
 
 use crate::app_state::AppState;
@@ -17,11 +17,10 @@ impl Plugin for MainMenuPlugin {
         app.add_systems(OnEnter(AppState::MainMenu), (menu_setup, menu_init));
         app.add_systems(
             PreUpdate,
-            (
-                handle_network_errors,
-                menu_message_reader,
-            )
+            (handle_network_errors, menu_message_reader)
                 .chain()
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send)
                 .run_if(in_state(AppState::MainMenu)),
         );
     }
@@ -74,7 +73,10 @@ fn handle_network_errors(
     mut menu_events: MessageWriter<MenuEvent>,
 ) {
     for event in client_events.read() {
-        if matches!(event, ClientEvent::Error(_) | ClientEvent::Disconnected { .. }) {
+        if matches!(
+            event,
+            ClientEvent::Error(_) | ClientEvent::Disconnected { .. }
+        ) {
             menu_events.write(MenuEvent::Title);
         }
     }
@@ -108,8 +110,6 @@ fn menu_message_reader(
                 theme.as_ref(),
             )),
             MenuEvent::Play => {
-                commands.insert_resource(Server::default());
-                commands.insert_resource(Client::default());
                 net_commands.write(NetCommand::Host {
                     port: config.network.port,
                 });
@@ -119,7 +119,6 @@ fn menu_message_reader(
                 ))
             }
             MenuEvent::Join => {
-                commands.insert_resource(Client::default());
                 net_commands.write(NetCommand::Connect {
                     addr: ([127u8, 0u8, 0u8, 1u8], config.network.port).into(),
                 });
