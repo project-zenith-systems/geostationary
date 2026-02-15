@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
 use crate::app_state::AppState;
-use crate::creatures::PlayerControlled;
+use crate::client::PlayerControlled;
 
 /// Marker component for the follow camera.
 #[derive(Component)]
@@ -94,20 +94,51 @@ fn camera_follow_system(
 mod tests {
     use super::*;
 
+    /// Verifies that camera_follow_system moves the camera toward a
+    /// PlayerControlled entity's position + offset. Uses a very high
+    /// follow_speed so even a sub-millisecond delta clamps the lerp to 1.0,
+    /// snapping the camera to the target in a single frame.
     #[test]
-    fn test_camera_config_default() {
-        let config = CameraConfig::default();
-        assert_eq!(config.follow_speed, 2.0);
-        assert_eq!(config.offset, Vec3::new(0.0, 10.0, 8.0));
-    }
+    fn test_camera_follows_player_controlled_entity() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
 
-    #[test]
-    fn test_camera_config_custom() {
-        let config = CameraConfig {
-            follow_speed: 5.0,
-            offset: Vec3::new(0.0, 15.0, 10.0),
-        };
-        assert_eq!(config.follow_speed, 5.0);
-        assert_eq!(config.offset, Vec3::new(0.0, 15.0, 10.0));
+        let offset = Vec3::new(0.0, 10.0, 8.0);
+        app.insert_resource(CameraConfig {
+            follow_speed: 10_000.0,
+            offset,
+        });
+        app.add_systems(Update, camera_follow_system);
+
+        // Player at a known position
+        let player_pos = Vec3::new(5.0, 0.0, 5.0);
+        app.world_mut()
+            .spawn((Transform::from_translation(player_pos), PlayerControlled));
+
+        // Camera starts far away
+        let camera_start = Vec3::new(50.0, 50.0, 50.0);
+        let camera_entity = app
+            .world_mut()
+            .spawn((Transform::from_translation(camera_start), FollowCamera))
+            .id();
+
+        // First update initialises Time (delta ≈ 0), second has real delta
+        app.update();
+        app.update();
+
+        let camera_pos = app
+            .world()
+            .get::<Transform>(camera_entity)
+            .unwrap()
+            .translation;
+        let target = player_pos + offset;
+
+        // With follow_speed=10000, lerp_factor clamps to 1.0 → camera snaps
+        let dist = camera_pos.distance(target);
+        assert!(
+            dist < 0.1,
+            "Camera should snap to player + offset. \
+             Distance: {dist}, camera: {camera_pos}, target: {target}"
+        );
     }
 }

@@ -5,7 +5,13 @@ edition = "2024"
 
 [workspace]
 resolver = "3"
-members = ["modules/ui", "modules/network", "modules/tiles", "modules/things", "modules/physics"]
+members = [
+    "modules/ui",
+    "modules/network",
+    "modules/tiles",
+    "modules/things",
+    "modules/physics",
+]
 
 [profile.dev]
 opt-level = 1
@@ -23,10 +29,16 @@ inherits = "release"
 opt-level = "s"
 strip = "debuginfo"
 
-[dependencies]
+[workspace.dependencies]
 bevy = { version = "0.18" }
 config = { version = "0.15", features = ["ron", "toml"] }
 serde = { version = "1", features = ["derive"] }
+
+[dependencies]
+bevy = { workspace = true }
+config = { workspace = true }
+serde = { workspace = true }
+
 ui = { path = "modules/ui" }
 network = { path = "modules/network" }
 tiles = { path = "modules/tiles" }

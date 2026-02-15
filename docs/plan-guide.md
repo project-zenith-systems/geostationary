@@ -65,7 +65,7 @@ initial plan.>
 1. **Observable outcomes over implementation detail.** "What done looks
    like" describes behaviour a human can verify, not code structure.
 
-2. **Scope by exclusion.** Explicitly list what is *not* in the plan.
+2. **Scope by exclusion.** Explicitly list what is _not_ in the plan.
    This is more useful than listing what is, because it prevents the
    slow expansion of "while we're here" additions.
 
@@ -86,6 +86,48 @@ initial plan.>
    went wrong, and what to do differently. Future plans reference
    past post-mortems.
 
+## Spikes
+
+A **spike** is a short, throwaway experiment that answers a specific question
+before the plan commits to a design. If a design decision depends on runtime
+behaviour you haven't verified — how a library handles a concept, whether two
+subsystems compose the way you expect, what data actually flows between
+components — write a spike task before the main work begins.
+
+### When to spike
+
+- The plan introduces a **new external dependency** and assumes specific
+  semantics (e.g., body-type collision behaviour, stream API shape).
+- A design decision creates **two or more code paths** for the same outcome
+  and you haven't verified that the unified alternative doesn't work.
+- The protocol or component design **encodes an assumption** about
+  cardinality, ownership, or identity that could be wrong (e.g., 1:1
+  peer-to-entity vs many-to-many).
+
+### How to spike
+
+1. Time-box it. 30–60 minutes. The goal is to answer a question, not build
+   a feature.
+2. Write the spike as the first task in `TODO.md`. It blocks all other tasks.
+3. The spike's output is a short comment on the task issue: what you learned,
+   whether the plan's assumption held, and what (if anything) needs to change
+   in the plan before continuing.
+4. If the spike invalidates a design section, update the plan document before
+   starting implementation tasks. The plan is a living document — it should
+   reflect what you now know, not what you guessed before the spike.
+5. Delete the spike code. It served its purpose. Clean implementation starts
+   from the updated plan.
+
+### Why this matters
+
+Both completed plans hit the same failure mode: assumptions about runtime
+behaviour were wrong, and the cost was structural rewrites mid-implementation.
+Physics-foundation assumed Kinematic bodies receive collision response (they
+don't in Avian). Networked-multiplayer assumed a peer-centric protocol,
+a `NetworkRole` enum, and a direct host-player spawn — all three were replaced
+during implementation. A 30-minute spike would have caught each of these
+before the plan committed to them.
+
 ## Post-mortem structure
 
 When filling in the post-mortem after a plan ships, use these sections:
@@ -97,8 +139,6 @@ When filling in the post-mortem after a plan ships, use these sections:
   original plan and why.
 - **Hurdles** — Numbered list of problems encountered, how they were
   solved, and what lesson each one taught.
-- **Remaining open issues** — Table of issues that were discovered but
-  not fixed in this plan.
 - **What went well** — Bullet points.
 - **What to do differently next time** — Bullet points.
 
@@ -169,6 +209,7 @@ issue automatically (see `README.md` for format details).
    line that names both the plan branch and the plan document. Use this exact
    format (the backtick-wrapped branch name is parsed by the `validate-pr-target`
    workflow to enforce that task PRs target the correct branch):
+
    ```
    **Plan:** `plan/<name>` · [docs/plans/<name>.md](docs/plans/<name>.md)
    ```
@@ -183,6 +224,14 @@ issue automatically (see `README.md` for format details).
 7. **PRs target the plan branch.** Task PRs merge into `plan/<name>`,
    never directly into `main`. The plan branch is created automatically
    when the plan PR merges.
+
+8. **Tests follow the testing strategy.** Any tests added or modified by a
+   task must follow [docs/testing-strategy.md](testing-strategy.md). In
+   particular, every test must use **Arrange–Act–Assert**: set up state,
+   exercise a behaviour, and check an outcome. Do not commit echo tests
+   that only construct a value and read its fields back — these test the
+   compiler, not the code. See the "What not to test" section of the
+   testing strategy for the full list of anti-patterns.
 
 ### How to decompose a plan
 
@@ -205,9 +254,9 @@ independently.
 - Keep the plan as short as practical. As a rule of thumb, if it grows much
   beyond ~200 lines before the post-mortem section, consider whether the plan
   should be split or simplified.
-- Write the plan before writing code. Resist the urge to prototype
-  first and document later — the plan is a thinking tool, not
-  paperwork.
+- Write the plan before writing code. Use spikes to validate
+  assumptions (see "Spikes" above), but don't prototype the feature
+  itself — the plan is a thinking tool, not paperwork.
 - Reference architecture docs by link, don't duplicate them. The plan
   says what this plan does within the architecture; the architecture
   docs say what the architecture is.

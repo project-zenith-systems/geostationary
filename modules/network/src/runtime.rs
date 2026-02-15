@@ -5,7 +5,20 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::NetEvent;
+use crate::{ClientEvent, ServerEvent, ServerMessage};
+
+/// Internal commands for server message sending.
+/// Bevy → server task bridge: sent from game systems to server task.
+#[derive(Clone, Debug)]
+pub(crate) enum ServerCommand {
+    SendTo {
+        client: crate::ClientId,
+        message: ServerMessage,
+    },
+    Broadcast {
+        message: ServerMessage,
+    },
+}
 
 #[derive(Resource)]
 pub(crate) struct NetworkRuntime {
@@ -29,13 +42,21 @@ impl NetworkRuntime {
     }
 }
 
-/// async → Bevy bridge: async tasks clone this sender to emit events.
+/// async → Bevy bridge: server tasks clone this sender to emit events.
 #[derive(Resource, Clone)]
-pub(crate) struct NetEventSender(pub(crate) mpsc::UnboundedSender<NetEvent>);
+pub(crate) struct ServerEventSender(pub(crate) mpsc::UnboundedSender<ServerEvent>);
 
 /// async → Bevy bridge: drained each frame in PreUpdate.
 #[derive(Resource)]
-pub(crate) struct NetEventReceiver(pub(crate) mpsc::UnboundedReceiver<NetEvent>);
+pub(crate) struct ServerEventReceiver(pub(crate) mpsc::UnboundedReceiver<ServerEvent>);
+
+/// async → Bevy bridge: client tasks clone this sender to emit events.
+#[derive(Resource, Clone)]
+pub(crate) struct ClientEventSender(pub(crate) mpsc::UnboundedSender<ClientEvent>);
+
+/// async → Bevy bridge: drained each frame in PreUpdate.
+#[derive(Resource)]
+pub(crate) struct ClientEventReceiver(pub(crate) mpsc::UnboundedReceiver<ClientEvent>);
 
 /// Tracks active network tasks and their cancellation tokens.
 #[derive(Resource, Default)]
@@ -100,13 +121,6 @@ impl NetworkTasks {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_network_tasks_default() {
-        let tasks = NetworkTasks::default();
-        assert!(!tasks.is_hosting());
-        assert!(!tasks.is_connected());
-    }
 
     #[test]
     fn test_is_hosting() {

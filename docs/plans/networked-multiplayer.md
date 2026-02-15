@@ -206,4 +206,247 @@ screen. On `NetEvent::Connected`, set `NetworkRole::Client`, transition to
 
 ## Post-mortem
 
-*To be filled in after the plan ships.*
+### Outcome
+
+The plan shipped what it promised. Two game instances communicate over QUIC
+using a server-authoritative model: the host runs physics, clients send input
+and receive positions. Protocol types, serialization, sender resources, and the
+full input→state loop all work as designed. The network module boundary held —
+no tokio/quinn types leak. However, the plan branch has two compilation errors
+in tests and two dead-code warnings that must be fixed before the squash-merge
+into main.
+
+### What shipped beyond the plan
+
+| Addition | Why |
+|----------|-----|
+| `bytes` and `futures-util` crate dependencies in `modules/network/Cargo.toml` | Required by `FramedRead`/`FramedWrite`/`SinkExt`/`StreamExt` for the length-delimited codec wrapping of QUIC streams. Not anticipated in the plan's dependency section. |
+| 30 Hz network update throttling (`StateBroadcastTimer`, `InputSendTimer`) | Without throttling, state broadcasts and input sends fire every frame (~144 Hz+), flooding the wire. Not mentioned in the plan but essential for any practical use. |
+| `MissingHostPlayerWarned` resource | Prevents log spam when the host player entity hasn't been created yet. Minor defensive addition. |
+| Per-peer bounded write channels (`PER_PEER_BUFFER_SIZE`) and `CLIENT_BUFFER_SIZE` | Provides backpressure and prevents memory exhaustion from slow peers or fast game code. The plan described the mpsc routing but didn't specify bounded vs unbounded per-peer. |
+| Per-peer `CancellationToken` for coordinated read/write loop shutdown | Ensures both the read and write tasks for a peer stop cleanly when either one exits. Not in the plan but necessary for correct async lifecycle. |
+| `MAX_NET_EVENTS_PER_FRAME` cap with warning deduplication | Prevents the drain loop from stalling the game if a burst of network events arrives. |
+
+### Deviations from plan
+
+- **Listen server connects to itself.** The plan said "OnEnter(InGame) +
+  ListenServer → spawn host player." The implementation instead has the host
+  send `NetCommand::Connect { addr: localhost }` immediately after
+  `HostingStarted`, making the host a peer of its own server. The host player
+  is spawned by `handle_peer_connected` when the self-connection arrives, then
+  `spawn_host_player` tags it with `PlayerControlled`. This is architecturally
+  cleaner (one code path for all peers) but diverges from the plan's direct
+  spawn model.
+
+- **Host PeerId is 1, not 0.** The plan specified `PeerId(0)` for the host
+  player. Because the host connects as a regular peer, it gets the first
+  auto-incremented ID (`PeerId(1)`). The `LocalPeerId` resource tracks which
+  ID belongs to "us" regardless of value.
+
+- **`spawn_host_player` doesn't spawn.** It only tags an existing entity with
+  `PlayerControlled` once the `LocalPeerId` is known. The actual entity spawn
+  happens in `handle_peer_connected`. The plan described a direct spawn system.
+
+- **`FramedRead`/`FramedWrite` instead of `Framed`.** QUIC bi-directional
+  streams expose separate `RecvStream`/`SendStream` halves, so wrapping them
+  individually is necessary. The plan was updated mid-flight to reflect this
+  (the original text said `Framed<stream, LengthDelimitedCodec>`).
+
+- **`creature_movement_system` run condition.** The plan specified
+  `.run_if(|role: Res<NetworkRole>| *role == NetworkRole::ListenServer)`.
+  Implementation uses a named function `is_listen_server_in_game` that also
+  checks `AppState::InGame`. This is arguably better (prevents the system from
+  running during menus) but differs from the plan.
+
+- **`receive_host_messages` runs on both Client and ListenServer.** The plan
+  implied client-only. The implementation guards against double-spawning with
+  `if matches!(*network_role, NetworkRole::ListenServer) { continue; }` checks
+  inside the handler. This is needed because the listen server receives its own
+  broadcast messages via its self-connection.
+
+- **No `TODO.md` on the plan branch.** The plan-guide says to create a
+  `TODO.md` that the workflow converts to issues. The tasks were created as PRs
+  directly without a `TODO.md` intermediary.
+
+### Hurdles
+
+1. **QUIC bi-directional stream halves can't share a `Framed` wrapper.** Quinn
+   exposes `RecvStream` and `SendStream` as separate types, so
+   `Framed<BiStream, Codec>` doesn't work. Had to use `FramedRead` and
+   `FramedWrite` separately. **Lesson:** Check the concrete types of the async
+   I/O library before planning codec wrapping.
+
+2. **Server accept loop blocks command processing.** The original design had
+   `endpoint.accept()` in a simple loop. Server commands (`SendTo`,
+   `Broadcast`) need to be processed concurrently with connection acceptance.
+   Solved with `tokio::select!` over both `endpoint.accept()` and
+   `server_cmd_rx.recv()`. **Lesson:** Any server that both accepts connections
+   and routes messages needs a multiplexed event loop, not sequential steps.
+
+3. **Host needs to be its own peer.** The plan's direct-spawn model for the
+   host player would have created a separate code path from remote peers.
+   Connecting the host to itself unifies spawning, state broadcast, and input
+   handling. The cost is one extra local QUIC connection, which is negligible.
+   **Lesson:** Favour uniform code paths over special cases, even if it means
+   a small architectural deviation from the plan.
+
+4. **`Timer::finished()` became a private field in Bevy 0.18.** Two tests
+   assert `!timer.0.finished()` but this is no longer a public method.
+   **Lesson:** Always compile tests against the target Bevy version before
+   merging.
+
+### Remaining open issues
+
+| Issue | Impact | Notes |
+|-------|--------|-------|
+| Player character is not controllable | Blocker | Race condition between `PeerConnected` event and peer write-channel registration in the server task. The server sends `PeerConnected` to Bevy (step 2 in the per-connection task) *before* the bi-di stream is accepted and the write channel is registered in `peer_senders` (step 4). When `handle_peer_connected` reacts by sending `Welcome` via `NetServerSender`, the server command loop can't find the peer in the senders map and silently drops the message. Without `Welcome`, `LocalPeerId` is never set, `PlayerControlled` is never added, and `creature_movement_system` / `send_client_input` have no target. |
+| Camera does not track the player character | Blocker | Same root cause as above. The camera follows `PlayerControlled` entities. Since `PlayerControlled` is never inserted (depends on `LocalPeerId` from the lost `Welcome` message), the camera has no target and stays at its initial position. |
+| Two test compilation errors (`Timer::finished()` not a method) in `net_game.rs:495,502` | Blocks `cargo test` | Must be fixed before squash-merge. Use `timer.0.just_finished()` or remove the assertion. |
+| Two dead-code warnings (`ServerCommandSender`, `ClientMessageSender` in `runtime.rs:50,54`) | Warning noise | These structs were superseded by `NetServerSender`/`NetClientSender` in `lib.rs`. Delete them. |
+| Irrefutable `if let` warning in `net_game.rs:217` | Warning noise | `PeerMessage` has only one variant (`Input`), making `if let` irrefutable. Use a direct `let` destructure. |
+| Host player spawns at hardcoded position `(8.0, 0.86, 5.0)` | Minor | Should probably use the same spawn position logic as single-player or be configurable. |
+| No integration test for actual QUIC round-trip | Test gap | Protocol serialization is well-tested, but no test verifies end-to-end message delivery over a real connection. |
+
+### What went well
+
+- **Protocol types matched the plan exactly.** `HostMessage`, `PeerMessage`,
+  `PeerState`, `PeerId` all shipped as designed with no rework.
+- **Sealed async boundary held.** No tokio/quinn types appear outside
+  `modules/network/`. The `NetServerSender`/`NetClientSender` resources
+  expose a clean synchronous API.
+- **Bottom-up task sequencing worked.** Each PR built on the previous one
+  cleanly: protocol → API → server streams → client streams → game systems →
+  Join button. No PR had to be reworked due to a missing dependency.
+- **Good test coverage.** 8 protocol roundtrip tests, 5 sender/event tests,
+  10 runtime lifecycle tests, 7 net_game unit tests — all covering the new
+  code. The serialization boundary is especially well-tested.
+- **Domain-neutral protocol.** The network module truly doesn't know about
+  creatures, players, or game state — it deals in peers, positions, and input
+  vectors.
+
+### What to do differently next time
+
+- **Compile tests before each PR merge.** The `Timer::finished()` errors
+  would have been caught immediately. Add a CI check or at minimum run
+  `cargo test` locally before marking a task as done.
+- **Account for self-connection architecture in the plan.** The "host connects
+  to itself" pattern is a better design but wasn't planned. If the plan had
+  explored this option, the `spawn_host_player` system wouldn't have needed
+  rework. Spike architectural options before committing to a player lifecycle
+  design.
+- **List all transitive dependencies.** `bytes` and `futures-util` were
+  obvious needs for the codec wrapping but weren't in the plan's dependency
+  section. A quick scan of the API signatures would have caught this.
+- **Create `TODO.md` per the plan-guide.** Skipping it meant the
+  `validate-pr-target` workflow and issue-labelling automation weren't used.
+  Follow the documented process even for plans where the task breakdown seems
+  obvious.
+- **Clean up dead code immediately.** The `ServerCommandSender` and
+  `ClientMessageSender` vestiges in `runtime.rs` should have been removed in
+  the same PR that introduced their replacements.
+
+### Post-postmortem
+
+The post-mortem above recorded *what* deviated but didn't dig into *why the
+plan failed to predict it*. After the refactors that followed (commits
+`dd7fed1` through `f903874`), the codebase diverged far enough from the plan
+to warrant a deeper look at the plan itself.
+
+#### What the plan got wrong
+
+**1. Peer-centric protocol instead of entity-centric.**
+The plan designed `PeerId`, `PeerState`, `HostMessage`/`PeerMessage`,
+`PeerJoined`/`PeerLeft`. The shipped code uses `ClientId`, `NetId`,
+`EntityState`, `ServerMessage`/`ClientMessage`, `EntitySpawned`/
+`EntityDespawned`. This isn't naming — it's a conceptual error. The plan
+modeled the network as a graph of peers with positions. The actual problem is
+replicating *entities* across a client-server boundary. A peer might own zero,
+one, or many entities. The plan's `PeerJoined { id, position }` can't express
+"entity exists, owned by this client" without baking in 1:1 peer-entity
+coupling. The plan was written from a "who's online" perspective instead of
+"what does the client need to reconstruct the world?"
+
+**2. `NetworkRole` was the wrong abstraction.**
+The plan specified a `NetworkRole` resource (`ListenServer` / `Client` /
+`None`). The shipped code doesn't have it — systems use
+`resource_exists::<Server>` and `resource_exists::<Client>` as run conditions.
+`NetworkRole` is a state enum encoding two independent booleans ("am I
+hosting?" and "am I connected?"). Resources-as-capabilities is more composable
+and required zero custom types. The plan was written top-down (decide the role,
+then branch) instead of bottom-up (systems run when their data exists).
+
+**3. `net_game.rs` was a junk drawer.**
+The plan put all network-game glue in one file. It grew to 546 lines, then was
+deleted and replaced with `src/server.rs` (ServerPlugin, 184 lines) and
+`src/client.rs` (ClientPlugin, 183 lines). Server logic and client logic share
+no state — they had no reason to live together. The plan focused on *where code
+goes* before understanding *what the code does*. If the layer participation
+table had listed individual systems and their data flows instead of files, the
+split would have been obvious.
+
+**4. Player lifecycle was too coupled.**
+The plan had two spawn paths: host enters InGame → direct spawn with
+`PeerId(0)`; peer connects → spawn remote player without `PlayerControlled`.
+The shipped code has one path: all entity spawning goes through the server,
+which broadcasts `EntitySpawned`, and every client (including the host's own
+self-connection) reacts identically via `SpawnThing` + `ThingRegistry`. This
+required inventing `modules/things` — a template-based spawn pipeline not in
+the plan at all. The plan treated host-player spawning as a local operation
+that notifies peers, when it should have been framed as a replication concern.
+
+**5. No `InputDirection` component.**
+The plan had `creature_movement_system` reading the keyboard directly *and*
+`send_client_input` reading the keyboard again to send over the network. The
+shipped code introduces `InputDirection`: keyboard writes it, network writes
+it, `apply_input_velocity` reads it. The plan never asked "how does the server
+*apply* received input for remote players?" — that question immediately demands
+a shared component.
+
+**6. Serialization library changed.**
+Plan specified `serde + bincode`. Shipped code uses `wincode` with
+`SchemaRead`/`SchemaWrite` derives.
+
+#### Structural problems with how the plan was written
+
+- **Designed protocol before data flow.** The plan jumped to message types
+  before mapping the system pipeline (`keyboard → InputDirection →
+  LinearVelocity → physics → Transform → wire → Transform`). Drawing the
+  pipeline first would have surfaced `InputDirection`, entity-centric framing,
+  and the unified spawn path naturally.
+
+- **Lifecycle described procedurally instead of declaratively.** "OnEnter →
+  spawn host player" and "PeerConnected → spawn remote player" hide the fact
+  that both paths produce the same outcome. A declarative framing — "all player
+  entities are spawned in response to `EntitySpawned` from the server" — would
+  have unified the design from the start.
+
+- **Layer participation table too coarse.** One row per module tells you
+  nothing about individual systems, their data dependencies, or whether they
+  belong together. Listing systems with reads/writes/run-conditions would have
+  revealed the server/client split and the `InputDirection` need.
+
+#### What the plan got right
+
+- **Quinn over bevy_quinnet** — direct control, no wrapper friction.
+- **Sealed async boundary** — no tokio/quinn types leaked.
+- **Bottom-up task sequencing** — each PR built cleanly on the prior one.
+- **Explicit exclusions** — prevented scope creep into prediction, interpolation, auth.
+- **Server-authoritative model** — correct authority design.
+- **`LengthDelimitedCodec` for framing** — worked as designed.
+
+#### Recommendations for future plans
+
+1. **Draw the data flow before designing the protocol.** Protocol messages are
+   the wire segments of the system pipeline — they should fall out of the data
+   flow, not precede it.
+2. **List systems, not files, in the layer participation table.** Each system:
+   name, reads, writes, run condition. Prevents junk-drawer modules.
+3. **Prototype ambiguous semantics.** `NetworkRole`, direct host spawn, and
+   peer-centric protocol would all have been caught by a 30-minute spike.
+4. **Ask "what does the client need to reconstruct the world?"** This reframes
+   protocol design from topology to replication and naturally produces
+   entity-centric messages.
+5. **Separate "who" from "what."** Connection identity (`ClientId`) and world
+   presence (`NetId`) are orthogonal. Don't conflate them.
+6. **Don't plan file layout until you know the systems.** Design systems first,
+   then group by shared data dependencies.

@@ -4,9 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.18"
+bevy = { workspace = true }
+serde = { workspace = true }
+
 quinn = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+futures-util = { version = "0.3", features = ["sink"] }
+
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+] }
 rcgen = "0.14"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+wincode = { version = "0.4", features = ["derive"] }
+bytes = "1.11"
