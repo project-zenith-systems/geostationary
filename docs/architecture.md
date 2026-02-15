@@ -40,11 +40,13 @@ Notably, **rendering is Bevy's responsibility**. The layers define what exists
 and how it behaves; Bevy draws it. Asset management may warrant its own module
 in the future, but the rendering pipeline itself is not ours to architect.
 
-## World Coordinate Conventions
+## World Coordinate Conventions (Target / Ideal)
 
-Geostationary uses a right-handed 3D coordinate system with clean, unambiguous
-conventions designed to prevent floor-offset bugs and simplify entity
-positioning.
+Geostationary is intended to use a right-handed 3D coordinate system with
+clean, unambiguous conventions designed to prevent floor-offset bugs and
+simplify entity positioning. These conventions describe the target
+architecture; the current codebase does not yet fully enforce them (see
+"Current Implementation Gap" below).
 
 ### Axes
 
@@ -73,19 +75,13 @@ top face at y=1.0.
 ### Entity Spawn Heights
 
 When spawning entities, calculate their Y position such that their collider
-bottom sits exactly at y=0:
+bottom sits exactly at the floor surface:
 
 1. **Identify the collider's bottom offset.** For a capsule of radius `r` and
    cylinder height `h`, the collider bottom is at `center_y - (h/2 + r)`.
-2. **Set spawn height to place bottom at y=0.** For a capsule:
-   ```
-   spawn_y = h/2 + r
-   ```
-   Example: A capsule with `radius=0.3, height=1.0` has a bottom offset of
-   `0.5 + 0.3 = 0.8`, so it spawns at `y=0.8`.
-
-No safety margins, no magic numbers. The spawn formula is derived directly from
-the collider geometry.
+2. **Ideal convention (floor surface exactly at y=0).** In the target
+   architecture where the floor surface is truly at `y=0`, set the spawn
+   height for a capsule as:
 
 ### Design Rationale
 
