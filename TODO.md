@@ -43,3 +43,16 @@ become a bottleneck with many replicated entities. Add a `HashMap<NetId, Entity>
 resource or use Bevy's index queries when entity count grows.
 
 **File:** `src/client.rs`
+
+## Order menu systems relative to NetworkSet
+
+**Plan:** `plan/networked-multiplayer` · [docs/plans/networked-multiplayer.md](docs/plans/networked-multiplayer.md)
+
+`handle_network_errors` and `menu_message_reader` run in `PreUpdate` without
+ordering relative to `NetworkSet::Receive` / `NetworkSet::Send`. This means
+`handle_network_errors` may not see network events until the next frame, and
+`NetCommand` writes from `menu_message_reader` may be processed a frame late.
+No user-visible impact for menu operations, but add `.after(NetworkSet::Receive)`
+and `.before(NetworkSet::Send)` for correctness.
+
+**File:** `src/main_menu/mod.rs`
