@@ -40,6 +40,71 @@ Notably, **rendering is Bevy's responsibility**. The layers define what exists
 and how it behaves; Bevy draws it. Asset management may warrant its own module
 in the future, but the rendering pipeline itself is not ours to architect.
 
+## World Coordinate Conventions (Target / Ideal)
+
+Geostationary is intended to use a right-handed 3D coordinate system with
+clean, unambiguous conventions designed to prevent floor-offset bugs and
+simplify entity positioning. These conventions describe the target
+architecture; the current codebase does not yet fully enforce them (see
+"Current Implementation Gap" below).
+
+### Axes
+
+- **Y-axis is up.** Positive Y points toward the ceiling; negative Y points
+  toward the floor. Gravity acts in the negative Y direction (`Vec3::NEG_Y`).
+- **X and Z axes form the horizontal plane.** The tilemap grid is laid out on
+  the XZ plane, with tile positions mapped as `world_x = tile.x` and
+  `world_z = tile.y`.
+
+### Floor Reference (y=0)
+
+**y=0 is the walkable floor surface.** This is the fundamental design principle:
+zero means the ground you stand on.
+
+All floor tiles are positioned with their **top surface at y=0**. Floor
+colliders are infinitesimally thin planes at y=0, not volumetric boxes. This
+eliminates offset calculations and makes the floor reference absolute and
+unambiguous.
+
+### Wall Positioning
+
+Wall tiles are 1.0-unit cubes positioned with their **bottom face at y=0**
+(transform at y=0.5). This places walls flush with the floor plane, with their
+top face at y=1.0.
+
+### Entity Spawn Heights
+
+When spawning entities, calculate their Y position such that their collider
+bottom sits exactly at the floor surface:
+
+1. **Identify the collider's bottom offset.** For a capsule of radius `r` and
+   cylinder height `h`, the collider bottom is at `center_y - (h/2 + r)`.
+2. **Ideal convention (floor surface exactly at y=0).** In the target
+   architecture where the floor surface is truly at `y=0`, set the spawn
+   height for a capsule as:
+
+### Design Rationale
+
+The y=0-as-surface convention eliminates an entire class of bugs:
+
+- **No offset arithmetic.** Floor is at zero. Entities spawn with bottom at
+  zero. Walls sit on zero. Every vertical calculation has an unambiguous
+  reference point.
+- **Predictable behavior.** An entity at `y=0.8` is exactly 0.8 units above the
+  floor, not "0.8 units above the floor transform which is actually 0.05 units
+  above the surface."
+- **Simpler code.** No cascading magic constants like `y=0.05` or `y=0.86`
+  scattered across spawn sites. The physics geometry matches the semantic
+  intent.
+
+### Current Implementation Gap
+
+**Note:** The current tile implementation does not yet follow this convention.
+Floor colliders are 0.1-unit-thick boxes at y=0, placing the actual walkable
+surface at y=0.05. This is a temporary implementation detail marked for
+cleanup. New code should be written against the y=0-as-surface design, and
+the tile colliders will be migrated in a future refactor.
+
 ## The Compile Horizon
 
 The eight layers are divided across a fundamental boundary - the **compile
