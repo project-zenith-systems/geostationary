@@ -20,7 +20,8 @@ impl Default for GasCell {
 }
 
 /// A grid-based gas simulation that tracks moles per cell and derives pressure.
-/// Pure logic with no Bevy dependency in the core algorithm.
+/// Uses Bevy types for integration but keeps the simulation logic independent
+/// of ECS systems for easier testing.
 #[derive(Debug, Clone, Resource, Reflect)]
 #[reflect(Debug, Resource)]
 pub struct GasGrid {
