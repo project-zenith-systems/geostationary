@@ -49,7 +49,7 @@ pub fn setup_world(
         DespawnOnExit(AppState::InGame),
     ));
 
-    // Player capsule spawn removed - now handled by net_game.rs systems
+    // Player capsule spawn removed - now handled by server.rs and client.rs
 
     // Spawn a bouncing ball above the floor
     // Position it at y=5.0 so it has room to fall and bounce

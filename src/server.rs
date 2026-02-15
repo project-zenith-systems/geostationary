@@ -172,7 +172,7 @@ fn broadcast_state(
     let states = entities
         .iter()
         .map(|(net_id, transform, velocity)| EntityState {
-            net_id: net_id.clone(),
+            net_id: *net_id,
             position: transform.translation.into(),
             velocity: [velocity.x, velocity.y, velocity.z],
         })

@@ -218,7 +218,7 @@ issue automatically (see `README.md` for format details).
    the issue title. The body below it should include:
    - What files/modules are touched
    - Bullet list of concrete changes
-   - What is explicitly _not_ included (if ambiguity is likely)
+   - What is explicitly *not* included (if ambiguity is likely)
    - Link to the plan doc (see above)
 
 7. **PRs target the plan branch.** Task PRs merge into `plan/<name>`,

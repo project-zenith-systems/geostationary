@@ -56,7 +56,7 @@ pub enum ServerMessage {
 /// Messages sent from clients to server.
 #[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum ClientMessage {
-     /// Initial handshake sent immediately after stream open.
+    /// Initial handshake sent immediately after stream open.
     Hello,
     /// Input vector from the client.
     Input { direction: [f32; 3] },

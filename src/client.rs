@@ -63,10 +63,12 @@ fn handle_client_events(
             }
             ClientEvent::Disconnected { reason } => {
                 info!("Disconnected: {reason}");
+                commands.remove_resource::<Client>();
                 next_state.set(AppState::MainMenu);
             }
             ClientEvent::Error(msg) => {
                 error!("Network error: {msg}");
+                commands.remove_resource::<Client>();
                 next_state.set(AppState::MainMenu);
             }
             ClientEvent::ServerMessageReceived(message) => {
@@ -109,7 +111,7 @@ fn handle_server_message(
 
             let controlled = *owner == client.local_id && owner.is_some();
             let entity = commands
-                .spawn((net_id.clone(), DespawnOnExit(AppState::InGame)))
+                .spawn((*net_id, DespawnOnExit(AppState::InGame)))
                 .id();
             commands.trigger(SpawnThing {
                 entity,
