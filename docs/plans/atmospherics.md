@@ -10,7 +10,7 @@
 ## What "done" looks like
 
 1. A new `modules/atmospherics` workspace crate provides `AtmosphericsPlugin`
-2. Floor tiles hold gas — each floor cell has a pressure value and gas mixture
+2. Floor tiles hold gas — each floor cell stores gas moles and a derived pressure value
 3. Wall tiles block gas flow — gas cannot pass through walls
 4. Gas diffuses between adjacent floor tiles towards pressure equilibrium
 5. Removing a wall at runtime (changing a tile from Wall to Floor) causes gas
@@ -71,7 +71,7 @@ test in isolation.
 | Layer | Module | Plan scope |
 |-------|--------|------------|
 | L2 | `atmospherics` | **New.** Workspace crate. Pure-logic `GasGrid` + `AtmosphericsPlugin`. Diffusion simulation, wall sync, debug overlay. |
-| L1 | `tiles` | Add `Tilemap::set` support at runtime (already exists). Add a wall-toggle input system for testing. |
+| L1 | `tiles` | Add a wall-toggle input system for testing, using existing `Tilemap::set` runtime support. |
 | — | `world_setup` | Initialise the atmosphere with standard air pressure after tilemap insertion. |
 
 ### Not in this plan
@@ -130,11 +130,13 @@ pub struct GasCell {
 are constants for this plan (fixed temperature, unit cell volume). In practice
 this reduces to `pressure = moles * PRESSURE_CONSTANT`.
 
-**Wall sync:** Each tick, the plugin reads the `Tilemap` resource and updates
+**Wall sync:** A Bevy system watches the `Tilemap` resource and, when it has
+changed (`Res<Tilemap>::is_changed()`), calls `GasGrid::sync_walls` to update
 the `passable` array. When a cell transitions from impassable to passable, its
 moles start at 0.0 (vacuum) and gas flows in from neighbours. When a cell
-transitions from passable to impassable, its moles are distributed equally to
-passable neighbours (or lost if none exist).
+transitions from passable to impassable, its moles remain stored in the sealed
+cell and are still counted by `total_moles()`, but they no longer participate
+in diffusion. This preserves the conservation invariant.
 
 **Public API:**
 

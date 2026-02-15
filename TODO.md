@@ -16,7 +16,7 @@ Create the `modules/atmospherics` workspace crate with `AtmosphericsPlugin` and 
 - `GasGrid::new(width, height)`, `sync_walls(&Tilemap)`, `pressure_at(IVec2)`, `set_moles(IVec2, f32)`, `total_moles()`
 - `step(dt)` left as a no-op stub — diffusion comes later
 - `AtmosphericsPlugin` registers the `GasGrid` as a Bevy resource
-- Unit tests: grid construction, coordinate bounds, `sync_walls` marks walls impassable and floors passable, `total_moles` sums correctly, `set_moles` + `pressure_at` round-trip
+- Unit tests: coord-to-index mapping and bounds checks, `sync_walls` correctly tracks wall/floor transitions over tilemap changes, `pressure_at` derives pressure from moles according to the documented formula, `total_moles` behaves as a conserved aggregate within a small epsilon over sequences of updates
 
 **Not included:** debug overlay, wall toggling, diffusion algorithm
 
@@ -76,9 +76,9 @@ Depends on: Add debug overlay for atmospherics pressure
 - Wall-toggle system: a keypress (e.g., middle mouse or a debug key) while looking at a tile calls `Tilemap::set` to flip between Wall and Floor
 - Wall-sync system: runs when `Tilemap.is_changed()`, calls `GasGrid::sync_walls` to update the passability mask
 - When a wall is removed, the new floor cell starts at 0.0 moles (vacuum) — overlay shows blue
-- When a wall is added, the cell becomes impassable and its moles are distributed to passable neighbours (or lost if fully enclosed)
+- When a wall is added, the cell becomes impassable; its existing moles remain stored in that sealed cell (no redistribution or deletion) and are still counted by `total_moles()`, but they no longer participate in diffusion
 - Tilemap mesh rebuild is already handled by `spawn_tile_meshes` via change detection
-- Unit tests: `sync_walls` after wall removal marks cell passable with 0.0 moles; after wall addition marks cell impassable and redistributes moles
+- Unit tests: `sync_walls` after wall removal marks cell passable with 0.0 moles; after wall addition marks cell impassable while preserving its moles
 
 **Not included:** diffusion — pressure differences are visible in the overlay but gas does not flow yet
 
