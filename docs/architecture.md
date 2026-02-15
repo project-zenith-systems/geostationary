@@ -42,8 +42,9 @@ in the future, but the rendering pipeline itself is not ours to architect.
 
 ## World Coordinate Conventions
 
-Geostationary uses a right-handed 3D coordinate system with the following
-conventions:
+Geostationary uses a right-handed 3D coordinate system with clean, unambiguous
+conventions designed to prevent floor-offset bugs and simplify entity
+positioning.
 
 ### Axes
 
@@ -55,46 +56,58 @@ conventions:
 
 ### Floor Reference (y=0)
 
-**y=0 is the floor plane.** All floor tiles are positioned at `y=0.0` in their
-transform. However, floor tiles have a 0.1-unit-thick box collider (full
-dimensions 1.0 × 0.1 × 1.0), which means:
+**y=0 is the walkable floor surface.** This is the fundamental design principle:
+zero means the ground you stand on.
 
-- The **floor collider surface sits at y=0.05** (half the 0.1 thickness above
-  the origin).
-- The bottom of the floor collider is at y=-0.05.
+All floor tiles are positioned with their **top surface at y=0**. Floor
+colliders are infinitesimally thin planes at y=0, not volumetric boxes. This
+eliminates offset calculations and makes the floor reference absolute and
+unambiguous.
 
 ### Wall Positioning
 
-Wall tiles are positioned at **y=0.5** (transform origin). Walls are 1.0-unit
-cubes, so this places their bottom face at y=0 (flush with the floor plane)
-and their top face at y=1.0.
+Wall tiles are 1.0-unit cubes positioned with their **bottom face at y=0**
+(transform at y=0.5). This places walls flush with the floor plane, with their
+top face at y=1.0.
 
-### Spawn Height Calculations
+### Entity Spawn Heights
 
-When spawning dynamic entities, their Y position must be calculated to avoid
-floor-offset bugs:
+When spawning entities, calculate their Y position such that their collider
+bottom sits exactly at y=0:
 
-1. **Identify the collider's vertical extent.** For a capsule of radius `r` and
-   cylinder height `h`, the total height is `h + 2r`.
-2. **Calculate the bottom position.** For a capsule with `y_position` at its
-   transform origin, the bottom of the capsule sits at
-   `y_position - (h/2 + r)`.
-3. **Set spawn height to clear the floor surface.** The entity must spawn with
-   its collider bottom above y=0.05. A safe formula for a capsule is:
+1. **Identify the collider's bottom offset.** For a capsule of radius `r` and
+   cylinder height `h`, the collider bottom is at `center_y - (h/2 + r)`.
+2. **Set spawn height to place bottom at y=0.** For a capsule:
    ```
-   spawn_y = 0.05 + (h/2 + r) + safety_margin
+   spawn_y = h/2 + r
    ```
    Example: A capsule with `radius=0.3, height=1.0` has a bottom offset of
-   `1.0/2 + 0.3 = 0.8`. To clear the floor surface at y=0.05 with a small
-   safety margin of 0.01, spawn at `y = 0.05 + 0.8 + 0.01 = 0.86`.
+   `0.5 + 0.3 = 0.8`, so it spawns at `y=0.8`.
 
-### Rationale
+No safety margins, no magic numbers. The spawn formula is derived directly from
+the collider geometry.
 
-These conventions prevent the floor-offset class of bug where entities spawn
-inside colliders or fall through floors due to inconsistent Y-position
-assumptions. By documenting the floor surface height (y=0.05) and providing a
-formula for spawn heights, we establish a shared reference point across all
-systems that create or position entities.
+### Design Rationale
+
+The y=0-as-surface convention eliminates an entire class of bugs:
+
+- **No offset arithmetic.** Floor is at zero. Entities spawn with bottom at
+  zero. Walls sit on zero. Every vertical calculation has an unambiguous
+  reference point.
+- **Predictable behavior.** An entity at `y=0.8` is exactly 0.8 units above the
+  floor, not "0.8 units above the floor transform which is actually 0.05 units
+  above the surface."
+- **Simpler code.** No cascading magic constants like `y=0.05` or `y=0.86`
+  scattered across spawn sites. The physics geometry matches the semantic
+  intent.
+
+### Current Implementation Gap
+
+**Note:** The current tile implementation does not yet follow this convention.
+Floor colliders are 0.1-unit-thick boxes at y=0, placing the actual walkable
+surface at y=0.05. This is a temporary implementation detail marked for
+cleanup. New code should be written against the y=0-as-surface design, and
+the tile colliders will be migrated in a future refactor.
 
 ## The Compile Horizon
 
