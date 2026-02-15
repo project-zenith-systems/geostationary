@@ -18,8 +18,8 @@ mod world_setup;
 fn main() {
     let app_config = config::load_config();
 
-    App::new()
-        .insert_resource(app_config.clone())
+    let mut app = App::new();
+    app.insert_resource(app_config.clone())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: app_config.window.title.clone(),
@@ -30,9 +30,13 @@ fn main() {
         .add_plugins(UiPlugin::new().with_event::<MenuEvent>())
         .add_plugins(MainMenuPlugin)
         .add_plugins(NetworkPlugin)
-        .add_plugins(PhysicsPlugin)
-        .add_plugins(PhysicsDebugPlugin)
-        .add_plugins(TilesPlugin)
+        .add_plugins(PhysicsPlugin);
+
+    if app_config.debug.physics_debug {
+        app.add_plugins(PhysicsDebugPlugin::default());
+    }
+
+    app.add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(camera::CameraPlugin)
