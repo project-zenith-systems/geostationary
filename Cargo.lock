@@ -1865,6 +1865,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "camera"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "player",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2202,6 +2210,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "creatures"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "physics",
+ "things",
 ]
 
 [[package]]
@@ -2794,9 +2811,12 @@ name = "geostationary"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "camera",
  "config",
+ "creatures",
  "network",
  "physics",
+ "player",
  "serde",
  "things",
  "tiles",
@@ -4499,6 +4519,14 @@ name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+
+[[package]]
+name = "player"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "things",
+]
 
 [[package]]
 name = "png"

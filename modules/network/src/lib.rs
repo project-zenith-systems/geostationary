@@ -65,27 +65,14 @@ impl Server {
 }
 
 /// Resource to track the state of the client.
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Client {
     pub local_id: Option<ClientId>,
-}
-
-impl Default for Client {
-    fn default() -> Self {
-        Self { local_id: None }
-    }
 }
 
 /// Component: which client's input controls this entity (server-side only).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ControlledByClient(pub ClientId);
-
-/// Current input direction for an entity. Written by input systems (client)
-/// or from received network messages (server). Read by creatures module
-/// to apply velocity.
-#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
-#[reflect(Component)]
-pub struct InputDirection(pub Vec3);
 
 /// Events emitted by the server side of the network layer.
 #[derive(Message, Clone, Debug)]
@@ -150,6 +137,24 @@ impl NetServerSender {
     }
 }
 
+/// Error type for [`NetClientSender::send`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendError {
+    /// The send buffer is full; the message was dropped.
+    BufferFull,
+    /// The channel is closed (client disconnected); the message was dropped.
+    Closed,
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendError::BufferFull => write!(f, "send buffer full"),
+            SendError::Closed => write!(f, "channel closed"),
+        }
+    }
+}
+
 /// Resource for sending messages from the client to the server.
 /// Inserted when the client task starts, removed on disconnect.
 #[derive(Resource, Clone)]
@@ -164,18 +169,16 @@ impl NetClientSender {
     }
 
     /// Send a message to the server.
-    /// Returns true if the message was sent, false if the channel is full or closed.
-    pub fn send(&self, message: &ClientMessage) -> bool {
-        // TODO return an error
+    pub fn send(&self, message: &ClientMessage) -> Result<(), SendError> {
         match self.tx.try_send(message.clone()) {
-            Ok(_) => true,
+            Ok(_) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => {
                 log::debug!("Client send buffer full, message dropped");
-                false
+                Err(SendError::BufferFull)
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 log::debug!("Client sender channel closed, message dropped");
-                false
+                Err(SendError::Closed)
             }
         }
     }
@@ -194,7 +197,6 @@ impl Plugin for NetworkPlugin {
         let (server_event_tx, server_event_rx) = mpsc::unbounded_channel();
         let (client_event_tx, client_event_rx) = mpsc::unbounded_channel();
 
-        app.register_type::<InputDirection>();
         app.insert_resource(NetworkRuntime::new());
         app.insert_resource(NetworkTasks::default());
         app.insert_resource(ServerEventSender(server_event_tx));
@@ -223,8 +225,9 @@ fn drain_server_events(
     while count < MAX_NET_EVENTS_PER_FRAME {
         match receiver.0.try_recv() {
             Ok(event) => {
-                // Remove NetServerSender when hosting stops
+                // Remove session and sender resources when hosting stops
                 if matches!(&event, ServerEvent::HostingStopped) {
+                    commands.remove_resource::<Server>();
                     commands.remove_resource::<NetServerSender>();
                 }
 
@@ -259,8 +262,9 @@ fn drain_client_events(
     while count < MAX_NET_EVENTS_PER_FRAME {
         match receiver.0.try_recv() {
             Ok(event) => {
-                // Remove NetClientSender when disconnected
+                // Remove session and sender resources when disconnected
                 if matches!(&event, ClientEvent::Disconnected { .. }) {
+                    commands.remove_resource::<Client>();
                     commands.remove_resource::<NetClientSender>();
                 }
 
@@ -308,7 +312,8 @@ fn process_net_commands(
                     continue;
                 }
 
-                // Create server command channel and insert NetServerSender resource
+                // Insert session resources and create server command channel
+                commands.insert_resource(Server::default());
                 let (server_cmd_tx, server_cmd_rx) = mpsc::unbounded_channel();
                 commands.insert_resource(NetServerSender::new(server_cmd_tx));
 
@@ -328,8 +333,9 @@ fn process_net_commands(
                     continue;
                 }
 
-                // Create bounded client message channel and insert NetClientSender resource.
+                // Insert session resource and create bounded client message channel.
                 // Bounded channel provides backpressure if game code sends faster than network can handle.
+                commands.insert_resource(Client::default());
                 let (client_msg_tx, client_msg_rx) = mpsc::channel(CLIENT_BUFFER_SIZE);
                 commands.insert_resource(NetClientSender::new(client_msg_tx));
 
@@ -476,7 +482,7 @@ mod tests {
         };
 
         let result = sender.send(&message);
-        assert!(result, "Message should be sent successfully");
+        assert!(result.is_ok(), "Message should be sent successfully");
 
         let received = rx.try_recv().expect("Should receive message");
         match received {
@@ -497,10 +503,11 @@ mod tests {
         };
 
         // First send should succeed
-        assert!(sender.send(&message), "First send should succeed");
+        assert!(sender.send(&message).is_ok(), "First send should succeed");
         // Second send should fail because buffer is full
-        assert!(
-            !sender.send(&message),
+        assert_eq!(
+            sender.send(&message),
+            Err(SendError::BufferFull),
             "Second send should fail when buffer full"
         );
     }

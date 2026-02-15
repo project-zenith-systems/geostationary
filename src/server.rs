@@ -2,10 +2,11 @@ use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use network::{
-    ClientId, ClientMessage, ControlledByClient, EntityState, InputDirection, NetCommand, NetId,
-    NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage, NETWORK_UPDATE_INTERVAL,
+    ClientId, ClientMessage, ControlledByClient, EntityState, NETWORK_UPDATE_INTERVAL, NetCommand,
+    NetId, NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage,
 };
 use physics::LinearVelocity;
+use things::InputDirection;
 
 pub struct ServerPlugin;
 
@@ -37,7 +38,6 @@ impl Default for StateBroadcastTimer {
 }
 
 fn handle_server_events(
-    mut commands: Commands,
     mut messages: MessageReader<ServerEvent>,
     mut net_commands: MessageWriter<NetCommand>,
     mut sender: Option<ResMut<NetServerSender>>,
@@ -59,7 +59,7 @@ fn handle_server_events(
                 net_commands.write(NetCommand::Connect { addr });
             }
             ServerEvent::HostingStopped => {
-                commands.remove_resource::<Server>();
+                // Server resource removal handled by NetworkPlugin
             }
             ServerEvent::Error(msg) => {
                 error!("Network error: {msg}");
@@ -127,7 +127,7 @@ fn handle_client_message(
 
             // Spawn player entity
             let net_id = server.next_net_id();
-            let spawn_pos = Vec3::new(6.0, 0.86, 3.0);
+            let spawn_pos = Vec3::new(6.0, 0.81, 3.0);
             info!(
                 "Spawning player entity NetId({}) for ClientId({}) at {spawn_pos}",
                 net_id.0, from.0

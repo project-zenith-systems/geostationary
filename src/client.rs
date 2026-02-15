@@ -1,25 +1,23 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use network::{
-    Client, ClientEvent, ClientMessage, ControlledByClient, InputDirection, NetClientSender, NetId,
-    NetworkSet, ServerMessage, NETWORK_UPDATE_INTERVAL,
+    Client, ClientEvent, ClientMessage, ControlledByClient, NETWORK_UPDATE_INTERVAL,
+    NetClientSender, NetId, NetworkSet, ServerMessage,
 };
-use things::{SpawnThing, Thing};
+use player::PlayerControlled;
+use things::{InputDirection, SpawnThing, Thing};
 
 use crate::app_state::AppState;
-
-/// Marker component for player-controlled entities (camera target, input receiver).
-#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
-#[reflect(Component)]
-pub struct PlayerControlled;
 
 pub struct ClientPlugin;
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<PlayerControlled>();
         app.init_resource::<InputSendTimer>();
         app.init_resource::<LastSentDirection>();
+        app.init_resource::<NetIdIndex>();
         app.add_systems(
             PreUpdate,
             handle_client_events
@@ -30,6 +28,10 @@ impl Plugin for ClientPlugin {
         app.add_systems(Update, send_client_input.run_if(resource_exists::<Client>));
     }
 }
+
+/// Maps NetId to Entity for O(1) lookup during StateUpdate processing.
+#[derive(Resource, Default)]
+struct NetIdIndex(HashMap<NetId, Entity>);
 
 /// Timer for throttling client input sends.
 #[derive(Resource)]
@@ -54,6 +56,7 @@ fn handle_client_events(
     mut next_state: ResMut<NextState<AppState>>,
     mut entities: Query<(Entity, &NetId, &mut Transform), With<Thing>>,
     mut client: ResMut<Client>,
+    mut net_id_index: ResMut<NetIdIndex>,
 ) {
     for event in messages.read() {
         match event {
@@ -63,16 +66,22 @@ fn handle_client_events(
             }
             ClientEvent::Disconnected { reason } => {
                 info!("Disconnected: {reason}");
-                commands.remove_resource::<Client>();
+                net_id_index.0.clear();
                 next_state.set(AppState::MainMenu);
             }
             ClientEvent::Error(msg) => {
                 error!("Network error: {msg}");
-                commands.remove_resource::<Client>();
+                net_id_index.0.clear();
                 next_state.set(AppState::MainMenu);
             }
             ClientEvent::ServerMessageReceived(message) => {
-                handle_server_message(message, &mut commands, &mut entities, &mut client);
+                handle_server_message(
+                    message,
+                    &mut commands,
+                    &mut entities,
+                    &mut client,
+                    &mut net_id_index,
+                );
             }
         }
     }
@@ -83,6 +92,7 @@ fn handle_server_message(
     commands: &mut Commands,
     entities: &mut Query<(Entity, &NetId, &mut Transform), With<Thing>>,
     client: &mut ResMut<Client>,
+    net_id_index: &mut ResMut<NetIdIndex>,
 ) {
     match message {
         ServerMessage::Welcome { client_id } => {
@@ -97,8 +107,7 @@ fn handle_server_message(
             owner,
         } => {
             // Skip if entity already exists (e.g. duplicate message)
-            let already_exists = entities.iter().any(|(_, id, _)| id.0 == net_id.0);
-            if already_exists {
+            if net_id_index.0.contains_key(net_id) {
                 debug!(
                     "EntitySpawned for NetId({}) but already exists, skipping",
                     net_id.0
@@ -117,31 +126,32 @@ fn handle_server_message(
                 entity,
                 kind: *kind,
                 position: pos,
-                controlled,
             });
+
+            if controlled {
+                commands.entity(entity).insert(PlayerControlled);
+            }
 
             if let Some(owner_id) = owner {
                 commands
                     .entity(entity)
                     .insert(ControlledByClient(*owner_id));
             }
+
+            net_id_index.0.insert(*net_id, entity);
         }
         ServerMessage::EntityDespawned { net_id } => {
             info!("Despawning replica entity NetId({})", net_id.0);
-            for (entity, id, _) in entities.iter() {
-                if id.0 == net_id.0 {
-                    commands.entity(entity).despawn();
-                    break;
-                }
+            if let Some(entity) = net_id_index.0.remove(net_id) {
+                commands.entity(entity).despawn();
             }
         }
         ServerMessage::StateUpdate { entities: states } => {
             for state in states.iter() {
-                for (_, id, mut transform) in entities.iter_mut() {
-                    if id.0 == state.net_id.0 {
-                        transform.translation = Vec3::from_array(state.position);
-                        break;
-                    }
+                if let Some(&entity) = net_id_index.0.get(&state.net_id)
+                    && let Ok((_, _, mut transform)) = entities.get_mut(entity)
+                {
+                    transform.translation = Vec3::from_array(state.position);
                 }
             }
         }
@@ -149,7 +159,7 @@ fn handle_server_message(
 }
 
 /// System that sends client input direction to the server.
-/// Reads InputDirection component (written by creatures module) and sends
+/// Reads InputDirection component (written by player module) and sends
 /// via NetClientSender. Throttled to NETWORK_UPDATE_RATE to reduce traffic.
 fn send_client_input(
     time: Res<Time>,
@@ -176,9 +186,9 @@ fn send_client_input(
     }
 
     last_sent.0 = direction;
-    if !sender.send(&ClientMessage::Input {
+    if let Err(e) = sender.send(&ClientMessage::Input {
         direction: direction.into(),
     }) {
-        error!("Failed to send client input: send buffer full or closed");
+        error!("Failed to send client input: {e}");
     }
 }

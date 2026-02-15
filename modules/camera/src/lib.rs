@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-
-use crate::app_state::AppState;
-use crate::client::PlayerControlled;
+use player::PlayerControlled;
 
 /// Marker component for the follow camera.
 #[derive(Component)]
@@ -28,21 +26,32 @@ impl Default for CameraConfig {
     }
 }
 
-pub struct CameraPlugin;
+/// Resource storing the active state value for `DespawnOnExit`.
+#[derive(Resource, Clone, Copy)]
+struct CameraActiveState<S: States>(S);
 
-impl Plugin for CameraPlugin {
-    fn build(&self, app: &mut App) {
-        app.insert_resource(CameraConfig::default());
-        app.add_systems(OnEnter(AppState::InGame), spawn_camera);
-        app.add_systems(
-            Update,
-            camera_follow_system.run_if(in_state(AppState::InGame)),
-        );
+pub struct CameraPlugin<S: States + Copy> {
+    state: S,
+}
+
+impl<S: States + Copy> CameraPlugin<S> {
+    pub fn in_state(state: S) -> Self {
+        Self { state }
     }
 }
 
-/// Spawns the 3D follow camera when entering InGame state.
-fn spawn_camera(mut commands: Commands) {
+impl<S: States + Copy> Plugin for CameraPlugin<S> {
+    fn build(&self, app: &mut App) {
+        let state = self.state;
+        app.insert_resource(CameraConfig::default());
+        app.insert_resource(CameraActiveState(state));
+        app.add_systems(OnEnter(state), spawn_camera::<S>);
+        app.add_systems(Update, camera_follow_system.run_if(in_state(state)));
+    }
+}
+
+/// Spawns the 3D follow camera when entering the active state.
+fn spawn_camera<S: States + Copy>(mut commands: Commands, active_state: Res<CameraActiveState<S>>) {
     // Start camera at default position (will move to player in first frame)
     let camera_pos = Vec3::new(6.0, 10.0, 10.0);
     let look_target = Vec3::new(6.0, 0.0, 5.0);
@@ -56,7 +65,7 @@ fn spawn_camera(mut commands: Commands) {
             affects_lightmapped_meshes: true,
         },
         FollowCamera,
-        DespawnOnExit(AppState::InGame),
+        DespawnOnExit(active_state.0),
     ));
 }
 
@@ -95,9 +104,7 @@ mod tests {
     use super::*;
 
     /// Verifies that camera_follow_system moves the camera toward a
-    /// PlayerControlled entity's position + offset. Uses a very high
-    /// follow_speed so even a sub-millisecond delta clamps the lerp to 1.0,
-    /// snapping the camera to the target in a single frame.
+    /// PlayerControlled entity's position + offset.
     #[test]
     fn test_camera_follows_player_controlled_entity() {
         let mut app = App::new();

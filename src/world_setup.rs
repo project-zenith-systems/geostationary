@@ -1,42 +1,17 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use physics::{Collider, Restitution, RigidBody};
-use tiles::{TileKind, Tilemap};
+use tiles::Tilemap;
 
 use crate::app_state::AppState;
 
 /// System that sets up the world when entering InGame state.
-/// Spawns a 12x10 room with walls and internal obstacles for collision testing.
 pub fn setup_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Create a 12x10 tilemap with walls around the edges (absorbing issue #11)
-    let mut tilemap = Tilemap::new(12, 10, TileKind::Floor);
-
-    // Add walls around the perimeter
-    for x in 0..12 {
-        tilemap.set(IVec2::new(x, 0), TileKind::Wall);
-        tilemap.set(IVec2::new(x, 9), TileKind::Wall);
-    }
-    for y in 0..10 {
-        tilemap.set(IVec2::new(0, y), TileKind::Wall);
-        tilemap.set(IVec2::new(11, y), TileKind::Wall);
-    }
-
-    // Add internal walls for collision testing (issue #11)
-    // Vertical wall segment
-    for y in 2..6 {
-        tilemap.set(IVec2::new(4, y), TileKind::Wall);
-    }
-    // Horizontal wall segment
-    for x in 7..10 {
-        tilemap.set(IVec2::new(x, 5), TileKind::Wall);
-    }
-
-    // Insert the tilemap as a resource
-    commands.insert_resource(tilemap);
+    commands.insert_resource(Tilemap::test_room());
 
     // Spawn a light
     commands.spawn((

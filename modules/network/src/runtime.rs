@@ -105,15 +105,15 @@ impl NetworkTasks {
     /// Removes finished tasks to free up state for new connections.
     /// Should be called regularly to clean up completed tasks.
     pub(crate) fn cleanup_finished(&mut self) {
-        if let Some((handle, _)) = &self.server_task {
-            if handle.is_finished() {
-                self.server_task = None;
-            }
+        if let Some((handle, _)) = &self.server_task
+            && handle.is_finished()
+        {
+            self.server_task = None;
         }
-        if let Some((handle, _)) = &self.client_task {
-            if handle.is_finished() {
-                self.client_task = None;
-            }
+        if let Some((handle, _)) = &self.client_task
+            && handle.is_finished()
+        {
+            self.client_task = None;
         }
     }
 }

@@ -11,6 +11,9 @@ members = [
     "modules/tiles",
     "modules/things",
     "modules/physics",
+    "modules/player",
+    "modules/creatures",
+    "modules/camera",
 ]
 
 [profile.dev]
@@ -44,3 +47,6 @@ network = { path = "modules/network" }
 tiles = { path = "modules/tiles" }
 things = { path = "modules/things" }
 physics = { path = "modules/physics" }
+player = { path = "modules/player" }
+creatures = { path = "modules/creatures" }
+camera = { path = "modules/camera" }
