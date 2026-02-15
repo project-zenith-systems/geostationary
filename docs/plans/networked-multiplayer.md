@@ -344,3 +344,109 @@ into main.
 - **Clean up dead code immediately.** The `ServerCommandSender` and
   `ClientMessageSender` vestiges in `runtime.rs` should have been removed in
   the same PR that introduced their replacements.
+
+### Post-postmortem
+
+The post-mortem above recorded *what* deviated but didn't dig into *why the
+plan failed to predict it*. After the refactors that followed (commits
+`dd7fed1` through `f903874`), the codebase diverged far enough from the plan
+to warrant a deeper look at the plan itself.
+
+#### What the plan got wrong
+
+**1. Peer-centric protocol instead of entity-centric.**
+The plan designed `PeerId`, `PeerState`, `HostMessage`/`PeerMessage`,
+`PeerJoined`/`PeerLeft`. The shipped code uses `ClientId`, `NetId`,
+`EntityState`, `ServerMessage`/`ClientMessage`, `EntitySpawned`/
+`EntityDespawned`. This isn't naming — it's a conceptual error. The plan
+modeled the network as a graph of peers with positions. The actual problem is
+replicating *entities* across a client-server boundary. A peer might own zero,
+one, or many entities. The plan's `PeerJoined { id, position }` can't express
+"entity exists, owned by this client" without baking in 1:1 peer-entity
+coupling. The plan was written from a "who's online" perspective instead of
+"what does the client need to reconstruct the world?"
+
+**2. `NetworkRole` was the wrong abstraction.**
+The plan specified a `NetworkRole` resource (`ListenServer` / `Client` /
+`None`). The shipped code doesn't have it — systems use
+`resource_exists::<Server>` and `resource_exists::<Client>` as run conditions.
+`NetworkRole` is a state enum encoding two independent booleans ("am I
+hosting?" and "am I connected?"). Resources-as-capabilities is more composable
+and required zero custom types. The plan was written top-down (decide the role,
+then branch) instead of bottom-up (systems run when their data exists).
+
+**3. `net_game.rs` was a junk drawer.**
+The plan put all network-game glue in one file. It grew to 546 lines, then was
+deleted and replaced with `src/server.rs` (ServerPlugin, 184 lines) and
+`src/client.rs` (ClientPlugin, 183 lines). Server logic and client logic share
+no state — they had no reason to live together. The plan focused on *where code
+goes* before understanding *what the code does*. If the layer participation
+table had listed individual systems and their data flows instead of files, the
+split would have been obvious.
+
+**4. Player lifecycle was too coupled.**
+The plan had two spawn paths: host enters InGame → direct spawn with
+`PeerId(0)`; peer connects → spawn remote player without `PlayerControlled`.
+The shipped code has one path: all entity spawning goes through the server,
+which broadcasts `EntitySpawned`, and every client (including the host's own
+self-connection) reacts identically via `SpawnThing` + `ThingRegistry`. This
+required inventing `modules/things` — a template-based spawn pipeline not in
+the plan at all. The plan treated host-player spawning as a local operation
+that notifies peers, when it should have been framed as a replication concern.
+
+**5. No `InputDirection` component.**
+The plan had `creature_movement_system` reading the keyboard directly *and*
+`send_client_input` reading the keyboard again to send over the network. The
+shipped code introduces `InputDirection`: keyboard writes it, network writes
+it, `apply_input_velocity` reads it. The plan never asked "how does the server
+*apply* received input for remote players?" — that question immediately demands
+a shared component.
+
+**6. Serialization library changed.**
+Plan specified `serde + bincode`. Shipped code uses `wincode` with
+`SchemaRead`/`SchemaWrite` derives.
+
+#### Structural problems with how the plan was written
+
+- **Designed protocol before data flow.** The plan jumped to message types
+  before mapping the system pipeline (`keyboard → InputDirection →
+  LinearVelocity → physics → Transform → wire → Transform`). Drawing the
+  pipeline first would have surfaced `InputDirection`, entity-centric framing,
+  and the unified spawn path naturally.
+
+- **Lifecycle described procedurally instead of declaratively.** "OnEnter →
+  spawn host player" and "PeerConnected → spawn remote player" hide the fact
+  that both paths produce the same outcome. A declarative framing — "all player
+  entities are spawned in response to `EntitySpawned` from the server" — would
+  have unified the design from the start.
+
+- **Layer participation table too coarse.** One row per module tells you
+  nothing about individual systems, their data dependencies, or whether they
+  belong together. Listing systems with reads/writes/run-conditions would have
+  revealed the server/client split and the `InputDirection` need.
+
+#### What the plan got right
+
+- **Quinn over bevy_quinnet** — direct control, no wrapper friction.
+- **Sealed async boundary** — no tokio/quinn types leaked.
+- **Bottom-up task sequencing** — each PR built cleanly on the prior one.
+- **Explicit exclusions** — prevented scope creep into prediction, interpolation, auth.
+- **Server-authoritative model** — correct authority design.
+- **`LengthDelimitedCodec` for framing** — worked as designed.
+
+#### Recommendations for future plans
+
+1. **Draw the data flow before designing the protocol.** Protocol messages are
+   the wire segments of the system pipeline — they should fall out of the data
+   flow, not precede it.
+2. **List systems, not files, in the layer participation table.** Each system:
+   name, reads, writes, run condition. Prevents junk-drawer modules.
+3. **Prototype ambiguous semantics.** `NetworkRole`, direct host spawn, and
+   peer-centric protocol would all have been caught by a 30-minute spike.
+4. **Ask "what does the client need to reconstruct the world?"** This reframes
+   protocol design from topology to replication and naturally produces
+   entity-centric messages.
+5. **Separate "who" from "what."** Connection identity (`ClientId`) and world
+   presence (`NetId`) are orthogonal. Don't conflate them.
+6. **Don't plan file layout until you know the systems.** Design systems first,
+   then group by shared data dependencies.
