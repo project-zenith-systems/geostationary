@@ -8,6 +8,13 @@ use physics::{Collider, GravityScale, LockedAxes, RigidBody};
 #[reflect(Component)]
 pub struct Thing;
 
+/// Current input direction for an entity. Written by input systems (player module)
+/// or from received network messages (server). Read by creatures module
+/// to apply velocity.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct InputDirection(pub Vec3);
+
 /// Entity event to construct the visual and physical representation of a thing.
 /// The observer adds base components (mesh, physics, Thing marker) then runs
 /// the template registered for the given `kind` via [`ThingRegistry`].
@@ -16,8 +23,6 @@ pub struct SpawnThing {
     pub entity: Entity,
     pub kind: u16,
     pub position: Vec3,
-    /// Whether the local player controls this entity.
-    pub controlled: bool,
 }
 
 pub type ThingBuilder = Box<dyn Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync>;
@@ -39,12 +44,17 @@ impl ThingRegistry {
     }
 }
 
+/// Plugin that registers the thing spawning system and shared entity primitives.
+///
+/// Must be added before any plugin that calls [`ThingRegistry::register`]
+/// (e.g. `CreaturesPlugin`).
 #[derive(Default)]
 pub struct ThingsPlugin;
 
 impl Plugin for ThingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Thing>();
+        app.register_type::<InputDirection>();
         app.init_resource::<ThingRegistry>();
         app.add_observer(on_spawn_thing);
     }

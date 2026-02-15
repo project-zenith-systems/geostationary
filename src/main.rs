@@ -7,10 +7,8 @@ use tiles::TilesPlugin;
 use ui::UiPlugin;
 
 mod app_state;
-mod camera;
 mod client;
 mod config;
-mod creatures;
 mod main_menu;
 mod server;
 mod world_setup;
@@ -33,13 +31,16 @@ fn main() {
         .add_plugins(PhysicsPlugin);
 
     if app_config.debug.physics_debug {
-        app.add_plugins(PhysicsDebugPlugin::default());
+        app.add_plugins(PhysicsDebugPlugin);
     }
 
     app.add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
-        .add_plugins(camera::CameraPlugin)
+        .add_plugins(player::PlayerPlugin)
+        .add_plugins(camera::CameraPlugin::<app_state::AppState>::in_state(
+            app_state::AppState::InGame,
+        ))
         .add_plugins(world_setup::WorldSetupPlugin)
         .add_plugins(client::ClientPlugin)
         .add_plugins(server::ServerPlugin)
