@@ -84,9 +84,10 @@ impl GasGrid {
 
     /// Sets the moles at the given position.
     /// Returns true if successful, false if the position is out of bounds.
+    /// Clamps negative moles to 0.0 since negative gas quantities are physically invalid.
     pub fn set_moles(&mut self, pos: IVec2, moles: f32) -> bool {
         if let Some(idx) = self.coord_to_index(pos) {
-            self.cells[idx].moles = moles;
+            self.cells[idx].moles = moles.max(0.0);
             true
         } else {
             false
@@ -141,6 +142,21 @@ mod tests {
         assert!(!grid.set_moles(IVec2::new(3, 0), 5.0));
         assert_eq!(grid.pressure_at(IVec2::new(-1, 0)), None);
         assert_eq!(grid.pressure_at(IVec2::new(3, 3)), None);
+    }
+
+    #[test]
+    fn test_negative_moles_clamped() {
+        let mut grid = GasGrid::new(3, 3);
+
+        // Negative moles should be clamped to 0.0
+        assert!(grid.set_moles(IVec2::new(1, 1), -5.0));
+        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(0.0));
+
+        // Set positive, then negative
+        grid.set_moles(IVec2::new(0, 0), 10.0);
+        assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(10.0));
+        grid.set_moles(IVec2::new(0, 0), -3.0);
+        assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(0.0));
     }
 
     #[test]
@@ -294,13 +310,13 @@ mod tests {
         grid.set_moles(IVec2::new(0, 0), 10.0);
         grid.set_moles(IVec2::new(1, 1), 5.0);
 
-        let initial_moles_00 = grid.pressure_at(IVec2::new(0, 0)).unwrap();
-        let initial_moles_11 = grid.pressure_at(IVec2::new(1, 1)).unwrap();
+        let initial_pressure_00 = grid.pressure_at(IVec2::new(0, 0)).unwrap();
+        let initial_pressure_11 = grid.pressure_at(IVec2::new(1, 1)).unwrap();
 
         // Step should not change anything (it's a stub)
         grid.step(0.1);
 
-        assert_eq!(grid.pressure_at(IVec2::new(0, 0)).unwrap(), initial_moles_00);
-        assert_eq!(grid.pressure_at(IVec2::new(1, 1)).unwrap(), initial_moles_11);
+        assert_eq!(grid.pressure_at(IVec2::new(0, 0)).unwrap(), initial_pressure_00);
+        assert_eq!(grid.pressure_at(IVec2::new(1, 1)).unwrap(), initial_pressure_11);
     }
 }
