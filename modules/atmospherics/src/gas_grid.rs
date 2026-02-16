@@ -6,6 +6,12 @@ use tiles::{TileKind, Tilemap};
 /// This simplifies the ideal gas law by assuming fixed temperature and unit cell volume.
 const PRESSURE_CONSTANT: f32 = 1.0;
 
+/// Standard atmospheric pressure in moles.
+/// This represents normal breathable air pressure (approximately 1 atm).
+/// Since pressure = moles * PRESSURE_CONSTANT and PRESSURE_CONSTANT = 1.0,
+/// this value directly represents the pressure as well.
+pub const STANDARD_PRESSURE: f32 = 101.325;
+
 /// Represents a single cell in the gas grid.
 #[derive(Debug, Clone, Copy, PartialEq, Reflect)]
 #[reflect(Debug, PartialEq)]

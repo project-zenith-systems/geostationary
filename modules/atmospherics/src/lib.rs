@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 mod gas_grid;
-pub use gas_grid::{GasCell, GasGrid};
+pub use gas_grid::{GasCell, GasGrid, STANDARD_PRESSURE};
 
 /// Plugin that manages atmospheric simulation in the game.
 /// Registers the GasGrid as a Bevy resource and provides the infrastructure
