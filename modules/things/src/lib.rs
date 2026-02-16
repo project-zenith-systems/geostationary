@@ -56,11 +56,17 @@ impl Plugin for ThingsPlugin {
         app.register_type::<Thing>();
         app.register_type::<InputDirection>();
         app.init_resource::<ThingRegistry>();
-        app.add_observer(on_spawn_thing);
+
+        #[cfg(feature = "client")]
+        app.add_observer(on_spawn_thing_client);
+
+        #[cfg(not(feature = "client"))]
+        app.add_observer(on_spawn_thing_headless);
     }
 }
 
-fn on_spawn_thing(
+#[cfg(feature = "client")]
+fn on_spawn_thing_client(
     on: On<SpawnThing>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -75,6 +81,30 @@ fn on_spawn_thing(
             base_color: Color::srgb(0.8, 0.5, 0.2),
             ..default()
         })),
+        Transform::from_translation(event.position),
+        RigidBody::Dynamic,
+        Collider::capsule(0.3, 1.0),
+        LockedAxes::ROTATION_LOCKED.lock_translation_y(),
+        GravityScale(0.0),
+        Thing,
+    ));
+
+    if let Some(builder) = registry.templates.get(&event.kind) {
+        builder(event.entity, event, &mut commands);
+    } else {
+        warn!("No template registered for thing kind {}", event.kind);
+    }
+}
+
+#[cfg(not(feature = "client"))]
+fn on_spawn_thing_headless(
+    on: On<SpawnThing>,
+    mut commands: Commands,
+    registry: Res<ThingRegistry>,
+) {
+    let event = on.event();
+
+    commands.entity(event.entity).insert((
         Transform::from_translation(event.position),
         RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),

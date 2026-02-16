@@ -2,8 +2,10 @@ use bevy::prelude::*;
 
 // Re-export only the types other modules need.
 pub use avian3d::prelude::{
-    Collider, GravityScale, LinearVelocity, LockedAxes, PhysicsDebugPlugin, Restitution, RigidBody,
+    Collider, GravityScale, LinearVelocity, LockedAxes, Restitution, RigidBody,
 };
+#[cfg(feature = "client")]
+pub use avian3d::prelude::PhysicsDebugPlugin;
 
 pub struct PhysicsPlugin;
 

@@ -122,11 +122,21 @@ impl Plugin for TilesPlugin {
         app.register_type::<TileKind>();
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
-        app.init_resource::<TileMeshes>();
-        app.add_systems(Update, spawn_tile_meshes);
+
+        #[cfg(feature = "client")]
+        {
+            app.init_resource::<TileMeshes>();
+            app.add_systems(Update, spawn_tile_meshes);
+        }
+
+        #[cfg(not(feature = "client"))]
+        {
+            app.add_systems(Update, spawn_tile_colliders);
+        }
     }
 }
 
+#[cfg(feature = "client")]
 #[derive(Resource)]
 struct TileMeshes {
     floor_mesh: Handle<Mesh>,
@@ -135,6 +145,7 @@ struct TileMeshes {
     wall_material: Handle<StandardMaterial>,
 }
 
+#[cfg(feature = "client")]
 impl FromWorld for TileMeshes {
     fn from_world(world: &mut World) -> Self {
         let mut meshes = world.resource_mut::<Assets<Mesh>>();
@@ -142,7 +153,6 @@ impl FromWorld for TileMeshes {
         let wall_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
 
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
-        // Dark grey for floors, lighter grey for walls
         let floor_material = materials.add(StandardMaterial {
             base_color: Color::srgb(0.3, 0.3, 0.3),
             ..default()
@@ -161,6 +171,7 @@ impl FromWorld for TileMeshes {
     }
 }
 
+#[cfg(feature = "client")]
 fn spawn_tile_meshes(
     mut commands: Commands,
     tilemap: Option<Res<Tilemap>>,
@@ -168,33 +179,26 @@ fn spawn_tile_meshes(
     tile_meshes: Res<TileMeshes>,
 ) {
     let Some(tilemap) = tilemap else {
-        // If the Tilemap resource is missing, ensure any previously spawned
-        // Tile entities are cleaned up so they don't persist indefinitely.
         for entity in &existing_tiles {
             commands.entity(entity).despawn();
         }
         return;
     };
 
-    // Only spawn if tilemap was just added or changed
     if !tilemap.is_changed() {
         return;
     }
 
-    // Despawn existing tile entities
     for entity in &existing_tiles {
         commands.entity(entity).despawn();
     }
 
-    // Spawn tile entities
     for (pos, kind) in tilemap.iter() {
         let world_x = pos.x as f32;
         let world_z = pos.y as f32;
 
         match kind {
             TileKind::Floor => {
-                // Collider is 0.1 tall (full dim), centered on transform.
-                // Offset y by -0.05 so the top surface sits at y=0.0.
                 commands.spawn((
                     Mesh3d(tile_meshes.floor_mesh.clone()),
                     MeshMaterial3d(tile_meshes.floor_material.clone()),
@@ -211,13 +215,58 @@ fn spawn_tile_meshes(
                     Transform::from_xyz(world_x, 0.5, world_z),
                     Tile { position: pos },
                     RigidBody::Static,
-                    // avian3d Collider::cuboid takes full dimensions, not half-extents
                     Collider::cuboid(1.0, 1.0, 1.0),
                 ));
             }
         }
     }
+}
 
+/// Headless tile spawner: colliders only, no meshes.
+#[cfg(not(feature = "client"))]
+fn spawn_tile_colliders(
+    mut commands: Commands,
+    tilemap: Option<Res<Tilemap>>,
+    existing_tiles: Query<Entity, With<Tile>>,
+) {
+    let Some(tilemap) = tilemap else {
+        for entity in &existing_tiles {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+
+    if !tilemap.is_changed() {
+        return;
+    }
+
+    for entity in &existing_tiles {
+        commands.entity(entity).despawn();
+    }
+
+    for (pos, kind) in tilemap.iter() {
+        let world_x = pos.x as f32;
+        let world_z = pos.y as f32;
+
+        match kind {
+            TileKind::Floor => {
+                commands.spawn((
+                    Transform::from_xyz(world_x, -0.05, world_z),
+                    Tile { position: pos },
+                    RigidBody::Static,
+                    Collider::cuboid(1.0, 0.1, 1.0),
+                ));
+            }
+            TileKind::Wall => {
+                commands.spawn((
+                    Transform::from_xyz(world_x, 0.5, world_z),
+                    Tile { position: pos },
+                    RigidBody::Static,
+                    Collider::cuboid(1.0, 1.0, 1.0),
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -37,16 +37,20 @@ bevy = { version = "0.18" }
 config = { version = "0.15", features = ["ron", "toml"] }
 serde = { version = "1", features = ["derive"] }
 
+[features]
+default = ["client"]
+client = ["dep:ui", "dep:camera", "dep:player", "tiles/client", "things/client", "physics/client"]
+
 [dependencies]
 bevy = { workspace = true }
 config = { workspace = true }
 serde = { workspace = true }
 
-ui = { path = "modules/ui" }
+ui = { path = "modules/ui", optional = true }
 network = { path = "modules/network" }
 tiles = { path = "modules/tiles" }
 things = { path = "modules/things" }
 physics = { path = "modules/physics" }
-player = { path = "modules/player" }
+player = { path = "modules/player", optional = true }
 creatures = { path = "modules/creatures" }
-camera = { path = "modules/camera" }
+camera = { path = "modules/camera", optional = true }
