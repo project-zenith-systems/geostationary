@@ -29,6 +29,10 @@ pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid
     gas_grid
 }
 
+/// Epsilon threshold for detecting parallel rays in raycasting.
+/// Used to avoid division by near-zero values when the ray is nearly parallel to the ground plane.
+const RAY_PARALLEL_EPSILON: f32 = 0.001;
+
 /// Performs raycasting from the camera through the cursor to find the tile position.
 /// Returns the tile grid position (IVec2) if a tile is found within the raycast.
 fn raycast_tile_from_cursor(
@@ -46,7 +50,7 @@ fn raycast_tile_from_cursor(
     // Ray equation: point = origin + t * direction
     // For y = 0: origin.y + t * direction.y = 0
     // Solve for t: t = -origin.y / direction.y
-    if ray.direction.y.abs() < 0.001 {
+    if ray.direction.y.abs() < RAY_PARALLEL_EPSILON {
         // Ray is nearly parallel to ground plane
         return None;
     }
