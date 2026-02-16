@@ -130,3 +130,28 @@ pub fn update_overlay_colors(
         material.base_color = color;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::app::App;
+
+    #[test]
+    fn test_overlay_default_off() {
+        let overlay = AtmosDebugOverlay::default();
+        assert!(!overlay.0, "Overlay should be off by default");
+    }
+
+    #[test]
+    fn test_toggle_overlay_manual() {
+        // Test manual toggle without using ButtonInput simulation
+        let mut overlay = AtmosDebugOverlay::default();
+        assert!(!overlay.0, "Should start off");
+        
+        overlay.0 = !overlay.0;
+        assert!(overlay.0, "Should be on after first toggle");
+        
+        overlay.0 = !overlay.0;
+        assert!(!overlay.0, "Should be off after second toggle");
+    }
+}
