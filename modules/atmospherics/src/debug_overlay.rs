@@ -58,6 +58,7 @@ pub fn spawn_overlay_quads(
     let quad_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
 
     // Spawn one quad per tile at y=0.01 (just above floor at y=0.0)
+    let mut spawned_count = 0;
     for (pos, kind) in tilemap.iter() {
         // Only spawn quads on floor tiles
         if !kind.is_walkable() {
@@ -85,12 +86,10 @@ pub fn spawn_overlay_quads(
                 material: material.clone(),
             },
         ));
+        spawned_count += 1;
     }
 
-    info!(
-        "Spawned {} overlay quads",
-        tilemap.iter().filter(|(_, k)| k.is_walkable()).count()
-    );
+    info!("Spawned {} overlay quads", spawned_count);
 }
 
 /// System that despawns overlay quads when the overlay is disabled or the Tilemap is removed.

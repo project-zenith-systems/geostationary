@@ -6,7 +6,6 @@ use physics::{PhysicsDebugPlugin, PhysicsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
 use ui::UiPlugin;
-use atmospherics::AtmosphericsPlugin;
 
 mod app_state;
 mod client;
@@ -44,7 +43,6 @@ fn main() {
         .add_plugins(camera::CameraPlugin::<app_state::AppState>::in_state(
             app_state::AppState::InGame,
         ))
-        .add_plugins(AtmosphericsPlugin)
         .add_plugins(world_setup::WorldSetupPlugin)
         .add_plugins(client::ClientPlugin)
         .add_plugins(server::ServerPlugin)
