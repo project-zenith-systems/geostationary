@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use physics::{Collider, Restitution, RigidBody};
 use tiles::Tilemap;
+use atmospherics::GasGrid;
 
 use crate::app_state::AppState;
 
@@ -11,7 +12,24 @@ pub fn setup_world(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.insert_resource(Tilemap::test_room());
+    let tilemap = Tilemap::test_room();
+    
+    // Initialize atmospheric gas grid with standard pressure (1.0 moles per cell)
+    let mut gas_grid = GasGrid::new(tilemap.width(), tilemap.height());
+    gas_grid.sync_walls(&tilemap);
+    
+    // Set all passable cells to standard pressure (1.0 moles)
+    for y in 0..tilemap.height() {
+        for x in 0..tilemap.width() {
+            let pos = IVec2::new(x as i32, y as i32);
+            if tilemap.is_walkable(pos) {
+                gas_grid.set_moles(pos, 1.0);
+            }
+        }
+    }
+    
+    commands.insert_resource(tilemap);
+    commands.insert_resource(gas_grid);
 
     // Spawn a light
     commands.spawn((
@@ -49,6 +67,7 @@ pub fn setup_world(
 /// System that cleans up the world when exiting InGame state.
 fn cleanup_world(mut commands: Commands) {
     commands.remove_resource::<Tilemap>();
+    commands.remove_resource::<GasGrid>();
 }
 
 pub struct WorldSetupPlugin;
