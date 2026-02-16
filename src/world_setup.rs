@@ -6,19 +6,13 @@ use tiles::Tilemap;
 
 use crate::app_state::AppState;
 
-/// System that sets up the world when entering InGame state.
-pub fn setup_world(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let tilemap = Tilemap::test_room();
-    
-    // Create GasGrid matching the tilemap dimensions
+/// Creates and initializes a GasGrid from a Tilemap.
+/// All floor cells are filled with standard atmospheric pressure.
+fn initialize_gas_grid(tilemap: &Tilemap) -> GasGrid {
     let mut gas_grid = GasGrid::new(tilemap.width(), tilemap.height());
     
     // Sync walls from tilemap to mark impassable cells
-    gas_grid.sync_walls(&tilemap);
+    gas_grid.sync_walls(tilemap);
     
     // Fill all floor cells with standard pressure
     for y in 0..tilemap.height() {
@@ -29,6 +23,18 @@ pub fn setup_world(
             }
         }
     }
+    
+    gas_grid
+}
+
+/// System that sets up the world when entering InGame state.
+pub fn setup_world(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let tilemap = Tilemap::test_room();
+    let gas_grid = initialize_gas_grid(&tilemap);
     
     // Insert resources
     commands.insert_resource(tilemap);
@@ -91,19 +97,8 @@ mod tests {
         // Create a test tilemap
         let tilemap = Tilemap::test_room();
         
-        // Create and initialize GasGrid
-        let mut gas_grid = GasGrid::new(tilemap.width(), tilemap.height());
-        gas_grid.sync_walls(&tilemap);
-        
-        // Fill all floor cells with standard pressure
-        for y in 0..tilemap.height() {
-            for x in 0..tilemap.width() {
-                let pos = IVec2::new(x as i32, y as i32);
-                if tilemap.is_walkable(pos) {
-                    gas_grid.set_moles(pos, STANDARD_PRESSURE);
-                }
-            }
-        }
+        // Initialize GasGrid using the same helper function as setup_world
+        let gas_grid = initialize_gas_grid(&tilemap);
         
         // Verify that floor cells have standard pressure
         let mut floor_cells_checked = 0;
