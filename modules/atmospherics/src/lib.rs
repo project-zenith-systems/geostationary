@@ -4,6 +4,9 @@ use tiles::Tilemap;
 mod gas_grid;
 pub use gas_grid::{GasCell, GasGrid};
 
+mod debug_overlay;
+pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
+
 /// Creates and initializes a GasGrid from a Tilemap.
 /// All floor cells are filled with the given standard atmospheric pressure.
 pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid {
@@ -33,5 +36,16 @@ pub struct AtmosphericsPlugin;
 impl Plugin for AtmosphericsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<GasGrid>();
+        app.init_resource::<AtmosDebugOverlay>();
+        app.add_systems(
+            Update,
+            (
+                debug_overlay::toggle_overlay,
+                debug_overlay::spawn_overlay_quads,
+                debug_overlay::despawn_overlay_quads,
+                debug_overlay::update_overlay_colors,
+            )
+                .chain(),
+        );
     }
 }
