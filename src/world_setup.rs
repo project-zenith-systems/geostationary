@@ -1,40 +1,21 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use atmospherics::{GasGrid, STANDARD_PRESSURE};
+use atmospherics::GasGrid;
 use physics::{Collider, Restitution, RigidBody};
 use tiles::Tilemap;
 
 use crate::app_state::AppState;
-
-/// Creates and initializes a GasGrid from a Tilemap.
-/// All floor cells are filled with standard atmospheric pressure.
-fn initialize_gas_grid(tilemap: &Tilemap) -> GasGrid {
-    let mut gas_grid = GasGrid::new(tilemap.width(), tilemap.height());
-    
-    // Sync walls from tilemap to mark impassable cells
-    gas_grid.sync_walls(tilemap);
-    
-    // Fill all floor cells with standard pressure
-    for y in 0..tilemap.height() {
-        for x in 0..tilemap.width() {
-            let pos = IVec2::new(x as i32, y as i32);
-            if tilemap.is_walkable(pos) {
-                gas_grid.set_moles(pos, STANDARD_PRESSURE);
-            }
-        }
-    }
-    
-    gas_grid
-}
+use crate::config::AppConfig;
 
 /// System that sets up the world when entering InGame state.
 pub fn setup_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    config: Res<AppConfig>,
 ) {
     let tilemap = Tilemap::test_room();
-    let gas_grid = initialize_gas_grid(&tilemap);
+    let gas_grid = atmospherics::initialize_gas_grid(&tilemap, config.atmospherics.standard_pressure);
     
     // Insert resources
     commands.insert_resource(tilemap);
@@ -94,11 +75,13 @@ mod tests {
 
     #[test]
     fn test_atmosphere_initialization() {
+        const TEST_STANDARD_PRESSURE: f32 = 101.325;
+        
         // Create a test tilemap
         let tilemap = Tilemap::test_room();
         
-        // Initialize GasGrid using the same helper function as setup_world
-        let gas_grid = initialize_gas_grid(&tilemap);
+        // Initialize GasGrid using the atmospherics module function
+        let gas_grid = atmospherics::initialize_gas_grid(&tilemap, TEST_STANDARD_PRESSURE);
         
         // Verify that floor cells have standard pressure
         let mut floor_cells_checked = 0;
@@ -111,7 +94,7 @@ mod tests {
                     // Floor cells should have standard pressure
                     assert_eq!(
                         gas_grid.pressure_at(pos),
-                        Some(STANDARD_PRESSURE),
+                        Some(TEST_STANDARD_PRESSURE),
                         "Floor cell at {:?} should have standard pressure",
                         pos
                     );
@@ -134,7 +117,7 @@ mod tests {
         assert!(wall_cells_checked > 0, "Should have some wall cells");
         
         // Verify total moles equals floor cells * standard pressure
-        let expected_total_moles = floor_cells_checked as f32 * STANDARD_PRESSURE;
+        let expected_total_moles = floor_cells_checked as f32 * TEST_STANDARD_PRESSURE;
         let actual_total_moles = gas_grid.total_moles();
         assert!(
             (actual_total_moles - expected_total_moles).abs() < 0.1,
