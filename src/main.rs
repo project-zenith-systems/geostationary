@@ -73,9 +73,9 @@ fn main() {
     #[cfg(not(feature = "client"))]
     {
         let port = app_config.network.port;
-        app.add_systems(Startup, move |mut commands: MessageWriter<NetCommand>| {
+        app.add_systems(Startup, move |mut net_commands: MessageWriter<NetCommand>| {
             info!("Headless mode: hosting on port {port}");
-            commands.write(NetCommand::Host { port });
+            net_commands.write(NetCommand::Host { port });
         });
         app.add_systems(
             Startup,

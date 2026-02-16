@@ -57,30 +57,21 @@ impl Plugin for ThingsPlugin {
         app.register_type::<InputDirection>();
         app.init_resource::<ThingRegistry>();
 
-        #[cfg(feature = "client")]
-        app.add_observer(on_spawn_thing_client);
-
-        #[cfg(not(feature = "client"))]
-        app.add_observer(on_spawn_thing_headless);
+        app.add_observer(on_spawn_thing);
     }
 }
 
-#[cfg(feature = "client")]
-fn on_spawn_thing_client(
+fn on_spawn_thing(
     on: On<SpawnThing>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    #[cfg(feature = "client")] mut meshes: ResMut<Assets<Mesh>>,
+    #[cfg(feature = "client")] mut materials: ResMut<Assets<StandardMaterial>>,
     registry: Res<ThingRegistry>,
 ) {
     let event = on.event();
 
-    commands.entity(event.entity).insert((
-        Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.8, 0.5, 0.2),
-            ..default()
-        })),
+    let mut entity = commands.entity(event.entity);
+    entity.insert((
         Transform::from_translation(event.position),
         RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),
@@ -89,28 +80,13 @@ fn on_spawn_thing_client(
         Thing,
     ));
 
-    if let Some(builder) = registry.templates.get(&event.kind) {
-        builder(event.entity, event, &mut commands);
-    } else {
-        warn!("No template registered for thing kind {}", event.kind);
-    }
-}
-
-#[cfg(not(feature = "client"))]
-fn on_spawn_thing_headless(
-    on: On<SpawnThing>,
-    mut commands: Commands,
-    registry: Res<ThingRegistry>,
-) {
-    let event = on.event();
-
-    commands.entity(event.entity).insert((
-        Transform::from_translation(event.position),
-        RigidBody::Dynamic,
-        Collider::capsule(0.3, 1.0),
-        LockedAxes::ROTATION_LOCKED.lock_translation_y(),
-        GravityScale(0.0),
-        Thing,
+    #[cfg(feature = "client")]
+    entity.insert((
+        Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.8, 0.5, 0.2),
+            ..default()
+        })),
     ));
 
     if let Some(builder) = registry.templates.get(&event.kind) {

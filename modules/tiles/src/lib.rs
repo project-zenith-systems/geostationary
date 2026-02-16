@@ -124,15 +124,9 @@ impl Plugin for TilesPlugin {
         app.register_type::<Tile>();
 
         #[cfg(feature = "client")]
-        {
-            app.init_resource::<TileMeshes>();
-            app.add_systems(Update, spawn_tile_meshes);
-        }
+        app.init_resource::<TileMeshes>();
 
-        #[cfg(not(feature = "client"))]
-        {
-            app.add_systems(Update, spawn_tile_colliders);
-        }
+        app.add_systems(Update, spawn_tiles);
     }
 }
 
@@ -171,12 +165,11 @@ impl FromWorld for TileMeshes {
     }
 }
 
-#[cfg(feature = "client")]
-fn spawn_tile_meshes(
+fn spawn_tiles(
     mut commands: Commands,
     tilemap: Option<Res<Tilemap>>,
     existing_tiles: Query<Entity, With<Tile>>,
-    tile_meshes: Res<TileMeshes>,
+    #[cfg(feature = "client")] tile_meshes: Res<TileMeshes>,
 ) {
     let Some(tilemap) = tilemap else {
         for entity in &existing_tiles {
@@ -197,74 +190,38 @@ fn spawn_tile_meshes(
         let world_x = pos.x as f32;
         let world_z = pos.y as f32;
 
-        match kind {
-            TileKind::Floor => {
-                commands.spawn((
-                    Mesh3d(tile_meshes.floor_mesh.clone()),
-                    MeshMaterial3d(tile_meshes.floor_material.clone()),
-                    Transform::from_xyz(world_x, -0.05, world_z),
-                    Tile { position: pos },
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 0.1, 1.0),
-                ));
-            }
-            TileKind::Wall => {
-                commands.spawn((
-                    Mesh3d(tile_meshes.wall_mesh.clone()),
-                    MeshMaterial3d(tile_meshes.wall_material.clone()),
-                    Transform::from_xyz(world_x, 0.5, world_z),
-                    Tile { position: pos },
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                ));
-            }
-        }
-    }
-}
+        let (transform, collider) = match kind {
+            TileKind::Floor => (
+                Transform::from_xyz(world_x, -0.05, world_z),
+                Collider::cuboid(1.0, 0.1, 1.0),
+            ),
+            TileKind::Wall => (
+                Transform::from_xyz(world_x, 0.5, world_z),
+                Collider::cuboid(1.0, 1.0, 1.0),
+            ),
+        };
 
-/// Headless tile spawner: colliders only, no meshes.
-#[cfg(not(feature = "client"))]
-fn spawn_tile_colliders(
-    mut commands: Commands,
-    tilemap: Option<Res<Tilemap>>,
-    existing_tiles: Query<Entity, With<Tile>>,
-) {
-    let Some(tilemap) = tilemap else {
-        for entity in &existing_tiles {
-            commands.entity(entity).despawn();
-        }
-        return;
-    };
+        #[allow(unused_mut, unused_variables)]
+        let mut entity = commands.spawn((
+            transform,
+            Tile { position: pos },
+            RigidBody::Static,
+            collider,
+        ));
 
-    if !tilemap.is_changed() {
-        return;
-    }
-
-    for entity in &existing_tiles {
-        commands.entity(entity).despawn();
-    }
-
-    for (pos, kind) in tilemap.iter() {
-        let world_x = pos.x as f32;
-        let world_z = pos.y as f32;
-
-        match kind {
-            TileKind::Floor => {
-                commands.spawn((
-                    Transform::from_xyz(world_x, -0.05, world_z),
-                    Tile { position: pos },
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 0.1, 1.0),
-                ));
-            }
-            TileKind::Wall => {
-                commands.spawn((
-                    Transform::from_xyz(world_x, 0.5, world_z),
-                    Tile { position: pos },
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                ));
-            }
+        #[cfg(feature = "client")]
+        {
+            let (mesh, material) = match kind {
+                TileKind::Floor => (
+                    tile_meshes.floor_mesh.clone(),
+                    tile_meshes.floor_material.clone(),
+                ),
+                TileKind::Wall => (
+                    tile_meshes.wall_mesh.clone(),
+                    tile_meshes.wall_material.clone(),
+                ),
+            };
+            entity.insert((Mesh3d(mesh), MeshMaterial3d(material)));
         }
     }
 }
