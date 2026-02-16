@@ -319,4 +319,62 @@ mod tests {
         assert_eq!(grid.pressure_at(IVec2::new(0, 0)).unwrap(), initial_pressure_00);
         assert_eq!(grid.pressure_at(IVec2::new(1, 1)).unwrap(), initial_pressure_11);
     }
+
+    #[test]
+    fn test_sync_walls_after_wall_removal() {
+        // Test that after wall removal, cell is passable with 0.0 moles
+        let mut grid = GasGrid::new(3, 3);
+        let mut tilemap = Tilemap::new(3, 3, TileKind::Wall);
+
+        // Initially all walls - cell has 0 moles by default
+        grid.sync_walls(&tilemap);
+        let idx = grid.coord_to_index(IVec2::new(1, 1)).unwrap();
+        assert!(!grid.passable[idx]); // Wall is impassable
+        
+        // Remove wall by changing to floor
+        tilemap.set(IVec2::new(1, 1), TileKind::Floor);
+        
+        // After wall removal, manually set moles to 0.0 to simulate vacuum
+        // (This is what the wall_toggle_input system does)
+        grid.set_moles(IVec2::new(1, 1), 0.0);
+        
+        // Sync walls to update passability
+        grid.sync_walls(&tilemap);
+        
+        // Cell should now be passable
+        assert!(grid.passable[idx]);
+        
+        // Cell should have 0.0 moles (vacuum)
+        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(0.0));
+    }
+
+    #[test]
+    fn test_sync_walls_after_wall_addition() {
+        // Test that after wall addition, cell is impassable but moles are preserved
+        let mut grid = GasGrid::new(3, 3);
+        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+
+        // Initially all floors - set some moles
+        grid.set_moles(IVec2::new(1, 1), 10.0);
+        grid.sync_walls(&tilemap);
+        
+        let idx = grid.coord_to_index(IVec2::new(1, 1)).unwrap();
+        assert!(grid.passable[idx]); // Floor is passable
+        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(10.0));
+        
+        // Add wall by changing floor to wall
+        tilemap.set(IVec2::new(1, 1), TileKind::Wall);
+        
+        // Sync walls to update passability
+        grid.sync_walls(&tilemap);
+        
+        // Cell should now be impassable
+        assert!(!grid.passable[idx]);
+        
+        // Moles should be preserved
+        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(10.0));
+        
+        // Total moles should still count the sealed cell
+        assert_eq!(grid.total_moles(), 10.0);
+    }
 }
