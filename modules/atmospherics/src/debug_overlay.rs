@@ -13,6 +13,8 @@ pub struct AtmosDebugOverlay(pub bool);
 #[derive(Component)]
 pub struct OverlayQuad {
     pub position: IVec2,
+    // Store mesh handle to ensure proper cleanup
+    mesh: Handle<Mesh>,
 }
 
 /// System that toggles the debug overlay on F3 keypress.
@@ -28,12 +30,12 @@ pub fn toggle_overlay(
 
 /// System that spawns or despawns overlay quads based on the overlay toggle state.
 /// When the overlay is enabled and no quads exist, spawns one quad per floor tile.
-/// When the overlay is disabled, despawns all quads.
+/// When the overlay is disabled, despawns all quads and cleans up their meshes.
 pub fn manage_overlay_quads(
     mut commands: Commands,
     overlay: Res<AtmosDebugOverlay>,
     tilemap: Option<Res<Tilemap>>,
-    existing_quads: Query<Entity, With<OverlayQuad>>,
+    existing_quads: Query<(Entity, &OverlayQuad)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -46,9 +48,6 @@ pub fn manage_overlay_quads(
             return;
         };
 
-        // Create a shared quad mesh (1x1 plane)
-        let quad_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
-
         // Spawn one quad per tile at y=0.01 (just above floor at y=0.0)
         for (pos, kind) in tilemap.iter() {
             // Only spawn quads on floor tiles
@@ -58,6 +57,9 @@ pub fn manage_overlay_quads(
 
             let world_x = pos.x as f32;
             let world_z = pos.y as f32;
+
+            // Create a mesh for this quad (1x1 plane)
+            let quad_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
 
             // Start with green (normal pressure) - will be updated by color update system
             let material = materials.add(StandardMaterial {
@@ -71,14 +73,19 @@ pub fn manage_overlay_quads(
                 Mesh3d(quad_mesh.clone()),
                 MeshMaterial3d(material),
                 Transform::from_xyz(world_x, 0.01, world_z),
-                OverlayQuad { position: pos },
+                OverlayQuad { 
+                    position: pos,
+                    mesh: quad_mesh,
+                },
             ));
         }
 
         info!("Spawned {} overlay quads", tilemap.iter().filter(|(_, k)| k.is_walkable()).count());
     } else if !overlay.0 && quad_count > 0 {
-        // Despawn overlay quads
-        for entity in existing_quads.iter() {
+        // Despawn overlay quads and clean up their meshes
+        for (entity, quad) in existing_quads.iter() {
+            // Remove the mesh from assets
+            meshes.remove(&quad.mesh);
             commands.entity(entity).despawn();
         }
         info!("Despawned {} overlay quads", quad_count);
@@ -111,18 +118,20 @@ pub fn update_overlay_colors(
         
         // Color mapping based on pressure:
         // p < 0.5: blue (vacuum)
-        // p ≈ 1.0: green (normal)
+        // p = 1.0: green (normal)
         // p > 1.5: red (high pressure)
-        let color = if pressure < 0.5 {
-            // Vacuum: blue
-            let intensity = (pressure / 0.5).clamp(0.0, 1.0);
-            Color::srgba(0.0, 0.0, 0.5 + intensity * 0.5, 0.5)
+        let color = if pressure < 1.0 {
+            // Vacuum to normal: blue to green
+            let t = (pressure / 1.0).clamp(0.0, 1.0);
+            // t=0: blue (0, 0, 1), t=1: green (0, 1, 0)
+            Color::srgba(0.0, t, 1.0 - t, 0.5)
         } else if pressure < 1.5 {
             // Normal to high: green to red
-            let t = ((pressure - 0.5) / 1.0).clamp(0.0, 1.0);
+            let t = ((pressure - 1.0) / 0.5).clamp(0.0, 1.0);
+            // t=0: green (0, 1, 0), t=1: red (1, 0, 0)
             Color::srgba(t, 1.0 - t, 0.0, 0.5)
         } else {
-            // High pressure: red
+            // High pressure: red, getting darker as pressure increases
             let intensity = (1.0 - (pressure - 1.5) * 0.2).clamp(0.5, 1.0);
             Color::srgba(intensity, 0.0, 0.0, 0.5)
         };
