@@ -7,3 +7,9 @@ port = 7777
 [debug]
 # Enable physics debug rendering (collider wireframes)
 physics_debug = false
+
+[atmospherics]
+# Standard atmospheric pressure in moles (approximately 1 atm)
+# Since pressure = moles * PRESSURE_CONSTANT and PRESSURE_CONSTANT = 1.0,
+# this value directly represents the pressure as well.
+standard_pressure = 101.325
