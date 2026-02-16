@@ -81,3 +81,71 @@ impl Plugin for WorldSetupPlugin {
         app.add_systems(OnExit(AppState::InGame), cleanup_world);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_atmosphere_initialization() {
+        // Create a test tilemap
+        let tilemap = Tilemap::test_room();
+        
+        // Create and initialize GasGrid
+        let mut gas_grid = GasGrid::new(tilemap.width(), tilemap.height());
+        gas_grid.sync_walls(&tilemap);
+        
+        // Fill all floor cells with standard pressure
+        for y in 0..tilemap.height() {
+            for x in 0..tilemap.width() {
+                let pos = IVec2::new(x as i32, y as i32);
+                if tilemap.is_walkable(pos) {
+                    gas_grid.set_moles(pos, STANDARD_PRESSURE);
+                }
+            }
+        }
+        
+        // Verify that floor cells have standard pressure
+        let mut floor_cells_checked = 0;
+        let mut wall_cells_checked = 0;
+        
+        for y in 0..tilemap.height() {
+            for x in 0..tilemap.width() {
+                let pos = IVec2::new(x as i32, y as i32);
+                if tilemap.is_walkable(pos) {
+                    // Floor cells should have standard pressure
+                    assert_eq!(
+                        gas_grid.pressure_at(pos),
+                        Some(STANDARD_PRESSURE),
+                        "Floor cell at {:?} should have standard pressure",
+                        pos
+                    );
+                    floor_cells_checked += 1;
+                } else {
+                    // Wall cells should have zero pressure (not filled)
+                    assert_eq!(
+                        gas_grid.pressure_at(pos),
+                        Some(0.0),
+                        "Wall cell at {:?} should have zero pressure",
+                        pos
+                    );
+                    wall_cells_checked += 1;
+                }
+            }
+        }
+        
+        // Verify we checked both types of cells
+        assert!(floor_cells_checked > 0, "Should have some floor cells");
+        assert!(wall_cells_checked > 0, "Should have some wall cells");
+        
+        // Verify total moles equals floor cells * standard pressure
+        let expected_total_moles = floor_cells_checked as f32 * STANDARD_PRESSURE;
+        let actual_total_moles = gas_grid.total_moles();
+        assert!(
+            (actual_total_moles - expected_total_moles).abs() < 0.1,
+            "Total moles {} should be close to expected {}",
+            actual_total_moles,
+            expected_total_moles
+        );
+    }
+}
