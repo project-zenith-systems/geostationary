@@ -45,9 +45,7 @@ pub fn spawn_overlay_quads(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let has_quads = !existing_quads.is_empty();
-
-    if !overlay.0 || has_quads {
+    if !overlay.0 {
         return;
     }
 
@@ -57,7 +55,12 @@ pub fn spawn_overlay_quads(
         return;
     };
 
-    // Create a single shared mesh for all quads (1x1 plane)
+    let mut existing_positions = std::collections::HashSet::new();
+    for quad in existing_quads.iter() {
+        existing_positions.insert(quad.position);
+    }
+
+    // Create a single shared mesh for new quads this frame (1x1 plane)
     let quad_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
 
     // Spawn one quad per tile at y=0.01 (just above floor at y=0.0)
@@ -65,6 +68,10 @@ pub fn spawn_overlay_quads(
     for (pos, kind) in tilemap.iter() {
         // Only spawn quads on floor tiles
         if !kind.is_walkable() {
+            continue;
+        }
+
+        if existing_positions.contains(&pos) {
             continue;
         }
 
@@ -92,7 +99,9 @@ pub fn spawn_overlay_quads(
         spawned_count += 1;
     }
 
-    info!("Spawned {} overlay quads", spawned_count);
+    if spawned_count > 0 {
+        info!("Spawned {} overlay quads", spawned_count);
+    }
 }
 
 /// System that despawns overlay quads when the overlay is disabled or the Tilemap is removed.
