@@ -60,11 +60,29 @@ pub fn spawn_overlay_quads(
         existing_positions.insert(quad.position);
     }
 
+    // Spawn one quad per tile at y=0.01 (just above floor at y=0.0)
+    let mut spawned_count = 0;
+    for (pos, kind) in tilemap.iter() {
+        // Only spawn quads on floor tiles
+        if !kind.is_walkable() {
+            continue;
+        }
+
+        if existing_positions.contains(&pos) {
+            continue;
+        }
+
+        spawned_count += 1;
+    }
+
+    // Only create mesh if we have quads to spawn
+    if spawned_count == 0 {
+        return;
+    }
+
     // Create a single shared mesh for new quads this frame (1x1 plane)
     let quad_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
 
-    // Spawn one quad per tile at y=0.01 (just above floor at y=0.0)
-    let mut spawned_count = 0;
     for (pos, kind) in tilemap.iter() {
         // Only spawn quads on floor tiles
         if !kind.is_walkable() {
@@ -96,7 +114,6 @@ pub fn spawn_overlay_quads(
                 material: material.clone(),
             },
         ));
-        spawned_count += 1;
     }
 
     if spawned_count > 0 {

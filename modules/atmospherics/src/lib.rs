@@ -136,7 +136,7 @@ fn wall_sync_system(tilemap: Option<Res<Tilemap>>, gas_grid: Option<ResMut<GasGr
 }
 
 /// System that advances the atmospherics simulation by one manual tick.
-/// Press F4 to step diffusion one iteration for debugging/inspection.
+/// Press F4 to advance diffusion by a fixed dt (MANUAL_STEP_DT), which may be internally sub-stepped, for debugging/inspection.
 fn manual_step_input(keyboard: Res<ButtonInput<KeyCode>>, gas_grid: Option<ResMut<GasGrid>>) {
     if !keyboard.just_pressed(KeyCode::F4) {
         return;

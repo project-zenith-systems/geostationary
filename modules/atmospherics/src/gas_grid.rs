@@ -21,6 +21,14 @@ impl Default for GasCell {
     }
 }
 
+/// Represents a proposed gas flow between two cells during a diffusion substep.
+#[derive(Clone, Copy)]
+struct ProposedFlow {
+    from: usize,
+    to: usize,
+    amount: f32,
+}
+
 /// A grid-based gas simulation that tracks moles per cell and derives pressure.
 /// Uses Bevy types for integration but keeps the simulation logic independent
 /// of ECS systems for easier testing.
@@ -31,6 +39,15 @@ pub struct GasGrid {
     height: u32,
     cells: Vec<GasCell>,
     passable: Vec<bool>,
+    // Scratch buffers reused across substeps to avoid per-frame heap allocations
+    #[reflect(ignore)]
+    scratch_flows: Vec<ProposedFlow>,
+    #[reflect(ignore)]
+    scratch_outgoing: Vec<f32>,
+    #[reflect(ignore)]
+    scratch_source_scale: Vec<f32>,
+    #[reflect(ignore)]
+    scratch_delta: Vec<f32>,
 }
 
 impl GasGrid {
@@ -43,6 +60,10 @@ impl GasGrid {
             height,
             cells: vec![GasCell::default(); size],
             passable: vec![true; size],
+            scratch_flows: Vec::new(),
+            scratch_outgoing: vec![0.0; size],
+            scratch_source_scale: vec![1.0; size],
+            scratch_delta: vec![0.0; size],
         }
     }
 
@@ -135,15 +156,11 @@ impl GasGrid {
         let width = self.width as usize;
         let height = self.height as usize;
 
-        #[derive(Clone, Copy)]
-        struct ProposedFlow {
-            from: usize,
-            to: usize,
-            amount: f32,
+        // Reuse scratch buffers to avoid per-substep heap allocations
+        self.scratch_flows.clear();
+        for val in self.scratch_outgoing.iter_mut() {
+            *val = 0.0;
         }
-
-        let mut flows: Vec<ProposedFlow> = Vec::new();
-        let mut outgoing_proposed = vec![0.0_f32; cell_count];
 
         for y in 0..height {
             for x in 0..width {
@@ -160,20 +177,20 @@ impl GasGrid {
                         let diff = moles_here - self.cells[n_idx].moles;
                         if diff > 0.0 {
                             let amount = diff * DIFFUSION_RATE * dt;
-                            flows.push(ProposedFlow {
+                            self.scratch_flows.push(ProposedFlow {
                                 from: idx,
                                 to: n_idx,
                                 amount,
                             });
-                            outgoing_proposed[idx] += amount;
+                            self.scratch_outgoing[idx] += amount;
                         } else if diff < 0.0 {
                             let amount = (-diff) * DIFFUSION_RATE * dt;
-                            flows.push(ProposedFlow {
+                            self.scratch_flows.push(ProposedFlow {
                                 from: n_idx,
                                 to: idx,
                                 amount,
                             });
-                            outgoing_proposed[n_idx] += amount;
+                            self.scratch_outgoing[n_idx] += amount;
                         }
                     }
                 }
@@ -184,47 +201,51 @@ impl GasGrid {
                         let diff = moles_here - self.cells[n_idx].moles;
                         if diff > 0.0 {
                             let amount = diff * DIFFUSION_RATE * dt;
-                            flows.push(ProposedFlow {
+                            self.scratch_flows.push(ProposedFlow {
                                 from: idx,
                                 to: n_idx,
                                 amount,
                             });
-                            outgoing_proposed[idx] += amount;
+                            self.scratch_outgoing[idx] += amount;
                         } else if diff < 0.0 {
                             let amount = (-diff) * DIFFUSION_RATE * dt;
-                            flows.push(ProposedFlow {
+                            self.scratch_flows.push(ProposedFlow {
                                 from: n_idx,
                                 to: idx,
                                 amount,
                             });
-                            outgoing_proposed[n_idx] += amount;
+                            self.scratch_outgoing[n_idx] += amount;
                         }
                     }
                 }
             }
         }
 
-        let mut source_scale = vec![1.0_f32; cell_count];
-        for (idx, &outgoing) in outgoing_proposed.iter().enumerate() {
+        for (idx, &outgoing) in self.scratch_outgoing.iter().enumerate() {
             if outgoing > 0.0 {
                 let available = self.cells[idx].moles.max(0.0);
-                source_scale[idx] = (available / outgoing).clamp(0.0, 1.0);
+                self.scratch_source_scale[idx] = (available / outgoing).clamp(0.0, 1.0);
+            } else {
+                self.scratch_source_scale[idx] = 1.0;
             }
         }
 
-        let mut delta = vec![0.0_f32; cell_count];
-        for flow in flows {
-            let actual = flow.amount * source_scale[flow.from];
+        for val in self.scratch_delta.iter_mut() {
+            *val = 0.0;
+        }
+
+        for flow in &self.scratch_flows {
+            let actual = flow.amount * self.scratch_source_scale[flow.from];
             if actual <= 0.0 || !actual.is_finite() {
                 continue;
             }
 
-            delta[flow.from] -= actual;
-            delta[flow.to] += actual;
+            self.scratch_delta[flow.from] -= actual;
+            self.scratch_delta[flow.to] += actual;
         }
 
         for (idx, cell) in self.cells.iter_mut().enumerate() {
-            let next = cell.moles + delta[idx];
+            let next = cell.moles + self.scratch_delta[idx];
             cell.moles = if next.is_finite() { next.max(0.0) } else { 0.0 };
         }
     }
