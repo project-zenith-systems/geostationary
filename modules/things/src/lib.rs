@@ -61,17 +61,24 @@ impl Plugin for ThingsPlugin {
     }
 }
 
+/// Render plugin that dresses Thing entities with meshes and materials.
+/// Add this plugin only in client builds.
+pub struct ThingsRenderPlugin;
+
+impl Plugin for ThingsRenderPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, dress_things);
+    }
+}
+
 fn on_spawn_thing(
     on: On<SpawnThing>,
     mut commands: Commands,
-    #[cfg(feature = "client")] mut meshes: ResMut<Assets<Mesh>>,
-    #[cfg(feature = "client")] mut materials: ResMut<Assets<StandardMaterial>>,
     registry: Res<ThingRegistry>,
 ) {
     let event = on.event();
 
-    let mut entity = commands.entity(event.entity);
-    entity.insert((
+    commands.entity(event.entity).insert((
         Transform::from_translation(event.position),
         RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),
@@ -80,18 +87,26 @@ fn on_spawn_thing(
         Thing,
     ));
 
-    #[cfg(feature = "client")]
-    entity.insert((
-        Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.8, 0.5, 0.2),
-            ..default()
-        })),
-    ));
-
     if let Some(builder) = registry.templates.get(&event.kind) {
         builder(event.entity, event, &mut commands);
     } else {
         warn!("No template registered for thing kind {}", event.kind);
+    }
+}
+
+fn dress_things(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    new_things: Query<Entity, Added<Thing>>,
+) {
+    for entity in &new_things {
+        commands.entity(entity).insert((
+            Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.8, 0.5, 0.2),
+                ..default()
+            })),
+        ));
     }
 }

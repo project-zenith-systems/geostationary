@@ -5,10 +5,14 @@ use main_menu::{MainMenuPlugin, MenuEvent};
 use network::NetCommand;
 use network::NetworkPlugin;
 #[cfg(feature = "client")]
-use physics::PhysicsDebugPlugin;
+use avian3d::prelude::PhysicsDebugPlugin;
 use physics::PhysicsPlugin;
 use things::ThingsPlugin;
+#[cfg(feature = "client")]
+use things::ThingsRenderPlugin;
 use tiles::TilesPlugin;
+#[cfg(feature = "client")]
+use tiles::TilesRenderPlugin;
 #[cfg(feature = "client")]
 use ui::UiPlugin;
 
@@ -59,6 +63,8 @@ fn main() {
 
     #[cfg(feature = "client")]
     {
+        app.add_plugins(TilesRenderPlugin)
+            .add_plugins(ThingsRenderPlugin);
         app.add_plugins(player::PlayerPlugin)
             .add_plugins(camera::CameraPlugin::<app_state::AppState>::in_state(
                 app_state::AppState::InGame,

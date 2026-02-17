@@ -3,15 +3,6 @@ name = "physics"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = []
-client = [
-    "avian3d/debug-plugin",
-    "avian3d/collider-from-mesh",
-    "avian3d/bevy_scene",
-    "avian3d/bevy_picking",
-]
-
 [dependencies]
 bevy = { workspace = true }
 avian3d = { version = "0.5", default-features = false, features = [

@@ -122,15 +122,21 @@ impl Plugin for TilesPlugin {
         app.register_type::<TileKind>();
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
-
-        #[cfg(feature = "client")]
-        app.init_resource::<TileMeshes>();
-
         app.add_systems(Update, spawn_tiles);
     }
 }
 
-#[cfg(feature = "client")]
+/// Render plugin that dresses Tile entities with meshes and materials.
+/// Add this plugin only in client builds.
+pub struct TilesRenderPlugin;
+
+impl Plugin for TilesRenderPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<TileMeshes>();
+        app.add_systems(Update, dress_tiles);
+    }
+}
+
 #[derive(Resource)]
 struct TileMeshes {
     floor_mesh: Handle<Mesh>,
@@ -139,7 +145,6 @@ struct TileMeshes {
     wall_material: Handle<StandardMaterial>,
 }
 
-#[cfg(feature = "client")]
 impl FromWorld for TileMeshes {
     fn from_world(world: &mut World) -> Self {
         let mut meshes = world.resource_mut::<Assets<Mesh>>();
@@ -169,7 +174,6 @@ fn spawn_tiles(
     mut commands: Commands,
     tilemap: Option<Res<Tilemap>>,
     existing_tiles: Query<Entity, With<Tile>>,
-    #[cfg(feature = "client")] tile_meshes: Res<TileMeshes>,
 ) {
     let Some(tilemap) = tilemap else {
         for entity in &existing_tiles {
@@ -201,28 +205,39 @@ fn spawn_tiles(
             ),
         };
 
-        #[allow(unused_mut, unused_variables)]
-        let mut entity = commands.spawn((
+        commands.spawn((
             transform,
             Tile { position: pos },
             RigidBody::Static,
             collider,
         ));
+    }
+}
 
-        #[cfg(feature = "client")]
-        {
-            let (mesh, material) = match kind {
-                TileKind::Floor => (
-                    tile_meshes.floor_mesh.clone(),
-                    tile_meshes.floor_material.clone(),
-                ),
-                TileKind::Wall => (
-                    tile_meshes.wall_mesh.clone(),
-                    tile_meshes.wall_material.clone(),
-                ),
-            };
-            entity.insert((Mesh3d(mesh), MeshMaterial3d(material)));
-        }
+fn dress_tiles(
+    mut commands: Commands,
+    tile_meshes: Res<TileMeshes>,
+    tilemap: Option<Res<Tilemap>>,
+    new_tiles: Query<(Entity, &Tile), Added<Tile>>,
+) {
+    let Some(tilemap) = tilemap else { return };
+    for (entity, tile) in &new_tiles {
+        let Some(kind) = tilemap.get(tile.position) else {
+            continue;
+        };
+        let (mesh, material) = match kind {
+            TileKind::Floor => (
+                tile_meshes.floor_mesh.clone(),
+                tile_meshes.floor_material.clone(),
+            ),
+            TileKind::Wall => (
+                tile_meshes.wall_mesh.clone(),
+                tile_meshes.wall_material.clone(),
+            ),
+        };
+        commands
+            .entity(entity)
+            .insert((Mesh3d(mesh), MeshMaterial3d(material)));
     }
 }
 

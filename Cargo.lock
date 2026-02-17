@@ -2810,6 +2810,7 @@ dependencies = [
 name = "geostationary"
 version = "0.1.0"
 dependencies = [
+ "avian3d",
  "bevy",
  "camera",
  "config",
