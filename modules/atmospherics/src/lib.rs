@@ -12,10 +12,10 @@ pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
 /// All floor cells are filled with the given standard atmospheric pressure.
 pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid {
     let mut gas_grid = GasGrid::new(tilemap.width(), tilemap.height());
-    
+
     // Sync walls from tilemap to mark impassable cells
     gas_grid.sync_walls(tilemap);
-    
+
     // Fill all floor cells with standard pressure
     for y in 0..tilemap.height() {
         for x in 0..tilemap.width() {
@@ -25,13 +25,14 @@ pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid
             }
         }
     }
-    
+
     gas_grid
 }
 
 /// Epsilon threshold for detecting parallel rays in raycasting.
 /// Used to avoid division by near-zero values when the ray is nearly parallel to the ground plane.
 const RAY_PARALLEL_EPSILON: f32 = 0.001;
+const MANUAL_STEP_DT: f32 = 2.0;
 
 /// Performs raycasting from the camera through the cursor to find the tile position.
 /// Returns the tile grid position (IVec2) if a tile is found within the raycast.
@@ -39,12 +40,14 @@ fn raycast_tile_from_cursor(
     camera_query: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     window_query: &Query<&Window, With<PrimaryWindow>>,
 ) -> Option<IVec2> {
-    let (camera, camera_transform) = camera_query.get_single().ok()?;
+    let (camera, camera_transform) = camera_query.single().ok()?;
     let window = window_query.single().ok()?;
     let cursor_position = window.cursor_position()?;
 
     // Convert cursor position to a ray in world space
-    let ray = camera.viewport_to_world(camera_transform, cursor_position)?;
+    let ray = camera
+        .viewport_to_world(camera_transform, cursor_position)
+        .ok()?;
 
     // Find intersection with the ground plane (y = 0)
     // Ray equation: point = origin + t * direction
@@ -62,7 +65,7 @@ fn raycast_tile_from_cursor(
     }
 
     let intersection = ray.origin + ray.direction * t;
-    
+
     // Convert world position to tile coordinates
     // Tiles are centered at integer coordinates (e.g., tile at (0,0) is centered at world (0,0))
     let tile_x = intersection.x.round() as i32;
@@ -79,12 +82,16 @@ fn wall_toggle_input(
     mouse_input: Res<ButtonInput<MouseButton>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
-    mut tilemap: ResMut<Tilemap>,
-    mut gas_grid: ResMut<GasGrid>,
+    tilemap: Option<ResMut<Tilemap>>,
+    gas_grid: Option<ResMut<GasGrid>>,
 ) {
     if !mouse_input.just_pressed(MouseButton::Middle) {
         return;
     }
+
+    let (Some(mut tilemap), Some(mut gas_grid)) = (tilemap, gas_grid) else {
+        return;
+    };
 
     let Some(tile_pos) = raycast_tile_from_cursor(&camera_query, &window_query) else {
         return;
@@ -115,16 +122,32 @@ fn wall_toggle_input(
 /// System that synchronizes the GasGrid passability mask with the Tilemap.
 /// Runs when the Tilemap has been modified (via change detection).
 /// Updates which cells allow gas flow based on whether they are Floor or Wall tiles.
-fn wall_sync_system(
-    tilemap: Res<Tilemap>,
-    mut gas_grid: ResMut<GasGrid>,
-) {
+fn wall_sync_system(tilemap: Option<Res<Tilemap>>, gas_grid: Option<ResMut<GasGrid>>) {
+    let (Some(tilemap), Some(mut gas_grid)) = (tilemap, gas_grid) else {
+        return;
+    };
+
     if !tilemap.is_changed() {
         return;
     }
 
     gas_grid.sync_walls(&tilemap);
     info!("Synchronized GasGrid walls with Tilemap");
+}
+
+/// System that advances the atmospherics simulation by one manual tick.
+/// Press F4 to step diffusion one iteration for debugging/inspection.
+fn manual_step_input(keyboard: Res<ButtonInput<KeyCode>>, gas_grid: Option<ResMut<GasGrid>>) {
+    if !keyboard.just_pressed(KeyCode::F4) {
+        return;
+    }
+
+    let Some(mut gas_grid) = gas_grid else {
+        return;
+    };
+
+    gas_grid.step(MANUAL_STEP_DT);
+    info!("Atmospherics manual step (F4): dt={}", MANUAL_STEP_DT);
 }
 
 /// Plugin that manages atmospheric simulation in the game.
@@ -141,6 +164,7 @@ impl Plugin for AtmosphericsPlugin {
             (
                 wall_toggle_input,
                 wall_sync_system,
+                manual_step_input,
                 debug_overlay::toggle_overlay,
                 debug_overlay::spawn_overlay_quads,
                 debug_overlay::despawn_overlay_quads,

@@ -5,6 +5,7 @@ use tiles::{TileKind, Tilemap};
 /// pressure = moles * PRESSURE_CONSTANT
 /// This simplifies the ideal gas law by assuming fixed temperature and unit cell volume.
 const PRESSURE_CONSTANT: f32 = 1.0;
+const DIFFUSION_RATE: f32 = 0.25;
 
 /// Represents a single cell in the gas grid.
 #[derive(Debug, Clone, Copy, PartialEq, Reflect)]
@@ -101,10 +102,116 @@ impl GasGrid {
         self.cells.iter().map(|cell| cell.moles).sum()
     }
 
-    /// Performs one diffusion step.
-    /// This is currently a no-op stub - diffusion algorithm will be implemented later.
-    pub fn step(&mut self, _dt: f32) {
-        // No-op stub - diffusion comes later
+    /// Performs one diffusion step using a Jacobi-style update.
+    ///
+    /// For each pair of passable cardinal neighbors, this computes a proposed flow
+    /// proportional to their pressure difference and applies all flows simultaneously.
+    /// Outgoing flow from each cell is clamped so no cell can go negative.
+    pub fn step(&mut self, dt: f32) {
+        if dt <= 0.0 || !dt.is_finite() {
+            return;
+        }
+
+        let cell_count = self.cells.len();
+        if cell_count == 0 {
+            return;
+        }
+
+        let width = self.width as usize;
+        let height = self.height as usize;
+
+        #[derive(Clone, Copy)]
+        struct ProposedFlow {
+            from: usize,
+            to: usize,
+            amount: f32,
+        }
+
+        let mut flows: Vec<ProposedFlow> = Vec::new();
+        let mut outgoing_proposed = vec![0.0_f32; cell_count];
+
+        for y in 0..height {
+            for x in 0..width {
+                let idx = y * width + x;
+                if !self.passable[idx] {
+                    continue;
+                }
+
+                let moles_here = self.cells[idx].moles;
+
+                if x + 1 < width {
+                    let n_idx = y * width + (x + 1);
+                    if self.passable[n_idx] {
+                        let diff = moles_here - self.cells[n_idx].moles;
+                        if diff > 0.0 {
+                            let amount = diff * DIFFUSION_RATE * dt;
+                            flows.push(ProposedFlow {
+                                from: idx,
+                                to: n_idx,
+                                amount,
+                            });
+                            outgoing_proposed[idx] += amount;
+                        } else if diff < 0.0 {
+                            let amount = (-diff) * DIFFUSION_RATE * dt;
+                            flows.push(ProposedFlow {
+                                from: n_idx,
+                                to: idx,
+                                amount,
+                            });
+                            outgoing_proposed[n_idx] += amount;
+                        }
+                    }
+                }
+
+                if y + 1 < height {
+                    let n_idx = (y + 1) * width + x;
+                    if self.passable[n_idx] {
+                        let diff = moles_here - self.cells[n_idx].moles;
+                        if diff > 0.0 {
+                            let amount = diff * DIFFUSION_RATE * dt;
+                            flows.push(ProposedFlow {
+                                from: idx,
+                                to: n_idx,
+                                amount,
+                            });
+                            outgoing_proposed[idx] += amount;
+                        } else if diff < 0.0 {
+                            let amount = (-diff) * DIFFUSION_RATE * dt;
+                            flows.push(ProposedFlow {
+                                from: n_idx,
+                                to: idx,
+                                amount,
+                            });
+                            outgoing_proposed[n_idx] += amount;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut source_scale = vec![1.0_f32; cell_count];
+        for (idx, &outgoing) in outgoing_proposed.iter().enumerate() {
+            if outgoing > 0.0 {
+                let available = self.cells[idx].moles.max(0.0);
+                source_scale[idx] = (available / outgoing).clamp(0.0, 1.0);
+            }
+        }
+
+        let mut delta = vec![0.0_f32; cell_count];
+        for flow in flows {
+            let actual = flow.amount * source_scale[flow.from];
+            if actual <= 0.0 || !actual.is_finite() {
+                continue;
+            }
+
+            delta[flow.from] -= actual;
+            delta[flow.to] += actual;
+        }
+
+        for (idx, cell) in self.cells.iter_mut().enumerate() {
+            let next = cell.moles + delta[idx];
+            cell.moles = if next.is_finite() { next.max(0.0) } else { 0.0 };
+        }
     }
 }
 
@@ -253,11 +360,10 @@ mod tests {
         tilemap.set(IVec2::new(2, 2), TileKind::Floor);
         grid.set_moles(IVec2::new(2, 2), 0.0);
         grid.sync_walls(&tilemap);
-        
+
         assert!(grid.passable[8]); // (2, 2) now passable
         assert_eq!(grid.pressure_at(IVec2::new(2, 2)), Some(0.0)); // vacuum (0.0 moles)
     }
-
 
     #[test]
     fn test_pressure_at_formula() {
@@ -312,29 +418,122 @@ mod tests {
         let initial_total = grid.total_moles();
         assert_eq!(initial_total, 18.0);
 
-        // Run several step iterations (currently no-op, but tests the API)
+        // Run several step iterations
         for _ in 0..10 {
             grid.step(0.1);
         }
 
         // Total moles should remain constant (within epsilon for floating point)
         let final_total = grid.total_moles();
-        assert!((final_total - initial_total).abs() < 1e-6);
+        assert!((final_total - initial_total).abs() < 1e-4);
     }
 
     #[test]
-    fn test_step_is_noop() {
-        let mut grid = GasGrid::new(3, 3);
+    fn test_step_reduces_pressure_discontinuity() {
+        let mut grid = GasGrid::new(2, 1);
+        let tilemap = Tilemap::new(2, 1, TileKind::Floor);
+        grid.sync_walls(&tilemap);
+
         grid.set_moles(IVec2::new(0, 0), 10.0);
-        grid.set_moles(IVec2::new(1, 1), 5.0);
+        grid.set_moles(IVec2::new(1, 0), 0.0);
 
-        let initial_pressure_00 = grid.pressure_at(IVec2::new(0, 0)).unwrap();
-        let initial_pressure_11 = grid.pressure_at(IVec2::new(1, 1)).unwrap();
+        let before_diff = (grid.pressure_at(IVec2::new(0, 0)).unwrap()
+            - grid.pressure_at(IVec2::new(1, 0)).unwrap())
+        .abs();
 
-        // Step should not change anything (it's a stub)
-        grid.step(0.1);
+        grid.step(1.0);
 
-        assert_eq!(grid.pressure_at(IVec2::new(0, 0)).unwrap(), initial_pressure_00);
-        assert_eq!(grid.pressure_at(IVec2::new(1, 1)).unwrap(), initial_pressure_11);
+        let after_diff = (grid.pressure_at(IVec2::new(0, 0)).unwrap()
+            - grid.pressure_at(IVec2::new(1, 0)).unwrap())
+        .abs();
+
+        assert!(after_diff < before_diff);
+    }
+
+    #[test]
+    fn test_diffusion_spike_criteria_convergence_and_conservation() {
+        let mut grid = GasGrid::new(12, 10);
+        let mut tilemap = Tilemap::new(12, 10, TileKind::Floor);
+
+        // Build two chambers separated by a vertical wall at x = 5.
+        for y in 0..10 {
+            tilemap.set(IVec2::new(5, y), TileKind::Wall);
+        }
+
+        grid.sync_walls(&tilemap);
+
+        // Left chamber pressurized to 1.0 atm, right chamber vacuum.
+        for y in 0..10 {
+            for x in 0..12 {
+                let pos = IVec2::new(x, y);
+                if !tilemap.is_walkable(pos) {
+                    continue;
+                }
+
+                if x < 5 {
+                    grid.set_moles(pos, 1.0);
+                } else {
+                    grid.set_moles(pos, 0.0);
+                }
+            }
+        }
+
+        let initial_total = grid.total_moles();
+
+        // Closed chambers should remain internally stable/non-negative/finite.
+        for _ in 0..200 {
+            grid.step(2.0);
+        }
+
+        for cell in &grid.cells {
+            assert!(cell.moles.is_finite());
+            assert!(cell.moles >= 0.0);
+        }
+
+        // Remove a contiguous wall segment to connect chambers.
+        for y in 0..10 {
+            tilemap.set(IVec2::new(5, y), TileKind::Floor);
+        }
+        grid.sync_walls(&tilemap);
+
+        for _ in 0..200 {
+            grid.step(2.0);
+        }
+
+        // Re-convergence: passable cells should be near-uniform.
+        let mut min_p = f32::MAX;
+        let mut max_p = f32::MIN;
+
+        for y in 0..10 {
+            for x in 0..12 {
+                let pos = IVec2::new(x, y);
+                if !tilemap.is_walkable(pos) {
+                    continue;
+                }
+
+                let p = grid.pressure_at(pos).unwrap();
+                min_p = min_p.min(p);
+                max_p = max_p.max(p);
+            }
+        }
+
+        assert!(
+            (max_p - min_p) < 0.01,
+            "Expected convergence with max-min < 0.01, got {}",
+            max_p - min_p
+        );
+
+        let final_total = grid.total_moles();
+        assert!(
+            (final_total - initial_total).abs() < 1e-4,
+            "Expected mass conservation, initial={}, final={}",
+            initial_total,
+            final_total
+        );
+
+        for cell in &grid.cells {
+            assert!(cell.moles.is_finite());
+            assert!(cell.moles >= 0.0);
+        }
     }
 }

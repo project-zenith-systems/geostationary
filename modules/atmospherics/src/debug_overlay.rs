@@ -3,6 +3,9 @@ use tiles::Tilemap;
 
 use crate::GasGrid;
 
+const OVERLAY_NORMAL_PRESSURE: f32 = 101.325;
+const OVERLAY_HIGH_PRESSURE: f32 = OVERLAY_NORMAL_PRESSURE * 1.5;
+
 /// Resource that controls the atmospheric pressure debug overlay.
 /// When true, the overlay is visible. When false, it is hidden.
 #[derive(Resource, Default)]
@@ -22,13 +25,13 @@ pub struct OverlayQuad {
 }
 
 /// System that toggles the debug overlay on F3 keypress.
-pub fn toggle_overlay(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut overlay: ResMut<AtmosDebugOverlay>,
-) {
+pub fn toggle_overlay(keyboard: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<AtmosDebugOverlay>) {
     if keyboard.just_pressed(KeyCode::F3) {
         overlay.0 = !overlay.0;
-        info!("Atmospheric debug overlay: {}", if overlay.0 { "ON" } else { "OFF" });
+        info!(
+            "Atmospheric debug overlay: {}",
+            if overlay.0 { "ON" } else { "OFF" }
+        );
     }
 }
 
@@ -110,7 +113,7 @@ pub fn despawn_overlay_quads(
             // Clean up shared mesh and materials once
             let mut shared_mesh: Option<Handle<Mesh>> = None;
             let mut cleaned_materials = std::collections::HashSet::new();
-            
+
             for (entity, quad) in existing_quads.iter() {
                 // Capture the shared mesh handle from the first quad
                 if shared_mesh.is_none() {
@@ -122,12 +125,12 @@ pub fn despawn_overlay_quads(
                 }
                 commands.entity(entity).despawn();
             }
-            
+
             // Remove the shared mesh from assets once
             if let Some(mesh) = shared_mesh {
                 meshes.remove(&mesh);
             }
-            
+
             info!(
                 "Despawned {} overlay quads because Tilemap resource is missing",
                 quad_count
@@ -143,7 +146,7 @@ pub fn despawn_overlay_quads(
     // Despawn overlay quads and clean up their meshes and materials
     let mut shared_mesh: Option<Handle<Mesh>> = None;
     let mut cleaned_materials = std::collections::HashSet::new();
-    
+
     for (entity, quad) in existing_quads.iter() {
         // Capture the shared mesh handle from the first quad
         if shared_mesh.is_none() {
@@ -155,7 +158,7 @@ pub fn despawn_overlay_quads(
         }
         commands.entity(entity).despawn();
     }
-    
+
     // Remove the shared mesh from assets once, after all entities are despawned
     if let Some(mesh) = shared_mesh {
         meshes.remove(&mesh);
@@ -166,7 +169,7 @@ pub fn despawn_overlay_quads(
 
 /// System that updates the color of overlay quads based on the current pressure.
 /// Only runs when the overlay is active.
-/// Color mapping: blue (vacuum, p < 0.5) -> green (normal, p ≈ 1.0) -> red (high, p > 1.5)
+/// Color mapping: blue (vacuum, p = 0) -> green (normal, p ≈ 101.325) -> red (high, p > 151.9875)
 pub fn update_overlay_colors(
     overlay: Res<AtmosDebugOverlay>,
     gas_grid: Option<Res<GasGrid>>,
@@ -187,24 +190,28 @@ pub fn update_overlay_colors(
         };
 
         let pressure = gas_grid.pressure_at(quad.position).unwrap_or(0.0);
-        
+
         // Color mapping based on pressure:
-        // p < 0.5: blue (vacuum)
-        // p = 1.0: green (normal)
-        // p > 1.5: red (high pressure)
-        let color = if pressure < 1.0 {
+        // p = 0.0: blue (vacuum)
+        // p = OVERLAY_NORMAL_PRESSURE: green (normal)
+        // p >= OVERLAY_HIGH_PRESSURE: red (high pressure)
+        let color = if pressure < OVERLAY_NORMAL_PRESSURE {
             // Vacuum to normal: blue to green
-            let t = pressure.clamp(0.0, 1.0);
+            let t = (pressure / OVERLAY_NORMAL_PRESSURE).clamp(0.0, 1.0);
             // t=0: blue (0, 0, 1), t=1: green (0, 1, 0)
             Color::srgba(0.0, t, 1.0 - t, 0.5)
-        } else if pressure < 1.5 {
+        } else if pressure < OVERLAY_HIGH_PRESSURE {
             // Normal to high: green to red
-            let t = ((pressure - 1.0) / 0.5).clamp(0.0, 1.0);
+            let t = ((pressure - OVERLAY_NORMAL_PRESSURE)
+                / (OVERLAY_HIGH_PRESSURE - OVERLAY_NORMAL_PRESSURE))
+                .clamp(0.0, 1.0);
             // t=0: green (0, 1, 0), t=1: red (1, 0, 0)
             Color::srgba(t, 1.0 - t, 0.0, 0.5)
         } else {
             // High pressure: red, getting darker as pressure increases
-            let intensity = (1.0 - (pressure - 1.5) * 0.2).clamp(0.5, 1.0);
+            let intensity = (1.0
+                - ((pressure - OVERLAY_HIGH_PRESSURE) / OVERLAY_NORMAL_PRESSURE) * 0.2)
+                .clamp(0.5, 1.0);
             Color::srgba(intensity, 0.0, 0.0, 0.5)
         };
 
@@ -227,10 +234,10 @@ mod tests {
         // Test manual toggle without using ButtonInput simulation
         let mut overlay = AtmosDebugOverlay::default();
         assert!(!overlay.0, "Should start off");
-        
+
         overlay.0 = !overlay.0;
         assert!(overlay.0, "Should be on after first toggle");
-        
+
         overlay.0 = !overlay.0;
         assert!(!overlay.0, "Should be off after second toggle");
     }
