@@ -36,10 +36,10 @@ const RAY_PARALLEL_EPSILON: f32 = 0.001;
 /// Performs raycasting from the camera through the cursor to find the tile position.
 /// Returns the tile grid position (IVec2) if a tile is found within the raycast.
 fn raycast_tile_from_cursor(
-    camera_query: &Query<(&Camera, &GlobalTransform)>,
+    camera_query: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     window_query: &Query<&Window, With<PrimaryWindow>>,
 ) -> Option<IVec2> {
-    let (camera, camera_transform) = camera_query.iter().next()?;
+    let (camera, camera_transform) = camera_query.get_single().ok()?;
     let window = window_query.single().ok()?;
     let cursor_position = window.cursor_position()?;
 
@@ -77,7 +77,7 @@ fn raycast_tile_from_cursor(
 /// When a wall is added (Floor -> Wall), the cell becomes impassable but preserves its moles.
 fn wall_toggle_input(
     mouse_input: Res<ButtonInput<MouseButton>>,
-    camera_query: Query<(&Camera, &GlobalTransform)>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
     mut tilemap: ResMut<Tilemap>,
     mut gas_grid: ResMut<GasGrid>,

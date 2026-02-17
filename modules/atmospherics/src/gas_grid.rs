@@ -222,7 +222,7 @@ mod tests {
         assert!(grid.passable[4]); // (1, 1)
         assert!(grid.passable[0]); // (0, 0)
 
-        // Change tiles to walls
+        // Change tiles to walls (floor -> wall transition: moles preserved)
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         grid.sync_walls(&tilemap);
 
@@ -234,12 +234,30 @@ mod tests {
         assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(5.0));
         assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(3.0));
 
-        // Change wall back to floor
+        // Total moles should still count the sealed cell
+        assert_eq!(grid.total_moles(), 8.0);
+
+        // Change wall back to floor (wall -> floor transition)
         tilemap.set(IVec2::new(1, 1), TileKind::Floor);
         grid.sync_walls(&tilemap);
         assert!(grid.passable[4]); // (1, 1) passable again
         assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(5.0)); // moles still preserved
+
+        // Test wall removal with explicit vacuum creation
+        // Set a cell to wall, then remove it and set to 0.0 moles (simulating wall_toggle_input)
+        tilemap.set(IVec2::new(2, 2), TileKind::Wall);
+        grid.sync_walls(&tilemap);
+        assert!(!grid.passable[8]); // (2, 2) is wall, impassable
+
+        // Remove wall and set to vacuum (what wall_toggle_input does)
+        tilemap.set(IVec2::new(2, 2), TileKind::Floor);
+        grid.set_moles(IVec2::new(2, 2), 0.0);
+        grid.sync_walls(&tilemap);
+        
+        assert!(grid.passable[8]); // (2, 2) now passable
+        assert_eq!(grid.pressure_at(IVec2::new(2, 2)), Some(0.0)); // vacuum (0.0 moles)
     }
+
 
     #[test]
     fn test_pressure_at_formula() {
@@ -318,63 +336,5 @@ mod tests {
 
         assert_eq!(grid.pressure_at(IVec2::new(0, 0)).unwrap(), initial_pressure_00);
         assert_eq!(grid.pressure_at(IVec2::new(1, 1)).unwrap(), initial_pressure_11);
-    }
-
-    #[test]
-    fn test_sync_walls_after_wall_removal() {
-        // Test that after wall removal, cell is passable with 0.0 moles
-        let mut grid = GasGrid::new(3, 3);
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Wall);
-
-        // Initially all walls - cell has 0 moles by default
-        grid.sync_walls(&tilemap);
-        let idx = grid.coord_to_index(IVec2::new(1, 1)).unwrap();
-        assert!(!grid.passable[idx]); // Wall is impassable
-        
-        // Remove wall by changing to floor
-        tilemap.set(IVec2::new(1, 1), TileKind::Floor);
-        
-        // After wall removal, manually set moles to 0.0 to simulate vacuum
-        // (This is what the wall_toggle_input system does)
-        grid.set_moles(IVec2::new(1, 1), 0.0);
-        
-        // Sync walls to update passability
-        grid.sync_walls(&tilemap);
-        
-        // Cell should now be passable
-        assert!(grid.passable[idx]);
-        
-        // Cell should have 0.0 moles (vacuum)
-        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(0.0));
-    }
-
-    #[test]
-    fn test_sync_walls_after_wall_addition() {
-        // Test that after wall addition, cell is impassable but moles are preserved
-        let mut grid = GasGrid::new(3, 3);
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
-
-        // Initially all floors - set some moles
-        grid.set_moles(IVec2::new(1, 1), 10.0);
-        grid.sync_walls(&tilemap);
-        
-        let idx = grid.coord_to_index(IVec2::new(1, 1)).unwrap();
-        assert!(grid.passable[idx]); // Floor is passable
-        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(10.0));
-        
-        // Add wall by changing floor to wall
-        tilemap.set(IVec2::new(1, 1), TileKind::Wall);
-        
-        // Sync walls to update passability
-        grid.sync_walls(&tilemap);
-        
-        // Cell should now be impassable
-        assert!(!grid.passable[idx]);
-        
-        // Moles should be preserved
-        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(10.0));
-        
-        // Total moles should still count the sealed cell
-        assert_eq!(grid.total_moles(), 10.0);
     }
 }
