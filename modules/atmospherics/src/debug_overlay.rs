@@ -55,33 +55,18 @@ pub fn spawn_overlay_quads(
         return;
     };
 
+    let has_quads = !existing_quads.is_empty();
+    if has_quads && !tilemap.is_changed() {
+        return;
+    }
+
     let mut existing_positions = std::collections::HashSet::new();
     for quad in existing_quads.iter() {
         existing_positions.insert(quad.position);
     }
 
-    // Spawn one quad per tile at y=0.01 (just above floor at y=0.0)
+    let mut quad_mesh: Option<Handle<Mesh>> = None;
     let mut spawned_count = 0;
-    for (pos, kind) in tilemap.iter() {
-        // Only spawn quads on floor tiles
-        if !kind.is_walkable() {
-            continue;
-        }
-
-        if existing_positions.contains(&pos) {
-            continue;
-        }
-
-        spawned_count += 1;
-    }
-
-    // Only create mesh if we have quads to spawn
-    if spawned_count == 0 {
-        return;
-    }
-
-    // Create a single shared mesh for new quads this frame (1x1 plane)
-    let quad_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
 
     for (pos, kind) in tilemap.iter() {
         // Only spawn quads on floor tiles
@@ -96,6 +81,10 @@ pub fn spawn_overlay_quads(
         let world_x = pos.x as f32;
         let world_z = pos.y as f32;
 
+        let mesh = quad_mesh
+            .get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5))))
+            .clone();
+
         // Start with green (normal pressure) - will be updated by color update system
         let material = materials.add(StandardMaterial {
             base_color: Color::srgba(0.0, 1.0, 0.0, 0.5), // Semi-transparent green
@@ -105,15 +94,16 @@ pub fn spawn_overlay_quads(
         });
 
         commands.spawn((
-            Mesh3d(quad_mesh.clone()),
+            Mesh3d(mesh.clone()),
             MeshMaterial3d(material.clone()),
             Transform::from_xyz(world_x, 0.01, world_z),
             OverlayQuad {
                 position: pos,
-                mesh: quad_mesh.clone(),
+                mesh,
                 material: material.clone(),
             },
         ));
+        spawned_count += 1;
     }
 
     if spawned_count > 0 {
@@ -136,25 +126,20 @@ pub fn despawn_overlay_quads(
     // If the Tilemap resource is missing, ensure any existing overlay quads are cleaned up
     if tilemap.is_none() {
         if quad_count > 0 {
-            // Clean up shared mesh and materials once
-            let mut shared_mesh: Option<Handle<Mesh>> = None;
+            // Clean up all unique meshes and materials once
+            let mut cleaned_meshes = std::collections::HashSet::new();
             let mut cleaned_materials = std::collections::HashSet::new();
 
             for (entity, quad) in existing_quads.iter() {
-                // Capture the shared mesh handle from the first quad
-                if shared_mesh.is_none() {
-                    shared_mesh = Some(quad.mesh.clone());
+                // Clean up mesh if not already cleaned
+                if cleaned_meshes.insert(quad.mesh.id()) {
+                    meshes.remove(&quad.mesh);
                 }
                 // Clean up material if not already cleaned
                 if cleaned_materials.insert(quad.material.id()) {
                     materials.remove(&quad.material);
                 }
                 commands.entity(entity).despawn();
-            }
-
-            // Remove the shared mesh from assets once
-            if let Some(mesh) = shared_mesh {
-                meshes.remove(&mesh);
             }
 
             info!(
@@ -169,25 +154,20 @@ pub fn despawn_overlay_quads(
         return;
     }
 
-    // Despawn overlay quads and clean up their meshes and materials
-    let mut shared_mesh: Option<Handle<Mesh>> = None;
+    // Despawn overlay quads and clean up all unique meshes and materials
+    let mut cleaned_meshes = std::collections::HashSet::new();
     let mut cleaned_materials = std::collections::HashSet::new();
 
     for (entity, quad) in existing_quads.iter() {
-        // Capture the shared mesh handle from the first quad
-        if shared_mesh.is_none() {
-            shared_mesh = Some(quad.mesh.clone());
+        // Clean up mesh if not already cleaned
+        if cleaned_meshes.insert(quad.mesh.id()) {
+            meshes.remove(&quad.mesh);
         }
         // Clean up material if not already cleaned (each quad has its own material)
         if cleaned_materials.insert(quad.material.id()) {
             materials.remove(&quad.material);
         }
         commands.entity(entity).despawn();
-    }
-
-    // Remove the shared mesh from assets once, after all entities are despawned
-    if let Some(mesh) = shared_mesh {
-        meshes.remove(&mesh);
     }
 
     info!("Despawned {} overlay quads", quad_count);
