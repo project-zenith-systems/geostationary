@@ -22,7 +22,7 @@ impl Default for GasCell {
 }
 
 /// Represents a proposed gas flow between two cells during a diffusion substep.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct ProposedFlow {
     from: usize,
     to: usize,
@@ -151,8 +151,6 @@ impl GasGrid {
     }
 
     fn step_substep(&mut self, dt: f32) {
-        let cell_count = self.cells.len();
-
         let width = self.width as usize;
         let height = self.height as usize;
 
