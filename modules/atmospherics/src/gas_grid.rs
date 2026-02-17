@@ -6,6 +6,7 @@ use tiles::{TileKind, Tilemap};
 /// This simplifies the ideal gas law by assuming fixed temperature and unit cell volume.
 const PRESSURE_CONSTANT: f32 = 1.0;
 const DIFFUSION_RATE: f32 = 0.25;
+const MAX_DIFFUSION_FACTOR_PER_STEP: f32 = 0.24;
 
 /// Represents a single cell in the gas grid.
 #[derive(Debug, Clone, Copy, PartialEq, Reflect)]
@@ -116,6 +117,20 @@ impl GasGrid {
         if cell_count == 0 {
             return;
         }
+
+        // Explicit diffusion is only stable when DIFFUSION_RATE * dt stays small.
+        // Split large dt into smaller sub-steps to avoid odd/even checkerboard oscillation.
+        let max_substep_dt = MAX_DIFFUSION_FACTOR_PER_STEP / DIFFUSION_RATE;
+        let substeps = (dt / max_substep_dt).ceil().max(1.0) as u32;
+        let substep_dt = dt / substeps as f32;
+
+        for _ in 0..substeps {
+            self.step_substep(substep_dt);
+        }
+    }
+
+    fn step_substep(&mut self, dt: f32) {
+        let cell_count = self.cells.len();
 
         let width = self.width as usize;
         let height = self.height as usize;
