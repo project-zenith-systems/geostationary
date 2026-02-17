@@ -222,7 +222,7 @@ mod tests {
         assert!(grid.passable[4]); // (1, 1)
         assert!(grid.passable[0]); // (0, 0)
 
-        // Change tiles to walls
+        // Change tiles to walls (floor -> wall transition: moles preserved)
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         grid.sync_walls(&tilemap);
 
@@ -234,12 +234,30 @@ mod tests {
         assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(5.0));
         assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(3.0));
 
-        // Change wall back to floor
+        // Total moles should still count the sealed cell
+        assert_eq!(grid.total_moles(), 8.0);
+
+        // Change wall back to floor (wall -> floor transition)
         tilemap.set(IVec2::new(1, 1), TileKind::Floor);
         grid.sync_walls(&tilemap);
         assert!(grid.passable[4]); // (1, 1) passable again
         assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(5.0)); // moles still preserved
+
+        // Test wall removal with explicit vacuum creation
+        // Set a cell to wall, then remove it and set to 0.0 moles (simulating wall_toggle_input)
+        tilemap.set(IVec2::new(2, 2), TileKind::Wall);
+        grid.sync_walls(&tilemap);
+        assert!(!grid.passable[8]); // (2, 2) is wall, impassable
+
+        // Remove wall and set to vacuum (what wall_toggle_input does)
+        tilemap.set(IVec2::new(2, 2), TileKind::Floor);
+        grid.set_moles(IVec2::new(2, 2), 0.0);
+        grid.sync_walls(&tilemap);
+        
+        assert!(grid.passable[8]); // (2, 2) now passable
+        assert_eq!(grid.pressure_at(IVec2::new(2, 2)), Some(0.0)); // vacuum (0.0 moles)
     }
+
 
     #[test]
     fn test_pressure_at_formula() {

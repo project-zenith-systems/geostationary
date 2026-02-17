@@ -1,5 +1,6 @@
 use bevy::prelude::*;
-use tiles::Tilemap;
+use bevy::window::PrimaryWindow;
+use tiles::{TileKind, Tilemap};
 
 mod gas_grid;
 pub use gas_grid::{GasCell, GasGrid};
@@ -28,6 +29,104 @@ pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid
     gas_grid
 }
 
+/// Epsilon threshold for detecting parallel rays in raycasting.
+/// Used to avoid division by near-zero values when the ray is nearly parallel to the ground plane.
+const RAY_PARALLEL_EPSILON: f32 = 0.001;
+
+/// Performs raycasting from the camera through the cursor to find the tile position.
+/// Returns the tile grid position (IVec2) if a tile is found within the raycast.
+fn raycast_tile_from_cursor(
+    camera_query: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    window_query: &Query<&Window, With<PrimaryWindow>>,
+) -> Option<IVec2> {
+    let (camera, camera_transform) = camera_query.get_single().ok()?;
+    let window = window_query.single().ok()?;
+    let cursor_position = window.cursor_position()?;
+
+    // Convert cursor position to a ray in world space
+    let ray = camera.viewport_to_world(camera_transform, cursor_position)?;
+
+    // Find intersection with the ground plane (y = 0)
+    // Ray equation: point = origin + t * direction
+    // For y = 0: origin.y + t * direction.y = 0
+    // Solve for t: t = -origin.y / direction.y
+    if ray.direction.y.abs() < RAY_PARALLEL_EPSILON {
+        // Ray is nearly parallel to ground plane
+        return None;
+    }
+
+    let t = -ray.origin.y / ray.direction.y;
+    if t < 0.0 {
+        // Intersection is behind the camera
+        return None;
+    }
+
+    let intersection = ray.origin + ray.direction * t;
+    
+    // Convert world position to tile coordinates
+    // Tiles are centered at integer coordinates (e.g., tile at (0,0) is centered at world (0,0))
+    let tile_x = intersection.x.round() as i32;
+    let tile_z = intersection.z.round() as i32;
+
+    Some(IVec2::new(tile_x, tile_z))
+}
+
+/// System that toggles walls when the middle mouse button is clicked.
+/// Uses raycasting to determine which tile is under the cursor.
+/// When a wall is removed (Wall -> Floor), the gas cell is set to 0.0 moles (vacuum).
+/// When a wall is added (Floor -> Wall), the cell becomes impassable but preserves its moles.
+fn wall_toggle_input(
+    mouse_input: Res<ButtonInput<MouseButton>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    window_query: Query<&Window, With<PrimaryWindow>>,
+    mut tilemap: ResMut<Tilemap>,
+    mut gas_grid: ResMut<GasGrid>,
+) {
+    if !mouse_input.just_pressed(MouseButton::Middle) {
+        return;
+    }
+
+    let Some(tile_pos) = raycast_tile_from_cursor(&camera_query, &window_query) else {
+        return;
+    };
+
+    // Check if the tile is within bounds
+    let Some(current_tile) = tilemap.get(tile_pos) else {
+        return;
+    };
+
+    // Toggle the tile
+    let new_tile = match current_tile {
+        TileKind::Wall => {
+            // When removing a wall, set the cell to vacuum (0.0 moles)
+            gas_grid.set_moles(tile_pos, 0.0);
+            TileKind::Floor
+        }
+        TileKind::Floor => {
+            // When adding a wall, preserve the current moles (cell becomes impassable)
+            TileKind::Wall
+        }
+    };
+
+    tilemap.set(tile_pos, new_tile);
+    info!("Toggled tile at {:?} to {:?}", tile_pos, new_tile);
+}
+
+/// System that synchronizes the GasGrid passability mask with the Tilemap.
+/// Runs when the Tilemap has been modified (via change detection).
+/// Updates which cells allow gas flow based on whether they are Floor or Wall tiles.
+fn wall_sync_system(
+    tilemap: Res<Tilemap>,
+    mut gas_grid: ResMut<GasGrid>,
+) {
+    if !tilemap.is_changed() {
+        return;
+    }
+
+    gas_grid.sync_walls(&tilemap);
+    info!("Synchronized GasGrid walls with Tilemap");
+}
+
 /// Plugin that manages atmospheric simulation in the game.
 /// Registers the GasGrid as a Bevy resource and provides the infrastructure
 /// for gas diffusion across the tilemap.
@@ -40,6 +139,8 @@ impl Plugin for AtmosphericsPlugin {
         app.add_systems(
             Update,
             (
+                wall_toggle_input,
+                wall_sync_system,
                 debug_overlay::toggle_overlay,
                 debug_overlay::spawn_overlay_quads,
                 debug_overlay::despawn_overlay_quads,
