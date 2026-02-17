@@ -33,13 +33,24 @@ opt-level = "s"
 strip = "debuginfo"
 
 [workspace.dependencies]
-bevy = { version = "0.18" }
+bevy = { version = "0.18", default-features = false, features = [
+    # Content (2d + 3d + ui)
+    "2d_bevy_render", "3d_bevy_render",
+    "ui_api", "ui_bevy_render",
+    "scene", "audio", "picking",
+    # default_app
+    "default_app",
+    # default_platform minus wayland/x11
+    "std", "bevy_gilrs", "bevy_winit", "default_font",
+    "multi_threaded", "sysinfo_plugin",
+    "android-game-activity", "android_shared_stdcxx", "webgl2",
+] }
 config = { version = "0.15", features = ["ron", "toml"] }
 serde = { version = "1", features = ["derive"] }
 
 [features]
 default = ["client"]
-client = ["dep:ui", "dep:camera", "dep:player", "dep:avian3d"]
+client = ["dep:ui", "dep:camera", "dep:player", "dep:avian3d", "bevy/wayland", "bevy/x11"]
 
 [dependencies]
 bevy = { workspace = true }
