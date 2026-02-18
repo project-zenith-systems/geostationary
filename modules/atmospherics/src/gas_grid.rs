@@ -5,7 +5,21 @@ use tiles::{TileKind, Tilemap};
 /// pressure = moles * PRESSURE_CONSTANT
 /// This simplifies the ideal gas law by assuming fixed temperature and unit cell volume.
 const PRESSURE_CONSTANT: f32 = 1.0;
+/// Fraction of the pressure difference that can be equalized between two neighboring cells
+/// over a full simulation step.
+///
+/// A value of `0.25` means that, at most, 25% of the pressure difference is resolved per
+/// step. Higher values make gas spread faster but can cause oscillations or numerical
+/// instability if too large.
 const DIFFUSION_RATE: f32 = 0.25;
+/// Maximum fraction of the per-step diffusion (`DIFFUSION_RATE`) that is allowed to be
+/// applied in a single diffusion substep.
+///
+/// This is used by the sub-stepping logic to break a potentially large diffusion update
+/// into several smaller, stable substeps. It must remain **strictly less** than
+/// `DIFFUSION_RATE` so that the loop performing substeps can make progress and terminate
+/// correctly. If you change `DIFFUSION_RATE`, adjust this value accordingly while
+/// preserving the invariant `MAX_DIFFUSION_FACTOR_PER_STEP < DIFFUSION_RATE`.
 const MAX_DIFFUSION_FACTOR_PER_STEP: f32 = 0.24;
 
 /// Represents a single cell in the gas grid.
