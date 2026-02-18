@@ -156,7 +156,13 @@ impl GasGrid {
         // Explicit diffusion is only stable when DIFFUSION_RATE * dt stays small.
         // Split large dt into smaller sub-steps to avoid odd/even checkerboard oscillation.
         let max_substep_dt = MAX_DIFFUSION_FACTOR_PER_STEP / DIFFUSION_RATE;
-        let substeps = (dt / max_substep_dt).ceil().max(1.0) as u32;
+        let substeps_f = (dt / max_substep_dt).ceil().max(1.0);
+        // Clamp to avoid overflow when converting to u32 for extremely large dt values.
+        let substeps = if substeps_f > u32::MAX as f32 {
+            u32::MAX
+        } else {
+            substeps_f as u32
+        };
         let substep_dt = dt / substeps as f32;
 
         for _ in 0..substeps {
