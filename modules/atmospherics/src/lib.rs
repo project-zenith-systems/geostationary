@@ -32,6 +32,9 @@ pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid
 /// Epsilon threshold for detecting parallel rays in raycasting.
 /// Used to avoid division by near-zero values when the ray is nearly parallel to the ground plane.
 const RAY_PARALLEL_EPSILON: f32 = 0.001;
+/// Simulation time step (in seconds) applied when advancing the atmospherics simulation manually
+/// (e.g., via the F4 key). A value of 2.0 seconds makes gas movement visibly noticeable per step,
+/// while still keeping the number of manual steps reasonable during debugging.
 const MANUAL_STEP_DT: f32 = 2.0;
 
 /// Performs raycasting from the camera through the cursor to find the tile position.
