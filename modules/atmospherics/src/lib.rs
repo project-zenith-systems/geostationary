@@ -153,6 +153,16 @@ fn manual_step_input(keyboard: Res<ButtonInput<KeyCode>>, gas_grid: Option<ResMu
     info!("Atmospherics manual step (F4): dt={}", MANUAL_STEP_DT);
 }
 
+/// System that advances the atmospherics simulation by one fixed-timestep tick.
+/// Runs in `FixedUpdate` so gas diffusion happens at a consistent simulation rate.
+fn diffusion_tick(time: Res<Time<Fixed>>, gas_grid: Option<ResMut<GasGrid>>) {
+    let Some(mut gas_grid) = gas_grid else {
+        return;
+    };
+
+    gas_grid.step(time.delta_secs());
+}
+
 /// Plugin that manages atmospheric simulation in the game.
 /// Registers the GasGrid as a Bevy resource and provides the infrastructure
 /// for gas diffusion across the tilemap.
@@ -162,6 +172,10 @@ impl Plugin for AtmosphericsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<GasGrid>();
         app.init_resource::<AtmosDebugOverlay>();
+        app.add_systems(
+            FixedUpdate,
+            (wall_sync_system, diffusion_tick).chain(),
+        );
         app.add_systems(
             Update,
             (
