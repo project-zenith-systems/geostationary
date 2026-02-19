@@ -1,14 +1,14 @@
 ## Spike: Quinn multi-stream
 
-Open 3 serverâ†’client unidirectional streams from one `quinn::Connection`.
-Verify the client can `accept_uni()` all 3, that stream ID tag bytes arrive
+Open 3 server→client unidirectional streams from one `quinn::Connection`.
+Verify the client can `accept_uni()` all 3, that stream tag bytes arrive
 correctly, and that `StreamReady` sentinels can arrive in any order relative
 to the control stream. Confirm per-stream `LengthDelimitedCodec` framing
 works independently. 30 min.
 
 - No dependencies
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Spike: Bevy 0.18 billboard text
 
@@ -18,7 +18,7 @@ nameplates are 3D world-space children or 2D UI overlays. 30 min.
 
 - No dependencies
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Spike: Headless Avian3D
 
@@ -28,39 +28,40 @@ set needed. 30 min.
 
 - No dependencies
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Network: StreamRegistry and multi-stream protocol
 
 Files: `modules/network/src/lib.rs`, `modules/network/src/protocol.rs`,
 `modules/network/src/server.rs`, `modules/network/src/client.rs`
 
-- Add `StreamRegistry` resource: modules register streams with a `StreamId`
-  tag byte, name, direction, and message types
+- Add `StreamRegistry` resource: modules register streams with a stream tag
+  byte, name, direction, and message types
 - Add `StreamSender<T>` typed resource for modules to write to their stream
-- Server: on client connect, open all registered serverâ†’client streams (each
-  prefixed with tag byte), accept clientâ†’server streams
-- Client: accept serverâ†’client streams, route framed messages to per-stream
+- Server: on client connect, open all registered server→client streams (each
+  prefixed with tag byte), accept client→server streams
+- Client: accept server→client streams, route framed messages to per-stream
   Bevy events by tag byte
 - Per-stream `LengthDelimitedCodec` framing (replaces single-stream framing)
 - `Hello` gains `name: String` field
 - `Welcome` gains `expected_streams: u8` field
 - Add `InitialStateDone` and `StreamReady` message types
-- Control stream (0) carries `Hello`, `Welcome`, `InitialStateDone` only
+- Control stream (tag 0) carries `Hello`, `Welcome`, `InitialStateDone`,
+  `Input` — no domain-specific replication data
 
 Not included: domain-specific stream handlers (those belong to each module's
 task).
 
 - Depends on: Spike: Quinn multi-stream
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Tiles: Serialization and stream 1 handler
 
 Files: `modules/tiles/src/lib.rs`
 
 - Add `to_bytes()` / `from_bytes()` serialization methods on `Tilemap`
-- Register stream 1 (serverâ†’client) with `StreamRegistry`
+- Register stream 1 (server→client) with `StreamRegistry`
 - Server-side: send `TilemapData { width, height, tiles }` + `StreamReady`
   on connect
 - Client-side: observe stream 1 messages, call `Tilemap::from_bytes()`,
@@ -71,14 +72,14 @@ Not included: tilemap mutation replication (that's arc step 2).
 
 - Depends on: Network: StreamRegistry and multi-stream protocol
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Things: DisplayName, stream 3, and entity lifecycle
 
 Files: `modules/things/src/lib.rs`
 
 - Add `DisplayName(String)` component
-- Register stream 3 (serverâ†’client) with `StreamRegistry`
+- Register stream 3 (server→client) with `StreamRegistry`
 - Move `NetIdIndex` from `src/client.rs` into `things` module
 - Own full client-side entity lifecycle:
   - `EntitySpawned`: spawn via `SpawnThing`, insert `DisplayName`, track in
@@ -93,14 +94,14 @@ Not included: soul binding logic (that's in the souls task).
 
 - Depends on: Network: StreamRegistry and multi-stream protocol
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Atmospherics: Serialization and stream 2 handler
 
 Files: `modules/atmospherics/src/lib.rs`, `modules/atmospherics/src/gas_grid.rs`
 
 - Add `moles_vec()` / `from_moles_vec()` serialization methods on `GasGrid`
-- Register stream 2 (serverâ†’client) with `StreamRegistry`
+- Register stream 2 (server→client) with `StreamRegistry`
 - Server-side: send `GasGridData { gas_moles }` + `StreamReady` on connect
 - Client-side: observe stream 2 messages, call `GasGrid::from_moles_vec()`,
   insert resource
@@ -108,7 +109,7 @@ Files: `modules/atmospherics/src/lib.rs`, `modules/atmospherics/src/gas_grid.rs`
 
 - Depends on: Network: StreamRegistry and multi-stream protocol
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Souls: New module with bind/unbind
 
@@ -117,12 +118,12 @@ Files: `modules/souls/Cargo.toml` (new), `modules/souls/src/lib.rs` (new),
 
 - Create new L4 module `souls` with dependencies on `creatures` and `network`
 - `Soul { name: String, client_id: ClientId, bound_to: Entity }` component
-  on a dedicated entity (single struct â€” all fields always required)
+  on a dedicated entity (single struct — all fields always required)
 - `bind_soul` system: spawn soul entity, spawn creature, set `DisplayName`
   on creature, bind soul to creature
 - `unbind_soul` system: despawn soul entity, clear `InputDirection` on
   creature (creature stays in world)
-- Route `Hello` and `Input` messages on stream 0 (clientâ†’server)
+- Write `Hello` and `Input` to the control stream (tag 0) via network API
 - Replace `ControlledByClient` and `PlayerControlled` as the authority on
   which client controls which creature
 - Add `player_name` field to `AppConfig` in `src/config.rs`
@@ -132,7 +133,7 @@ Not included: soul transfer, possession, ghost mode, or observer mode.
 
 - Depends on: Things: DisplayName, stream 3, and entity lifecycle
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## World setup: Server-only gate and ball replication
 
@@ -146,7 +147,7 @@ Files: `src/world_setup.rs`
 
 - Depends on: Things: DisplayName, stream 3, and entity lifecycle
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Server and client: Connect orchestration and initial sync
 
@@ -159,14 +160,14 @@ Files: `src/server.rs`, `src/client.rs`
   souls module)
 - `src/client.rs`: track `StreamReady` count and `InitialStateDone` receipt;
   initial sync complete when both conditions met
-- `src/client.rs`: thin â€” stream message routing handled by `network` module,
+- `src/client.rs`: thin — stream message routing handled by `network` module,
   domain logic in respective modules
 - Add `setup_client_scene` system for client-only lighting (replaces local
   world generation)
 
 - Depends on: Tiles, Things, Atmospherics stream handlers; Souls module
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Player: Nameplate rendering
 
@@ -182,7 +183,7 @@ Not included: name input UI (names come from config).
 
 - Depends on: Spike: Bevy 0.18 billboard text; Things: DisplayName
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
 
 ## Headless server mode
 
@@ -199,4 +200,4 @@ Files: `src/main.rs`
 - Depends on: Spike: Headless Avian3D; Server and client: Connect
   orchestration and initial sync
 
-**Plan:** `plan/dedicated-server-with-souls` Â· [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)
+**Plan:** `plan/dedicated-server-with-souls` · [docs/plans/dedicated-server-with-souls.md](docs/plans/dedicated-server-with-souls.md)

@@ -52,9 +52,15 @@ from QUIC's stream ID.
 
 **Streams (client → server):**
 
-| Stream tag | Owner   | Content                             |
-| ---------- | ------- | ----------------------------------- |
-| 0          | `souls` | Hello { name }, Input { direction } |
+| Stream tag | Owner     | Content                             |
+| ---------- | --------- | ----------------------------------- |
+| 0          | `network` | Hello { name }, Input { direction } |
+
+Stream tag 0 is a bidirectional control stream owned by the `network`
+module. Server→client it carries `Welcome` and `InitialStateDone`;
+client→server it carries `Hello` and `Input`. The `souls` module
+writes `Hello` and `Input` through the network module's control stream
+API, but does not own the stream itself.
 
 **Connect handshake:**
 
@@ -108,7 +114,7 @@ then soul binding, then nameplate rendering, then headless mode.
 | L1    | `things`             | Registers stream 3 (server→client). `DisplayName(String)` component. Owns full client-side entity lifecycle: `EntitySpawned` (spawn via `SpawnThing`, insert `DisplayName`, track in `NetIdIndex`), `EntityDespawned`, `StateUpdate` (position sync). Server-side: broadcasts entity state on stream 3.                                                                                  |
 | L2    | `atmospherics`       | Registers stream 2 (server→client). Server-side: sends `GasGridData` + `StreamReady` on connect. Client-side: observes stream 2 messages, calls `GasGrid::from_moles_vec()`, inserts resource. Adds `moles_vec()` / `from_moles_vec()` serialization methods.                                                                                                                            |
 | L3    | `creatures`          | No changes — creatures are unaware of souls.                                                                                                                                                                                                                                                                                                                                             |
-| L4    | `souls`              | **New module.** `Soul { name, client_id, bound_to }` component on a dedicated entity. `bind_soul` / `unbind_soul` systems. Replaces `ControlledByClient` and `PlayerControlled` as the authority on which client controls which creature. Sends `Hello` and `Input` on stream 0 (client→server). Depends on `creatures` and `network`.                                                   |
+| L4    | `souls`              | **New module.** `Soul { name, client_id, bound_to }` component on a dedicated entity. `bind_soul` / `unbind_soul` systems. Replaces `ControlledByClient` and `PlayerControlled` as the authority on which client controls which creature. Writes `Hello` and `Input` to the control stream (tag 0) via network API. Depends on `creatures` and `network`.                                    |
 | L4    | `player`             | Nameplate rendering: `spawn_nameplate` and `update_nameplate_positions` systems for billboard text above entities with `DisplayName`.                                                                                                                                                                                                                                                    |
 | —     | `src/server.rs`      | On client connect: notify registered stream handlers. Sends `InitialStateDone` on control stream after all module streams have written initial data. `handle_disconnect`: despawn soul entity. Ball spawned with `NetId`.                                                                                                                                                                |
 | —     | `src/client.rs`      | Tracks `StreamReady` count and `InitialStateDone` receipt. Initial sync complete when both conditions met. Thin — stream message routing handled by `network` module, domain logic in respective modules.                                                                                                                                                                                |
@@ -150,7 +156,8 @@ modules/
   souls/                       # NEW MODULE (L4)
     Cargo.toml
     src/lib.rs                 # Soul { name, client_id, bound_to } component,
-                               #   bind/unbind systems, Hello/Input on stream 0
+                               #   bind/unbind systems, Hello/Input via
+                               #   control stream (tag 0)
   player/src/lib.rs            # MODIFIED — add nameplate rendering systems
 src/
   server.rs                    # MODIFIED — connect orchestration, soul lifecycle,
@@ -214,8 +221,8 @@ ThingsStreamMessage::StreamReady
 ```
 
 The `StreamReady` sentinel is the last message each module sends during
-initial sync. The control stream (0) carries only `Welcome` and
-`InitialStateDone` — no domain data.
+initial sync. The control stream (0) carries `Welcome`, `InitialStateDone`,
+`Hello`, and `Input` — no domain-specific replication data.
 
 **Initial sync barrier (client-side):**
 
@@ -361,20 +368,20 @@ Gate `setup_world` with `.run_if(resource_exists::<Server>)`.
 
 ## Spikes
 
-1. **Bevy 0.18 billboard text** — Can `Text` be placed in world space as a
-   child of a 3D entity with billboard behavior? Test with a `Text` +
-   `Transform` child entity. 30 min.
-
-2. **Headless Avian3D** — Does `PhysicsPlugin` work with `MinimalPlugins`
-   instead of `DefaultPlugins`? Spawn a dynamic body and step the schedule
-   twice. 30 min.
-
-3. **Quinn multi-stream** — Open 3 server→client unidirectional streams from
+1. **Quinn multi-stream** — Open 3 server→client unidirectional streams from
    one `quinn::Connection`. Verify the client can `accept_uni()` all 3,
-   that stream ID tag bytes arrive correctly, and that `StreamReady`
+   that stream tag bytes arrive correctly, and that `StreamReady`
    sentinels can arrive in any order relative to the control stream.
    Confirm per-stream `LengthDelimitedCodec` framing works independently.
    30 min.
+
+2. **Bevy 0.18 billboard text** — Can `Text` be placed in world space as a
+   child of a 3D entity with billboard behavior? Test with a `Text` +
+   `Transform` child entity. 30 min.
+
+3. **Headless Avian3D** — Does `PhysicsPlugin` work with `MinimalPlugins`
+   instead of `DefaultPlugins`? Spawn a dynamic body and step the schedule
+   twice. 30 min.
 
 ## Post-mortem
 
