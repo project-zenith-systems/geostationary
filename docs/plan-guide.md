@@ -206,9 +206,7 @@ issue automatically (see `README.md` for format details).
    should be implementable and testable using only the work from prior tasks.
 
 5. **Link to the plan.** Every task description must include a plan reference
-   line that names both the plan branch and the plan document. Use this exact
-   format (the backtick-wrapped branch name is parsed by the `validate-pr-target`
-   workflow to enforce that task PRs target the correct branch):
+   line that names both the plan branch and the plan document:
 
    ```
    **Plan:** `plan/<name>` · [docs/plans/<name>.md](docs/plans/<name>.md)

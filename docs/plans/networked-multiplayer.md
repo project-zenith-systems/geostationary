@@ -338,9 +338,8 @@ into main.
   obvious needs for the codec wrapping but weren't in the plan's dependency
   section. A quick scan of the API signatures would have caught this.
 - **Create `TODO.md` per the plan-guide.** Skipping it meant the
-  `validate-pr-target` workflow and issue-labelling automation weren't used.
-  Follow the documented process even for plans where the task breakdown seems
-  obvious.
+  issue-labelling automation wasn't used. Follow the documented process even
+  for plans where the task breakdown seems obvious.
 - **Clean up dead code immediately.** The `ServerCommandSender` and
   `ClientMessageSender` vestiges in `runtime.rs` should have been removed in
   the same PR that introduced their replacements.
