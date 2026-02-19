@@ -3,7 +3,12 @@ use tiles::Tilemap;
 
 use crate::GasGrid;
 
+/// Normal pressure threshold used by the overlay color scale.
+///
+/// Values are in the same pressure units as `GasGrid::pressure_at`, where
+/// station baseline pressure is configured around `101.325`.
 const OVERLAY_NORMAL_PRESSURE: f32 = 101.325;
+/// High-pressure threshold for the overlay color scale (`1.5x` normal).
 const OVERLAY_HIGH_PRESSURE: f32 = OVERLAY_NORMAL_PRESSURE * 1.5;
 
 /// Resource that controls the atmospheric pressure debug overlay.
@@ -100,7 +105,7 @@ pub fn spawn_overlay_quads(
             OverlayQuad {
                 position: pos,
                 mesh,
-                material: material.clone(),
+                material,
             },
         ));
         spawned_count += 1;

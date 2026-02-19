@@ -16,10 +16,12 @@ const DIFFUSION_RATE: f32 = 0.25;
 /// applied in a single diffusion substep.
 ///
 /// This is used by the sub-stepping logic to break a potentially large diffusion update
-/// into several smaller, stable substeps. It must remain **strictly less** than
-/// `DIFFUSION_RATE` so that the loop performing substeps can make progress and terminate
-/// correctly. If you change `DIFFUSION_RATE`, adjust this value accordingly while
-/// preserving the invariant `MAX_DIFFUSION_FACTOR_PER_STEP < DIFFUSION_RATE`.
+/// into several smaller, numerically stable substeps. It must remain **strictly less**
+/// than `DIFFUSION_RATE` so that the per-substep diffusion factor
+/// (`DIFFUSION_RATE * substep_dt`) stays bounded by `MAX_DIFFUSION_FACTOR_PER_STEP`,
+/// which is a stability constraint for explicit diffusion updates. If you change
+/// `DIFFUSION_RATE`, adjust this value accordingly while preserving the invariant
+/// `0.0 < MAX_DIFFUSION_FACTOR_PER_STEP < DIFFUSION_RATE`.
 const MAX_DIFFUSION_FACTOR_PER_STEP: f32 = 0.24;
 
 /// Represents a single cell in the gas grid.
