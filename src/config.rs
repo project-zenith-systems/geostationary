@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub network: NetworkConfig,
     pub window: WindowConfig,
     pub debug: DebugConfig,
+    pub atmospherics: AtmosphericsConfig,
 }
 
 impl Default for AppConfig {
@@ -22,6 +23,9 @@ impl Default for AppConfig {
             },
             debug: DebugConfig {
                 physics_debug: false,
+            },
+            atmospherics: AtmosphericsConfig {
+                standard_pressure: 101.325,
             },
         }
     }
@@ -42,6 +46,11 @@ pub struct DebugConfig {
     pub physics_debug: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct AtmosphericsConfig {
+    pub standard_pressure: f32,
+}
+
 pub fn load_config() -> AppConfig {
     match load_config_inner() {
         Ok(config) => config,
@@ -59,6 +68,7 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
         .set_default("network.port", defaults.network.port)?
         .set_default("window.title", defaults.window.title)?
         .set_default("debug.physics_debug", defaults.debug.physics_debug)?
+        .set_default("atmospherics.standard_pressure", defaults.atmospherics.standard_pressure as f64)?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
         .add_source(Environment::with_prefix("GEOSTATIONARY").separator("__"));
@@ -76,5 +86,6 @@ mod tests {
         assert_eq!(config.network.port, 7777);
         assert_eq!(config.window.title, "Geostationary");
         assert_eq!(config.debug.physics_debug, false);
+        assert_eq!(config.atmospherics.standard_pressure, 101.325);
     }
 }

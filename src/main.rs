@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use atmospherics::AtmosphericsPlugin;
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::NetworkPlugin;
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};
@@ -36,6 +37,7 @@ fn main() {
 
     app.add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin)
+        .add_plugins(AtmosphericsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(player::PlayerPlugin)
         .add_plugins(camera::CameraPlugin::<app_state::AppState>::in_state(

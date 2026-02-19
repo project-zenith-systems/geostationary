@@ -346,6 +346,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atmospherics"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "tiles",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2810,6 +2818,7 @@ dependencies = [
 name = "geostationary"
 version = "0.1.0"
 dependencies = [
+ "atmospherics",
  "bevy",
  "camera",
  "config",
