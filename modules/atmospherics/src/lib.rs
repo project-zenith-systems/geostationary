@@ -8,6 +8,12 @@ pub use gas_grid::{GasCell, GasGrid};
 mod debug_overlay;
 pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
 
+/// Resource that controls whether the atmospherics simulation is paused.
+/// When true, `diffusion_step_system` skips advancing the gas grid.
+/// Toggle with F5.
+#[derive(Resource, Default)]
+pub struct AtmosSimPaused(pub bool);
+
 /// Creates and initializes a GasGrid from a Tilemap.
 /// All floor cells are filled with the given standard atmospheric pressure.
 pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid {
@@ -153,6 +159,37 @@ fn manual_step_input(keyboard: Res<ButtonInput<KeyCode>>, gas_grid: Option<ResMu
     info!("Atmospherics manual step (F4): dt={}", MANUAL_STEP_DT);
 }
 
+/// System that toggles the atmospherics simulation pause state on F5 keypress.
+/// When paused, `diffusion_step_system` does not advance the gas grid.
+fn pause_toggle_input(keyboard: Res<ButtonInput<KeyCode>>, mut paused: ResMut<AtmosSimPaused>) {
+    if keyboard.just_pressed(KeyCode::F5) {
+        paused.0 = !paused.0;
+        info!(
+            "Atmospherics simulation {}",
+            if paused.0 { "paused" } else { "resumed" }
+        );
+    }
+}
+
+/// System that advances the atmospherics simulation by one fixed-timestep tick.
+/// Runs in `FixedUpdate` so gas diffusion happens at a consistent simulation rate.
+/// Skips if the simulation is paused via `AtmosSimPaused`.
+fn diffusion_step_system(
+    time: Res<Time<Fixed>>,
+    paused: Res<AtmosSimPaused>,
+    gas_grid: Option<ResMut<GasGrid>>,
+) {
+    if paused.0 {
+        return;
+    }
+
+    let Some(mut gas_grid) = gas_grid else {
+        return;
+    };
+
+    gas_grid.step(time.delta_secs());
+}
+
 /// Plugin that manages atmospheric simulation in the game.
 /// Registers the GasGrid as a Bevy resource and provides the infrastructure
 /// for gas diffusion across the tilemap.
@@ -162,12 +199,17 @@ impl Plugin for AtmosphericsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<GasGrid>();
         app.init_resource::<AtmosDebugOverlay>();
+        app.init_resource::<AtmosSimPaused>();
+        app.add_systems(
+            FixedUpdate,
+            (wall_sync_system, diffusion_step_system).chain(),
+        );
         app.add_systems(
             Update,
             (
                 wall_toggle_input,
-                wall_sync_system,
                 manual_step_input,
+                pause_toggle_input,
                 debug_overlay::toggle_overlay,
                 debug_overlay::spawn_overlay_quads,
                 debug_overlay::despawn_overlay_quads,
