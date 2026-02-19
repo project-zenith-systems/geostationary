@@ -214,4 +214,89 @@ iteration). The simultaneous-apply is critical for stability and conservation
 
 ## Post-mortem
 
-*To be filled in after the plan ships.*
+### Outcome
+
+The atmospherics plan shipped everything it promised. A tile-based gas
+simulation runs on Bevy's `FixedUpdate` schedule, walls block flow, removing
+a wall causes gas to rush into the vacuum, and a debug overlay lets the
+developer watch pressure equalise in real time. The pure-logic / ECS-glue
+separation held: `GasGrid` is unit-testable without Bevy, and 14 tests cover
+diffusion convergence, mass conservation, wall sync, and overlay toggling.
+
+### What shipped beyond the plan
+
+| Addition | Why it was worth doing |
+|----------|------------------------|
+| **Adaptive sub-stepping** in `GasGrid::step()` | The spike revealed that a single large `dt` causes numerical instability. Sub-stepping keeps the per-substep diffusion factor below a safe threshold. Without it the algorithm oscillates and leaks mass. |
+| **Per-cell source scaling** in `step_substep()` | Naive per-flow clamping cannot prevent negative moles when multiple neighbours drain the same cell simultaneously. Scaling all outgoing flows by `available / total_outgoing` is a one-line fix that makes the conservation invariant hold exactly. |
+| **Persistent scratch buffers** on `GasGrid` | Avoids heap allocation every substep. Not in the plan, but trivial to add and necessary once sub-stepping was introduced. |
+| **Manual step (F4) and pause (F5)** debug controls | Added during the diffusion task to make it possible to step through the simulation frame-by-frame and inspect intermediate states. Invaluable during tuning. |
+
+### Deviations from plan
+
+- **`GasGrid` has Bevy imports.** The plan said "no Bevy types" but the
+  implementation derives `Reflect` and `Resource` on `GasGrid` and `GasCell`.
+  These are marker traits for editor tooling and ECS insertion — the grid
+  logic itself uses no Bevy APIs, and all 11 `gas_grid` unit tests run
+  without an `App`. The spirit of the separation held; the letter did not.
+- **Diffusion algorithm is more complex than planned.** The plan sketched a
+  simple Jacobi iteration with per-flow clamping. The shipped version adds
+  sub-stepping and source-scaling (see table above). The spike surfaced both
+  issues and they were fixed before the main diffusion task began, exactly as
+  the spike workflow intended.
+- **Overlay colour thresholds use SI-scale values.** The plan described
+  abstract 0 / 1.0 / 2.0 ranges. The implementation uses 0 / 101.325 /
+  151.9875 Pa. Cosmetic difference — the gradient math is identical.
+
+### Hurdles
+
+1. **Explicit diffusion instability.** Large `dt * DIFFUSION_RATE` products
+   caused checkerboard oscillation and mass loss. Discovered during the spike.
+   Solved by introducing sub-stepping with `MAX_DIFFUSION_FACTOR_PER_STEP`
+   tuned to 0.24 (strictly less than `DIFFUSION_RATE` of 0.25). **Lesson:**
+   the spike workflow paid for itself — this would have been a structural
+   rewrite if caught after the systems were wired up.
+
+2. **Multi-neighbour drain overshoot.** A cell with four low-pressure
+   neighbours could have its moles drained below zero by the sum of four
+   individually-valid flows. Solved with a per-cell scale factor that caps
+   total outgoing flow at available moles. **Lesson:** clamping individual
+   flows is not enough when the same cell is a source for multiple flows in
+   the same tick.
+
+3. **Overlay asset cleanup.** Toggling the overlay on and off creates and
+   destroys mesh/material handles. Careless despawning leaked GPU assets.
+   Solved by tracking handles in the `OverlayQuad` component and deduplicating
+   shared meshes with a `HashSet` during cleanup. **Lesson:** spawn/despawn
+   toggle patterns need explicit asset lifecycle management.
+
+### What went well
+
+- **Front-loading debug tooling was the right call.** The overlay and wall
+  toggle were done before any diffusion work, so every iteration of the
+  algorithm could be observed visually. The plan explicitly ordered work this
+  way based on past post-mortem lessons, and it paid off.
+- **The spike caught both numerical issues.** Sub-stepping and source scaling
+  were both identified and solved within the spike's 60-minute time box,
+  before any ECS integration work began.
+- **Pure-logic separation made testing fast.** All 11 `gas_grid` tests run in
+  milliseconds with no `App` setup. The diffusion convergence test exercises
+  200+ ticks on a 12×10 grid — trivial in a unit test, painful in an
+  integration test.
+- **Task decomposition was clean.** Six commits, each self-contained, each
+  reviewable independently. No task needed to undo work from a prior task.
+
+### What to do differently next time
+
+- **Enforce "no framework imports" with a lint or feature gate.** The plan
+  said `GasGrid` would have no Bevy dependency, but `Reflect`/`Resource`
+  derives crept in for convenience. If pure-logic isolation matters, enforce
+  it with `#[cfg(feature = "bevy")]` gating on the derives, or put the pure
+  logic in a sub-module that doesn't import `bevy`.
+- **Document sub-stepping constants together.** `DIFFUSION_RATE` and
+  `MAX_DIFFUSION_FACTOR_PER_STEP` have a non-obvious invariant
+  (`max < rate`). The code comments explain it, but a named assertion or
+  `const_assert!` would catch accidental breakage at compile time.
+- **Add a conservation regression test that runs many more ticks.** The
+  current spike test runs 200+200 ticks. A stress test with 10,000 ticks on
+  a larger grid would catch slow drift that the current test misses.
