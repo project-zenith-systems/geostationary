@@ -31,7 +31,7 @@ Every arc follows this skeleton:
 deliverable, and lists the key technical work required.>
 
 1. **Plan name** — What it delivers. Requires: key technical work
-   (new modules, protocol changes, systems to add).
+   (new modules, capabilities to establish, systems to couple).
 2. **Plan name** — What it delivers. Requires: ...
 3. ...
 
@@ -54,13 +54,13 @@ unboundedly.>
    fold it in. "Items on the floor" is a task; "pick up and drop items
    visible to all clients" is a plan. Think bigger.
 
-3. **Spell out what each plan requires.** After the deliverable sentence,
-   list the key technical work: new modules, protocol messages, systems,
-   data structures. This is not full design (that lives in the plan doc)
-   but enough that the plan author knows what they're signing up for and
-   doesn't miss anything. "Replicate atmos" is vague; "ServerMessage
-   variants for atmos grid snapshots, client-side rendering without local
-   simulation" is actionable.
+3. **Spell out what each plan requires — but not how.** After the
+   deliverable sentence, list the key technical work: new modules,
+   capabilities to establish, systems to couple. Name *what needs to
+   exist*, not how the network protocol or data model implements it —
+   that's the plan's job. "Replicate atmos" is vague; "client-side atmos
+   rendering without local simulation, a pressure-force system coupling
+   GasGrid to Avian" is actionable without prescribing message shapes.
 
 4. **Arcs can overlap in time.** Two arcs can have plans interleaved. The
    arc document tracks its own sequence; the actual implementation order

@@ -14,8 +14,7 @@
    creature in the world; the soul unbinds. The bouncing ball is
    server-spawned and visible on all clients. Requires: generalising entity
    replication beyond position/velocity to arbitrary components, replicating
-   initial world state (tilemap and atmos grid) to clients on connect,
-   extending the network protocol with name and soul-binding messages, a
+   initial world state (tilemap and atmos grid) to clients on connect, a
    souls module (L5), nameplate rendering, headless server mode as default
    host.
 
@@ -23,17 +22,15 @@
    changes replicate in real time. Player A toggles a wall, player B sees
    the tile change and the pressure overlay update. Atmos pressure gradients
    apply forces to physics bodies — opening a wall next to vacuum pushes
-   nearby entities toward the breach. Requires: ServerMessage variants for
-   tilemap deltas and atmos grid snapshots, client-side atmos rendering
-   without local simulation, a pressure-force system coupling GasGrid to
-   Avian.
+   nearby entities toward the breach. Requires: replicating grid and
+   tilemap mutations to clients, client-side atmos rendering without local
+   simulation, a pressure-force system coupling GasGrid to Avian.
 
 3. **Pick up and drop networked items** — Item entities spawn in the world,
    can be picked up and put down by players, and placed into containers.
    All interactions are server-authoritative and visible to every client.
-   Requires: an items module (L2) with floor/hand/container slots, an
-   interaction verb sent as a ClientMessage, ServerMessage variants for
-   item ownership changes, range validation on the server.
+   Requires: an items module (L2) with floor/hand/container slots, a
+   server-authoritative interaction model with range validation.
 
 ## Not in this arc
 
