@@ -8,6 +8,11 @@ use physics::{Collider, GravityScale, LockedAxes, RigidBody};
 #[reflect(Component)]
 pub struct Thing;
 
+/// Display name for an entity, shown as a billboard nameplate in world space.
+#[derive(Component, Debug, Clone, Default, Reflect)]
+#[reflect(Component)]
+pub struct DisplayName(pub String);
+
 /// Current input direction for an entity. Written by input systems (player module)
 /// or from received network messages (server). Read by creatures module
 /// to apply velocity.
@@ -55,6 +60,7 @@ impl Plugin for ThingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Thing>();
         app.register_type::<InputDirection>();
+        app.register_type::<DisplayName>();
         app.init_resource::<ThingRegistry>();
         app.add_observer(on_spawn_thing);
     }
