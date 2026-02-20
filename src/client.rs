@@ -7,7 +7,7 @@ use network::{
     NetClientSender, NetId, NetworkSet, ServerMessage,
 };
 use player::PlayerControlled;
-use things::{InputDirection, SpawnThing, Thing};
+use things::{DisplayName, InputDirection, SpawnThing, Thing};
 
 use crate::app_state::AppState;
 
@@ -129,7 +129,12 @@ fn handle_server_message(
             });
 
             if controlled {
-                commands.entity(entity).insert(PlayerControlled);
+                commands.entity(entity).insert((
+                    PlayerControlled,
+                    // TODO(spike-billboard): name will come from EntitySpawned once
+                    // the network protocol gains the name field (souls plan step).
+                    DisplayName("Player".to_string()),
+                ));
             }
 
             if let Some(owner_id) = owner {
