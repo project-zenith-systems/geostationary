@@ -56,8 +56,8 @@ unboundedly.>
 
 3. **Spell out what each plan requires — but not how.** After the
    deliverable sentence, list the key technical work: new modules,
-   capabilities to establish, systems to couple. Name *what needs to
-   exist*, not how the network protocol or data model implements it —
+   capabilities to establish, systems to couple. Name _what needs to
+   exist_, not how the network protocol or data model implements it —
    that's the plan's job. "Replicate atmos" is vague; "client-side atmos
    rendering without local simulation, a pressure-force system coupling
    GasGrid to Avian" is actionable without prescribing message shapes.

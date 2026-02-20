@@ -12,11 +12,11 @@
    the souls module (player identity decoupled from creature body). Names
    render as billboard text above each character. Disconnecting leaves the
    creature in the world; the soul unbinds. The bouncing ball is
-   server-spawned and visible on all clients. Requires: generalising entity
-   replication beyond position/velocity to arbitrary components, replicating
-   initial world state (tilemap and atmos grid) to clients on connect, a
-   souls module (L5), nameplate rendering, headless server mode as default
-   host.
+   server-spawned and visible on all clients. Requires: extending entity
+   replication beyond position/velocity to cover additional data (e.g. player
+   display names) and initial world state (tilemap and atmos grid) sent to
+   clients on connect, a souls module (L4), nameplate rendering, headless
+   server mode as default host.
 
 2. **Break a wall, watch gas rush out** — Tilemap mutations and atmos grid
    changes replicate in real time. Player A toggles a wall, player B sees
