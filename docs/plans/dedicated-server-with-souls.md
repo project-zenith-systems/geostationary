@@ -356,7 +356,7 @@ Currently the ball is spawned in `world_setup.rs` without a `NetId`. Change:
 Currently `world_setup.rs` runs `setup_world` on `OnEnter(InGame)` for all
 instances. After this plan:
 
-- **Server/listen-server:** `setup_world` still runs (generates tilemap, gas
+- **Server/listen server:** `setup_world` still runs (generates tilemap, gas
   grid, light, ball) but ball now gets a NetId
 - **Client:** `setup_world` does NOT run. Instead, `handle_world_state` in
   `client.rs` inserts `Tilemap` and `GasGrid` from server data. Tiles spawn
