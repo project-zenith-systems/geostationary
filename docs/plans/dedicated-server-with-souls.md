@@ -377,12 +377,13 @@ Gate `setup_world` with `.run_if(resource_exists::<Server>)`.
 
 ## Spikes
 
-1. **Quinn multi-stream** — Open 3 server→client unidirectional streams from
-   one `quinn::Connection`. Verify the client can `accept_uni()` all 3,
-   that stream tag bytes arrive correctly, and that `StreamReady`
-   sentinels can arrive in any order relative to the control stream.
-   Confirm per-stream `LengthDelimitedCodec` framing works independently.
-   30 min.
+1. ~~**Quinn multi-stream**~~ **Done** (PR #120). Three `open_uni()` streams
+   from one connection, tag-byte routing, independent `LengthDelimitedCodec`
+   framing, and `StreamReady` sentinels all work as designed. Notable:
+   the server must `connection.closed().await` (not drop) to avoid a
+   reset race that truncates in-flight stream data. No new dependencies
+   needed — Quinn's `SendStream`/`RecvStream` expose `write_all`/`read_exact`
+   as inherent methods.
 
 2. ~~**Bevy 0.18 billboard text**~~ — **Resolved.** Text2d requires Camera2d
    and cannot billboard under Camera3d. Use world-to-viewport UI overlay

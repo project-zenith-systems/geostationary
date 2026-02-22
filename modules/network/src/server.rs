@@ -308,3 +308,143 @@ async fn run_server_inner(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use futures_util::sink::SinkExt;
+    use futures_util::stream::StreamExt;
+    use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+
+    use crate::config;
+
+    /// Stream tag bytes matching the plan's server→client stream table.
+    const TAG_TILES: u8 = 1;
+    const TAG_ATMOS: u8 = 2;
+    const TAG_THINGS: u8 = 3;
+
+    /// Byte sequence used as a `StreamReady` sentinel in this spike.
+    const STREAM_READY: &[u8] = b"READY";
+
+    /// Spike: Quinn multi-stream
+    ///
+    /// Proves that a single `quinn::Connection` can carry three independent
+    /// server→client unidirectional streams, each prefixed with a routing tag
+    /// byte and independently framed with `LengthDelimitedCodec`, and that
+    /// `StreamReady` sentinels arrive correctly on all streams regardless of
+    /// the order in which the client calls `accept_uni()`.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn test_quinn_multi_stream_spike() {
+        let server_config = config::build_server_config().expect("server config");
+        let client_config = config::build_client_config().expect("client config");
+
+        let server_addr: std::net::SocketAddr = ([127, 0, 0, 1], 0).into();
+        let server_endpoint =
+            quinn::Endpoint::server(server_config, server_addr).expect("server endpoint");
+        let bound_addr = server_endpoint.local_addr().expect("bound addr");
+
+        // Server: accept one connection then open 3 unidirectional streams.
+        let server_task = tokio::spawn(async move {
+            let incoming = server_endpoint
+                .accept()
+                .await
+                .expect("server: incoming connection");
+            let connection = incoming.await.expect("server: connection established");
+
+            for tag in [TAG_TILES, TAG_ATMOS, TAG_THINGS] {
+                let mut send = connection.open_uni().await.expect("server: open_uni");
+
+                // The first byte on the stream is the routing tag byte.
+                // Writing it also makes the stream visible to accept_uni() on
+                // the remote side (Quinn only delivers a stream once it has data).
+                send.write_all(&[tag]).await.expect("server: write tag byte");
+
+                // Remaining bytes use independent LengthDelimitedCodec framing.
+                let mut framed = FramedWrite::new(send, LengthDelimitedCodec::new());
+
+                let payload = Bytes::from(format!("data-{tag}").into_bytes());
+                framed.send(payload).await.expect("server: send data frame");
+
+                // StreamReady sentinel — marks the end of the initial burst on
+                // this stream, mirroring the plan's InitialStateDone handshake.
+                framed
+                    .send(Bytes::from_static(STREAM_READY))
+                    .await
+                    .expect("server: send StreamReady");
+            }
+
+            // Keep the connection open until the client closes it, so that
+            // in-flight stream data is not cut short by a connection reset.
+            connection.closed().await;
+        });
+
+        // Client: connect and accept all 3 unidirectional streams.
+        let mut client_endpoint =
+            quinn::Endpoint::client(([0, 0, 0, 0], 0u16).into()).expect("client endpoint");
+        client_endpoint.set_default_client_config(client_config);
+        let connection = client_endpoint
+            .connect(bound_addr, "localhost")
+            .expect("client: connect call")
+            .await
+            .expect("client: connection established");
+
+        let mut received_tags: Vec<u8> = Vec::new();
+
+        // Streams may arrive in any order; accept all 3 and verify each one
+        // independently using its own codec instance.
+        for _ in 0..3 {
+            let mut recv = connection.accept_uni().await.expect("client: accept_uni");
+
+            // Read the single routing tag byte that precedes framed data.
+            let mut tag_buf = [0u8; 1];
+            recv.read_exact(&mut tag_buf)
+                .await
+                .expect("client: read tag byte");
+            let tag = tag_buf[0];
+
+            // Each stream has its own LengthDelimitedCodec; framing is
+            // independent across streams.
+            let mut framed = FramedRead::new(recv, LengthDelimitedCodec::new());
+
+            let data_frame = framed
+                .next()
+                .await
+                .expect("client: data frame present")
+                .expect("client: data frame ok");
+            assert_eq!(
+                std::str::from_utf8(&data_frame).expect("utf8"),
+                format!("data-{tag}"),
+                "stream tag={tag}: payload mismatch"
+            );
+
+            let ready_frame = framed
+                .next()
+                .await
+                .expect("client: StreamReady present")
+                .expect("client: StreamReady ok");
+            assert_eq!(
+                &ready_frame[..],
+                STREAM_READY,
+                "stream tag={tag}: StreamReady sentinel mismatch"
+            );
+
+            received_tags.push(tag);
+        }
+
+        // Verify all 3 tagged streams must have been received; order may differ from
+        // the order the server opened them.
+        received_tags.sort_unstable();
+        assert_eq!(
+            received_tags,
+            [TAG_TILES, TAG_ATMOS, TAG_THINGS],
+            "all 3 tagged streams received"
+        );
+
+        // Explicitly close the connection so the server's connection.closed()
+        // future resolves, unblocking server_task.
+        connection.close(0u32.into(), b"done");
+
+        server_task.await.expect("server task completed");
+    }
+}
