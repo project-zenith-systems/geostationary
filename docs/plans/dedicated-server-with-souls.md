@@ -337,9 +337,10 @@ Parse `--server` from `std::env::args()` at startup. When set:
 3. Set initial state to `AppState::InGame` (skip menu)
 4. Auto-send `NetCommand::Host { port }` on startup
 
-**Spike needed:** Verify that Avian3D physics works without `DefaultPlugins`
-(specifically without rendering). If it requires `AssetPlugin` or `TypeRegistry`
-setup, identify the minimal plugin set.
+**Spike result (#121):** Avian3D works without `DefaultPlugins`. Minimal
+plugin set: `MinimalPlugins` + `TransformPlugin` + `AssetPlugin` +
+`MeshPlugin` + `ScenePlugin` + `PhysicsPlugin`. The extra plugins are
+required by Avian3D's default `collider-from-mesh` and `bevy_scene` features.
 
 ### Ball replication
 
@@ -379,9 +380,10 @@ Gate `setup_world` with `.run_if(resource_exists::<Server>)`.
    child of a 3D entity with billboard behavior? Test with a `Text` +
    `Transform` child entity. 30 min.
 
-3. **Headless Avian3D** — Does `PhysicsPlugin` work with `MinimalPlugins`
-   instead of `DefaultPlugins`? Spawn a dynamic body and step the schedule
-   twice. 30 min.
+3. ~~**Headless Avian3D**~~ **Done (#121).** Yes — `PhysicsPlugin` works
+   headless. Minimal set: `MinimalPlugins`, `TransformPlugin`,
+   `AssetPlugin`, `MeshPlugin` (collider-from-mesh feature),
+   `ScenePlugin` (bevy_scene feature). Test in `modules/physics/src/lib.rs`.
 
 ## Post-mortem
 
