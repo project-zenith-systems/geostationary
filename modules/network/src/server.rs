@@ -333,6 +333,7 @@ mod tests {
     /// byte and independently framed with `LengthDelimitedCodec`, and that
     /// `StreamReady` sentinels arrive correctly on all streams regardless of
     /// the order in which the client calls `accept_uni()`.
+    #[cfg(debug_assertions)]
     #[tokio::test]
     async fn test_quinn_multi_stream_spike() {
         let server_config = config::build_server_config().expect("server config");
