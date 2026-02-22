@@ -115,7 +115,7 @@ then soul binding, then nameplate rendering, then headless mode.
 | L2    | `atmospherics`       | Registers stream 2 (server→client). Server-side: sends `GasGridData` + `StreamReady` on connect. Client-side: observes stream 2 messages, calls `GasGrid::from_moles_vec()`, inserts resource. Adds `moles_vec()` / `from_moles_vec()` serialization methods.                                                                                                                            |
 | L3    | `creatures`          | No changes — creatures are unaware of souls.                                                                                                                                                                                                                                                                                                                                             |
 | L4    | `souls`              | **New module.** `Soul { name, client_id, bound_to }` component on a dedicated entity. `bind_soul` / `unbind_soul` systems. Replaces `ControlledByClient` and `PlayerControlled` as the authority on which client controls which creature. Writes `Hello` and `Input` to the control stream (tag 0) via network API. Depends on `creatures` and `network`.                                    |
-| L4    | `player`             | Nameplate rendering: `spawn_nameplate` and `update_nameplate_positions` systems for billboard text above entities with `DisplayName`.                                                                                                                                                                                                                                                    |
+| L4    | `player`             | Nameplate rendering: `spawn_nameplate` observer creates UI overlay entities, `update_nameplate_positions` projects from world space to screen space via `Camera::world_to_viewport()`. Nameplates are top-level UI entities with `NameplateTarget(Entity)`, not children of the 3D entity.                                                                                                                                                                                                                                                    |
 | —     | `src/server.rs`      | On client connect: notify registered stream handlers. Sends `InitialStateDone` on control stream after all module streams have written initial data. `handle_disconnect`: despawn soul entity. Ball spawned with `NetId`.                                                                                                                                                                |
 | —     | `src/client.rs`      | Tracks `StreamReady` count and `InitialStateDone` receipt. Initial sync complete when both conditions met. Thin — stream message routing handled by `network` module, domain logic in respective modules.                                                                                                                                                                                |
 | —     | `src/main.rs`        | Parse `--server` CLI arg. When headless: use `MinimalPlugins` instead of `DefaultPlugins`, auto-host, skip main menu.                                                                                                                                                                                                                                                                    |
@@ -315,16 +315,25 @@ Nameplate rendering lives in the `player` module, not in `src/`. The `player`
 module already handles player-specific concerns (input, `PlayerControlled`
 marker) and nameplates are a player-facing presentation feature.
 
-Each entity with a `DisplayName` component gets a child entity with `Text`,
-`TextFont`, `TextColor`, and a `Nameplate` marker. A system each frame
-positions the nameplate in screen space above the parent entity using
-camera projection (world-to-viewport), or alternatively using Bevy's
-`Billboard` component if available in 0.18.
+**Spike result:** Text2d renders in the 2D pipeline and requires a Camera2d.
+It cannot be placed as a child of a 3D entity with only a Camera3d. Nameplates
+use a world-to-viewport UI overlay approach instead.
 
-**Spike needed:** Verify whether Bevy 0.18 has a built-in billboard/screen-space
-text feature, or whether we need manual world-to-viewport projection for a UI
-node. This determines whether nameplates are 3D world-space children or 2D UI
-overlays.
+Each entity with a `DisplayName` component gets a **top-level UI entity** (not
+a child) with `Text`, `TextFont`, `TextColor`, an absolutely-positioned `Node`,
+a `Nameplate` marker, and a `NameplateTarget(Entity)` linking it back to the
+tracked 3D entity. The `update_nameplate_positions` system each frame:
+
+1. Queries the tracked entity's `GlobalTransform` and adds a vertical offset
+2. Projects from world space to screen space via `Camera::world_to_viewport()`
+3. Centers the node by offsetting by half `ComputedNode::size()`
+4. Rounds pixel values to reduce sub-pixel jitter
+5. Hides the nameplate when the target is behind the camera
+
+**Limitation (future work):** `world_to_viewport` uses the local camera, so
+nameplate positions are computed client-side. This is correct — each client
+projects to its own screen — but the nameplate task (#118) should note that
+nameplates are client-only UI and must not be replicated.
 
 ### Headless server mode
 
@@ -375,9 +384,9 @@ Gate `setup_world` with `.run_if(resource_exists::<Server>)`.
    Confirm per-stream `LengthDelimitedCodec` framing works independently.
    30 min.
 
-2. **Bevy 0.18 billboard text** — Can `Text` be placed in world space as a
-   child of a 3D entity with billboard behavior? Test with a `Text` +
-   `Transform` child entity. 30 min.
+2. ~~**Bevy 0.18 billboard text**~~ — **Resolved.** Text2d requires Camera2d
+   and cannot billboard under Camera3d. Use world-to-viewport UI overlay
+   instead. See #109.
 
 3. **Headless Avian3D** — Does `PhysicsPlugin` work with `MinimalPlugins`
    instead of `DefaultPlugins`? Spawn a dynamic body and step the schedule
