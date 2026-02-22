@@ -1,17 +1,35 @@
 use bevy::prelude::*;
-use things::InputDirection;
+use things::{DisplayName, InputDirection};
 
 /// Marker component for player-controlled entities (camera target, input receiver).
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
 pub struct PlayerControlled;
 
+/// Marker component for nameplate UI overlay nodes.
+///
+/// Spawned automatically when a [`DisplayName`] component is added to an entity.
+/// The [`update_nameplate_positions`] system projects the tracked entity's
+/// world position to screen space each frame, positioning the UI node above it.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct Nameplate;
+
+/// Links a nameplate UI node back to the 3D entity it tracks.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct NameplateTarget(pub Entity);
+
+/// Vertical world-space offset above the tracked entity's origin.
+const NAMEPLATE_WORLD_OFFSET: f32 = 2.0;
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<PlayerControlled>();
-        app.add_systems(Update, read_player_input);
+        app.register_type::<Nameplate>();
+        app.add_observer(spawn_nameplate);
+        app.add_systems(Update, (read_player_input, update_nameplate_positions));
     }
 }
 
@@ -35,5 +53,90 @@ fn read_player_input(
             direction.x += 1.0;
         }
         input.0 = direction;
+    }
+}
+
+/// Observer that runs when a [`DisplayName`] component is added to an entity.
+///
+/// Spawns an absolutely-positioned UI [`Text`] node with a [`Nameplate`] marker
+/// and a [`NameplateTarget`] linking it back to the 3D entity.
+/// [`update_nameplate_positions`] moves it to the correct screen position each frame.
+fn spawn_nameplate(trigger: On<Add, DisplayName>, mut commands: Commands, names: Query<&DisplayName>) {
+    let entity = trigger.event_target();
+    let display_name = names.get(entity).expect("DisplayName missing on trigger target");
+
+    commands.spawn((
+        Text::new(display_name.0.clone()),
+        TextFont::from_font_size(20.0),
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            ..default()
+        },
+        Nameplate,
+        NameplateTarget(entity),
+    ));
+}
+
+/// Projects each [`Nameplate`]'s tracked entity from world space to screen
+/// space using the active camera, positioning the UI node above the entity.
+///
+/// Hides the nameplate when the entity is behind the camera.
+fn update_nameplate_positions(
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    target_query: Query<&GlobalTransform>,
+    mut nameplate_query: Query<
+        (&mut Node, &mut Visibility, &ComputedNode, &NameplateTarget),
+        With<Nameplate>,
+    >,
+) {
+    let Ok((camera, camera_gt)) = camera_query.single() else {
+        return;
+    };
+    for (mut node, mut visibility, computed, target) in nameplate_query.iter_mut() {
+        let Ok(target_gt) = target_query.get(target.0) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        let world_pos = target_gt.translation() + Vec3::Y * NAMEPLATE_WORLD_OFFSET;
+        if let Ok(viewport_pos) = camera.world_to_viewport(camera_gt, world_pos) {
+            let size = computed.size();
+            node.left = Val::Px((viewport_pos.x - size.x * 0.5).round());
+            node.top = Val::Px((viewport_pos.y - size.y * 0.5).round());
+            *visibility = Visibility::Inherited;
+        } else {
+            *visibility = Visibility::Hidden;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that [`spawn_nameplate`] creates a [`Nameplate`] UI entity
+    /// targeting the entity that received a [`DisplayName`].
+    #[test]
+    fn spawn_nameplate_creates_ui_entity() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_observer(spawn_nameplate);
+
+        let target = app
+            .world_mut()
+            .spawn(DisplayName("Hero".to_string()))
+            .id();
+
+        app.update();
+
+        // Find the nameplate entity.
+        let mut nameplate_query = app.world_mut().query_filtered::<(Entity, &NameplateTarget), With<Nameplate>>();
+        let nameplates: Vec<_> = nameplate_query.iter(app.world()).collect();
+        assert_eq!(nameplates.len(), 1, "Exactly one nameplate expected");
+        let (_, nameplate_target) = nameplates[0];
+        assert_eq!(
+            nameplate_target.0, target,
+            "Nameplate should target the entity that received DisplayName"
+        );
     }
 }
