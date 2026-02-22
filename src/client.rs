@@ -83,6 +83,15 @@ fn handle_client_events(
                     &mut net_id_index,
                 );
             }
+            ClientEvent::StreamFrame { tag, data: _ } => {
+                // Module-specific handling (tiles, atmospherics, things) will be added
+                // when each module registers and implements its domain stream handler.
+                debug!("Stream frame received on tag={}", tag);
+            }
+            ClientEvent::StreamReady { tag } => {
+                // TODO: count toward the initial-sync barrier once expected_streams > 0.
+                debug!("Stream {} ready", tag);
+            }
         }
     }
 }
@@ -95,9 +104,16 @@ fn handle_server_message(
     net_id_index: &mut ResMut<NetIdIndex>,
 ) {
     match message {
-        ServerMessage::Welcome { client_id } => {
-            info!("Received Welcome, local ClientId assigned: {}", client_id.0);
+        ServerMessage::Welcome { client_id, expected_streams } => {
+            info!(
+                "Received Welcome, local ClientId assigned: {}, expecting {} module stream(s)",
+                client_id.0, expected_streams
+            );
             client.local_id = Some(*client_id);
+        }
+        ServerMessage::InitialStateDone => {
+            debug!("Server initial state done");
+            // TODO: use as part of the initial-sync barrier once domain streams are implemented.
         }
         ServerMessage::EntitySpawned {
             net_id,

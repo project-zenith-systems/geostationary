@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ClientEvent;
 use crate::config;
-use crate::protocol::{ClientMessage, ServerMessage, decode, encode};
+use crate::protocol::{ClientMessage, ServerMessage, StreamReady, decode, encode};
 
 pub(crate) async fn run_client(
     addr: SocketAddr,
@@ -52,7 +52,7 @@ async fn run_client_inner(
         log::error!("Failed to send Connected event: {}", err);
     }
 
-    // Open bi-directional stream
+    // Open bi-directional control stream (tag 0).
     let open_result = tokio::select! {
         result = connection.open_bi() => result,
         _ = cancel_token.cancelled() => {
@@ -89,13 +89,17 @@ async fn run_client_inner(
         }
     };
 
-    // Wrap streams with LengthDelimitedCodec
+    // Wrap control stream with LengthDelimitedCodec.
     let mut framed_read = FramedRead::new(recv_stream, LengthDelimitedCodec::new());
     let mut framed_write = FramedWrite::new(send_stream, LengthDelimitedCodec::new());
 
-    // Important: notify peer about the opened stream immediately.
-    // Quinn only surfaces open_bi to accept_bi after data is written.
-    if let Ok(bytes) = encode(&ClientMessage::Hello) {
+    // Send Hello immediately — this makes the bi stream visible to accept_bi()
+    // on the server and delivers the client's display name.
+    // TODO(souls): read name from config instead of hardcoded empty string.
+    let hello = ClientMessage::Hello {
+        name: String::new(),
+    };
+    if let Ok(bytes) = encode(&hello) {
         if let Err(e) = framed_write.send(Bytes::from(bytes)).await {
             log::error!("Failed to send client hello: {}", e);
             if let Err(err) = event_tx.send(ClientEvent::Disconnected {
@@ -114,10 +118,84 @@ async fn run_client_inner(
         return Ok(());
     }
 
-    // Create per-client cancellation token to coordinate shutdown
+    // Create per-client cancellation token to coordinate shutdown.
     let client_cancel = CancellationToken::new();
 
-    // Spawn read loop
+    // ── Uni-stream accept loop ───────────────────────────────────────────────
+    // Runs concurrently with the control-stream loops.
+    // For each server→client unidirectional stream: read the tag byte, then
+    // route framed messages to ClientEvent::StreamFrame / StreamReady events.
+    let event_tx_uni = event_tx.clone();
+    let cancel_token_uni = cancel_token.clone();
+    let client_cancel_uni = client_cancel.clone();
+    let connection_uni = connection.clone();
+    let uni_accept_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel_token_uni.cancelled() => {
+                    log::debug!("Uni-stream accept loop cancelled (disconnect requested)");
+                    break;
+                }
+                _ = client_cancel_uni.cancelled() => {
+                    log::debug!("Uni-stream accept loop cancelled (client shutdown)");
+                    break;
+                }
+                result = connection_uni.accept_uni() => {
+                    match result {
+                        Ok(mut recv) => {
+                            // Read 1-byte routing tag.
+                            let mut tag_buf = [0u8; 1];
+                            if let Err(e) = recv.read_exact(&mut tag_buf).await {
+                                log::error!("Failed to read stream tag byte: {}", e);
+                                break;
+                            }
+                            let tag = tag_buf[0];
+                            log::debug!("Accepted uni stream tag={}", tag);
+
+                            // Spawn an independent read loop for this stream.
+                            let frame_tx = event_tx_uni.clone();
+                            tokio::spawn(async move {
+                                let mut framed =
+                                    FramedRead::new(recv, LengthDelimitedCodec::new());
+                                while let Some(frame) = framed.next().await {
+                                    match frame {
+                                        Ok(bytes) => {
+                                            // Detect the StreamReady sentinel.
+                                            if &bytes[..] == StreamReady::BYTES {
+                                                log::debug!("StreamReady received on stream tag={}", tag);
+                                                let _ = frame_tx
+                                                    .send(ClientEvent::StreamReady { tag });
+                                            } else {
+                                                let _ = frame_tx.send(
+                                                    ClientEvent::StreamFrame {
+                                                        tag,
+                                                        data: bytes.freeze(),
+                                                    },
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!(
+                                                "Stream tag={} read error: {}",
+                                                tag, e
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            log::debug!("accept_uni ended: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // ── Control-stream read loop ─────────────────────────────────────────────
     let client_cancel_read = client_cancel.clone();
     let event_tx_read = event_tx.clone();
     let cancel_token_read = cancel_token.clone();
@@ -135,7 +213,6 @@ async fn run_client_inner(
                 frame = framed_read.next() => {
                     match frame {
                         Some(Ok(bytes)) => {
-                            // Decode ServerMessage
                             match decode::<ServerMessage>(&bytes) {
                                 Ok(message) => {
                                     if let Err(err) = event_tx_read.send(ClientEvent::ServerMessageReceived(message)) {
@@ -161,7 +238,7 @@ async fn run_client_inner(
         }
     });
 
-    // Spawn write loop
+    // ── Control-stream write loop ────────────────────────────────────────────
     let client_cancel_write = client_cancel.clone();
     let cancel_token_write = cancel_token.clone();
     let mut write_handle = tokio::spawn(async move {
@@ -178,10 +255,8 @@ async fn run_client_inner(
                 message = client_msg_rx.recv() => {
                     match message {
                         Some(message) => {
-                            // Encode ClientMessage
                             match encode(&message) {
                                 Ok(bytes) => {
-                                    // Wrap send in select to observe cancellation during send
                                     tokio::select! {
                                         result = framed_write.send(Bytes::from(bytes)) => {
                                             if let Err(e) = result {
@@ -214,7 +289,7 @@ async fn run_client_inner(
         }
     });
 
-    // Wait for any task to complete, connection to close, or cancellation
+    // Wait for any task to complete, connection to close, or cancellation.
     let reason = tokio::select! {
         _ = cancel_token.cancelled() => {
             log::info!("Client disconnect requested");
@@ -235,11 +310,11 @@ async fn run_client_inner(
         }
     };
 
-    // Cancel client tasks to ensure both stop cleanly
+    // Cancel all client tasks to ensure they stop cleanly.
     client_cancel.cancel();
 
-    // Wait for both tasks to complete (prevents events after disconnect)
-    let (read_result, write_result) = tokio::join!(read_handle, write_handle);
+    let (read_result, write_result, _) =
+        tokio::join!(read_handle, write_handle, uni_accept_handle);
     if let Err(e) = read_result {
         log::warn!("Read task panicked: {}", e);
     }

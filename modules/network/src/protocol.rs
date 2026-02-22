@@ -36,8 +36,8 @@ pub struct EntityState {
 /// Messages sent from Server to clients.
 #[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum ServerMessage {
-    /// Assigns the connecting client their identity.
-    Welcome { client_id: ClientId },
+    /// Assigns the connecting client their identity and the number of module streams to expect.
+    Welcome { client_id: ClientId, expected_streams: u8 },
     /// A replicated entity was spawned. `kind` is an opaque tag for future use.
     EntitySpawned {
         net_id: NetId,
@@ -51,15 +51,30 @@ pub enum ServerMessage {
     EntityDespawned { net_id: NetId },
     /// Authoritative spatial state update for all replicated entities.
     StateUpdate { entities: Vec<EntityState> },
+    /// Signals that the server has finished writing initial data to all module streams.
+    /// The client considers initial sync complete when both this message and all expected
+    /// `StreamReady` sentinels have been received.
+    InitialStateDone,
 }
 
 /// Messages sent from clients to server.
 #[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum ClientMessage {
     /// Initial handshake sent immediately after stream open.
-    Hello,
+    Hello { name: String },
     /// Input vector from the client.
     Input { direction: [f32; 3] },
+}
+
+/// Sentinel written by modules to their stream after all initial-burst data has been sent.
+/// Written as a framed `LengthDelimitedCodec` message via [`crate::StreamSender::send_stream_ready_to`].
+/// Recognized by the client to count toward the initial sync barrier (`expected_streams`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamReady;
+
+impl StreamReady {
+    /// Wire bytes for this sentinel. Does not use wincode encoding; treated as a raw literal.
+    pub const BYTES: &'static [u8] = &[0xFF, 0x00, 0x53, 0x52]; // ÿ\0SR
 }
 
 /// Encodes a message using wincode.

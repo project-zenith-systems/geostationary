@@ -12,21 +12,36 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 
 use crate::config;
-use crate::protocol::{ClientMessage, decode, encode};
+use crate::protocol::{ClientMessage, ServerMessage, decode, encode};
 use crate::runtime::ServerCommand;
-use crate::{ClientId, ServerEvent};
+use crate::{ClientId, ServerEvent, StreamDef, StreamDirection, StreamWriteCmd};
 
 /// Bounded channel buffer size per client to prevent memory exhaustion from slow clients.
 /// Allows brief bursts while providing backpressure.
 const PER_PEER_BUFFER_SIZE: usize = 100;
+
+/// Per-stream, per-client write channels: stream_tag → client_id → sender.
+type PerStreamSenders =
+    Arc<tokio::sync::Mutex<HashMap<u8, HashMap<ClientId, mpsc::Sender<Bytes>>>>>;
 
 pub(crate) async fn run_server(
     port: u16,
     event_tx: mpsc::UnboundedSender<ServerEvent>,
     server_cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
     cancel_token: CancellationToken,
+    stream_defs: Vec<StreamDef>,
+    stream_cmd_rx: mpsc::UnboundedReceiver<(u8, StreamWriteCmd)>,
 ) {
-    if let Err(e) = run_server_inner(port, &event_tx, server_cmd_rx, cancel_token).await {
+    if let Err(e) = run_server_inner(
+        port,
+        &event_tx,
+        server_cmd_rx,
+        cancel_token,
+        stream_defs,
+        stream_cmd_rx,
+    )
+    .await
+    {
         if let Err(err) = event_tx.send(ServerEvent::Error(format!("Server error: {e}"))) {
             log::error!("Failed to send ServerEvent::Error: {}", err);
         }
@@ -41,6 +56,8 @@ async fn run_server_inner(
     event_tx: &mpsc::UnboundedSender<ServerEvent>,
     mut server_cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
     cancel_token: CancellationToken,
+    stream_defs: Vec<StreamDef>,
+    mut stream_cmd_rx: mpsc::UnboundedReceiver<(u8, StreamWriteCmd)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server_config = config::build_server_config()?;
     let addr: SocketAddr = ([0, 0, 0, 0], port).into();
@@ -51,10 +68,20 @@ async fn run_server_inner(
         log::error!("Failed to send HostingStarted event: {}", e);
     }
 
-    // Shared state for client ID assignment and per-client write channels
+    // Shared state for client ID assignment and per-client control-stream write channels.
     let next_client_id = Arc::new(AtomicU64::new(1));
     let client_senders: Arc<tokio::sync::Mutex<HashMap<ClientId, mpsc::Sender<Bytes>>>> =
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+    // Per-stream, per-client write channels for registered module streams.
+    let per_stream_senders: PerStreamSenders =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+    // Number of server→client module streams (determines expected_streams in Welcome).
+    let server_to_client_count = stream_defs
+        .iter()
+        .filter(|d| d.direction == StreamDirection::ServerToClient)
+        .count() as u8;
 
     loop {
         tokio::select! {
@@ -72,20 +99,112 @@ async fn run_server_inner(
                 let cancel_token_clone = cancel_token.clone();
                 let next_client_id = next_client_id.clone();
                 let client_senders = client_senders.clone();
+                let per_stream_senders = per_stream_senders.clone();
+                let stream_defs_conn = stream_defs.clone();
 
                 tokio::spawn(async move {
                     match incoming.await {
                         Ok(connection) => {
                             let addr = connection.remote_address();
+                            let client_id =
+                                ClientId(next_client_id.fetch_add(1, Ordering::SeqCst));
+                            log::info!(
+                                "Client connected from {} with ClientId {}",
+                                addr,
+                                client_id.0
+                            );
 
-                            // Assign incrementing ClientId
-                            let client_id = ClientId(next_client_id.fetch_add(1, Ordering::SeqCst));
-                            log::info!("Client connected from {} with ClientId {}", addr, client_id.0);
+                            // Create per-client cancellation token to coordinate shutdown.
+                            let client_cancel = CancellationToken::new();
 
-                            // Open bi-directional stream (with cancellation support).
-                            // ClientConnected is deferred until the write channel is
-                            // registered so that game code can send messages (e.g.
-                            // Welcome) immediately upon seeing the event.
+                            // ── Open registered server→client unidirectional streams ──────────────
+                            // Each stream: write 1-byte tag, then LengthDelimitedCodec frames.
+                            // Writing the tag byte makes the stream visible to accept_uni() on
+                            // the client (Quinn only delivers a stream once it has data).
+                            let mut stream_write_handles = Vec::new();
+
+                            for def in stream_defs_conn
+                                .iter()
+                                .filter(|d| d.direction == StreamDirection::ServerToClient)
+                            {
+                                let open_result = tokio::select! {
+                                    result = connection.open_uni() => result,
+                                    _ = cancel_token_clone.cancelled() => {
+                                        log::info!("Server shutdown while opening stream {} for client {}", def.tag, client_id.0);
+                                        connection.close(0u32.into(), b"server shutdown");
+                                        return;
+                                    }
+                                    _ = connection.closed() => {
+                                        log::info!("Connection closed before stream {} opened for client {}", def.tag, client_id.0);
+                                        return;
+                                    }
+                                };
+
+                                let mut send = match open_result {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to open uni stream {} for client {}: {}",
+                                            def.tag, client_id.0, e
+                                        );
+                                        return;
+                                    }
+                                };
+
+                                // Write routing tag byte.
+                                if let Err(e) = send.write_all(&[def.tag]).await {
+                                    log::error!(
+                                        "Failed to write tag byte for stream {} client {}: {}",
+                                        def.tag, client_id.0, e
+                                    );
+                                    return;
+                                }
+
+                                let mut framed_write =
+                                    FramedWrite::new(send, LengthDelimitedCodec::new());
+                                let (write_tx, mut write_rx) =
+                                    mpsc::channel::<Bytes>(PER_PEER_BUFFER_SIZE);
+
+                                // Register in the per-stream sender map.
+                                {
+                                    let mut ps = per_stream_senders.lock().await;
+                                    ps.entry(def.tag)
+                                        .or_default()
+                                        .insert(client_id, write_tx);
+                                }
+
+                                let tag = def.tag;
+                                let cancel_global = cancel_token_clone.clone();
+                                let cancel_client = client_cancel.clone();
+                                let handle = tokio::spawn(async move {
+                                    loop {
+                                        tokio::select! {
+                                            _ = cancel_global.cancelled() => {
+                                                log::debug!("Stream {} write loop cancelled (server shutdown) for client {}", tag, client_id.0);
+                                                break;
+                                            }
+                                            _ = cancel_client.cancelled() => {
+                                                log::debug!("Stream {} write loop cancelled (client shutdown) for client {}", tag, client_id.0);
+                                                break;
+                                            }
+                                            bytes = write_rx.recv() => {
+                                                match bytes {
+                                                    Some(b) => {
+                                                        if let Err(e) = framed_write.send(b).await {
+                                                            log::error!("Stream {} write error for client {}: {}", tag, client_id.0, e);
+                                                            break;
+                                                        }
+                                                    }
+                                                    None => break,
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                                stream_write_handles.push(handle);
+                            }
+
+                            // ── Accept client's bidirectional control stream (tag 0) ──────────────
                             let accept_result = tokio::select! {
                                 result = connection.accept_bi() => result,
                                 _ = cancel_token_clone.cancelled() => {
@@ -99,153 +218,271 @@ async fn run_server_inner(
                                 }
                             };
 
-                            match accept_result {
-                                Ok((send_stream, recv_stream)) => {
-                                    // Wrap streams with LengthDelimitedCodec
-                                    let mut framed_read = FramedRead::new(recv_stream, LengthDelimitedCodec::new());
-                                    let mut framed_write = FramedWrite::new(send_stream, LengthDelimitedCodec::new());
+                            let (send_stream, recv_stream) = match accept_result {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to accept bi-directional stream from {}: {}",
+                                        addr, e
+                                    );
+                                    return;
+                                }
+                            };
 
-                                    // Create bounded channel for this client's write loop
-                                    let (write_tx, mut write_rx) = mpsc::channel::<Bytes>(PER_PEER_BUFFER_SIZE);
+                            let mut framed_read =
+                                FramedRead::new(recv_stream, LengthDelimitedCodec::new());
+                            let mut framed_write =
+                                FramedWrite::new(send_stream, LengthDelimitedCodec::new());
 
-                                    // Register client sender, then announce the
-                                    // connection so game code can send messages
-                                    // (e.g. Welcome) that will be deliverable
-                                    // immediately.
+                            // ── Read Hello ────────────────────────────────────────────────────────
+                            let hello_frame = tokio::select! {
+                                frame = framed_read.next() => frame,
+                                _ = cancel_token_clone.cancelled() => {
+                                    connection.close(0u32.into(), b"server shutdown");
+                                    return;
+                                }
+                                _ = connection.closed() => {
+                                    log::info!("Client {} closed before sending Hello", client_id.0);
+                                    return;
+                                }
+                            };
+
+                            let hello_name = match hello_frame {
+                                Some(Ok(bytes)) => match decode::<ClientMessage>(&bytes) {
+                                    Ok(ClientMessage::Hello { name }) => name,
+                                    Ok(other) => {
+                                        log::warn!(
+                                            "Expected Hello from client {}, got {:?}",
+                                            client_id.0, other
+                                        );
+                                        String::new()
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to decode Hello from client {}: {}",
+                                            client_id.0, e
+                                        );
+                                        return;
+                                    }
+                                },
+                                Some(Err(e)) => {
+                                    log::error!(
+                                        "Stream error reading Hello from client {}: {}",
+                                        client_id.0, e
+                                    );
+                                    return;
+                                }
+                                None => {
+                                    log::info!(
+                                        "Client {} disconnected before sending Hello",
+                                        client_id.0
+                                    );
+                                    return;
+                                }
+                            };
+
+                            // ── Send Welcome ──────────────────────────────────────────────────────
+                            let welcome = ServerMessage::Welcome {
+                                client_id,
+                                expected_streams: server_to_client_count,
+                            };
+                            match encode(&welcome) {
+                                Ok(bytes) => {
+                                    if let Err(e) =
+                                        framed_write.send(Bytes::from(bytes)).await
                                     {
-                                        let mut senders = client_senders.lock().await;
-                                        senders.insert(client_id, write_tx);
-                                    }
-
-                                    if let Err(err) = event_tx.send(ServerEvent::ClientConnected {
-                                        id: client_id,
-                                        addr,
-                                    }) {
-                                        log::error!("Failed to send ClientConnected event: {}", err);
-                                    }
-
-                                    let event_tx_read = event_tx.clone();
-                                    let cancel_token_read = cancel_token_clone.clone();
-                                    let cancel_token_write = cancel_token_clone.clone();
-                                    let client_senders_cleanup = client_senders.clone();
-
-                                    // Create per-client cancellation token to coordinate shutdown
-                                    let client_cancel = CancellationToken::new();
-
-                                    // Spawn per-client read loop
-                                    let client_cancel_read = client_cancel.clone();
-                                    let mut read_handle = tokio::spawn(async move {
-                                        loop {
-                                            tokio::select! {
-                                                _ = cancel_token_read.cancelled() => {
-                                                    log::debug!("Read loop cancelled for client {} (server shutdown)", client_id.0);
-                                                    break;
-                                                }
-                                                _ = client_cancel_read.cancelled() => {
-                                                    log::debug!("Read loop cancelled for client {} (client shutdown)", client_id.0);
-                                                    break;
-                                                }
-                                                frame = framed_read.next() => {
-                                                    match frame {
-                                                        Some(Ok(bytes)) => {
-                                                            // Decode ClientMessage
-                                                            match decode::<ClientMessage>(&bytes) {
-                                                                Ok(message) => {
-                                                                    if let Err(err) = event_tx_read.send(ServerEvent::ClientMessageReceived {
-                                                                        from: client_id,
-                                                                        message,
-                                                                    }) {
-                                                                        log::error!("Failed to send ClientMessageReceived event: {}", err);
-                                                                    }
-                                                                }
-                                                                Err(e) => {
-                                                                    log::error!("Failed to decode message from client {}: {}", client_id.0, e);
-                                                                }
-                                                            }
-                                                        }
-                                                        Some(Err(e)) => {
-                                                            log::error!("Stream error from client {}: {}", client_id.0, e);
-                                                            break;
-                                                        }
-                                                        None => {
-                                                            log::info!("Client {} disconnected (read stream closed)", client_id.0);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    });
-
-                                    // Spawn per-client write loop
-                                    let client_cancel_write = client_cancel.clone();
-                                    let mut write_handle = tokio::spawn(async move {
-                                        loop {
-                                            tokio::select! {
-                                                _ = cancel_token_write.cancelled() => {
-                                                    log::debug!("Write loop cancelled for client {} (server shutdown)", client_id.0);
-                                                    break;
-                                                }
-                                                _ = client_cancel_write.cancelled() => {
-                                                    log::debug!("Write loop cancelled for client {} (client shutdown)", client_id.0);
-                                                    break;
-                                                }
-                                                bytes = write_rx.recv() => {
-                                                    match bytes {
-                                                        Some(bytes) => {
-                                                            if let Err(e) = framed_write.send(bytes).await {
-                                                                log::error!("Failed to send to client {} (stream error): {}", client_id.0, e);
-                                                                break;
-                                                            }
-                                                        }
-                                                        None => {
-                                                            log::debug!("Write channel closed for client {}", client_id.0);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    });
-
-                                    // Wait for any task to complete or connection to close, then cancel client tasks
-                                    tokio::select! {
-                                        _ = &mut read_handle => {
-                                            log::debug!("Read task completed for client {}", client_id.0);
-                                        }
-                                        _ = &mut write_handle => {
-                                            log::debug!("Write task completed for client {}", client_id.0);
-                                        }
-                                        _ = connection.closed() => {
-                                            log::info!("Connection closed for client {}", client_id.0);
-                                        }
-                                    }
-
-                                    // Cancel client tasks to ensure both stop cleanly
-                                    client_cancel.cancel();
-
-                                    // Wait for both tasks to complete (prevents events after disconnect)
-                                    let (read_result, write_result) = tokio::join!(read_handle, write_handle);
-                                    if let Err(e) = read_result {
-                                        log::error!("Read task for client {} panicked: {}", client_id.0, e);
-                                    }
-                                    if let Err(e) = write_result {
-                                        log::error!("Write task for client {} panicked: {}", client_id.0, e);
-                                    }
-
-                                    // Cleanup: remove client sender and emit disconnect event
-                                    {
-                                        let mut senders = client_senders_cleanup.lock().await;
-                                        senders.remove(&client_id);
-                                    }
-
-                                    if let Err(err) = event_tx.send(ServerEvent::ClientDisconnected { id: client_id }) {
-                                        log::error!("Failed to send ClientDisconnected event: {}", err);
+                                        log::error!(
+                                            "Failed to send Welcome to client {}: {}",
+                                            client_id.0, e
+                                        );
+                                        return;
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to accept bi-directional stream from {}: {}", addr, e);
+                                    log::error!(
+                                        "Failed to encode Welcome for client {}: {}",
+                                        client_id.0, e
+                                    );
+                                    return;
                                 }
+                            }
+
+                            // ── Send InitialStateDone ─────────────────────────────────────────────
+                            // Sent immediately since no module streams carry initial data yet.
+                            // TODO: defer until all module streams have sent StreamReady once
+                            //       domain stream handlers are implemented.
+                            if let Ok(bytes) = encode(&ServerMessage::InitialStateDone) {
+                                if let Err(e) =
+                                    framed_write.send(Bytes::from(bytes)).await
+                                {
+                                    log::error!(
+                                        "Failed to send InitialStateDone to client {}: {}",
+                                        client_id.0, e
+                                    );
+                                    return;
+                                }
+                            }
+
+                            // ── Register control-stream write channel ─────────────────────────────
+                            let (write_tx, mut write_rx) =
+                                mpsc::channel::<Bytes>(PER_PEER_BUFFER_SIZE);
+                            {
+                                let mut senders = client_senders.lock().await;
+                                senders.insert(client_id, write_tx);
+                            }
+
+                            // Emit ClientConnected so game code can react.
+                            if let Err(err) = event_tx.send(ServerEvent::ClientConnected {
+                                id: client_id,
+                                addr,
+                                name: hello_name.clone(),
+                            }) {
+                                log::error!(
+                                    "Failed to send ClientConnected event: {}",
+                                    err
+                                );
+                            }
+
+                            // Forward Hello to game code for domain-specific handling.
+                            if let Err(err) = event_tx.send(ServerEvent::ClientMessageReceived {
+                                from: client_id,
+                                message: ClientMessage::Hello { name: hello_name },
+                            }) {
+                                log::error!(
+                                    "Failed to forward Hello event: {}",
+                                    err
+                                );
+                            }
+
+                            let event_tx_read = event_tx.clone();
+                            let cancel_token_read = cancel_token_clone.clone();
+                            let cancel_token_write = cancel_token_clone.clone();
+                            let client_senders_cleanup = client_senders.clone();
+                            let per_stream_senders_cleanup = per_stream_senders.clone();
+
+                            let client_cancel_read = client_cancel.clone();
+                            let mut read_handle = tokio::spawn(async move {
+                                loop {
+                                    tokio::select! {
+                                        _ = cancel_token_read.cancelled() => {
+                                            log::debug!("Read loop cancelled for client {} (server shutdown)", client_id.0);
+                                            break;
+                                        }
+                                        _ = client_cancel_read.cancelled() => {
+                                            log::debug!("Read loop cancelled for client {} (client shutdown)", client_id.0);
+                                            break;
+                                        }
+                                        frame = framed_read.next() => {
+                                            match frame {
+                                                Some(Ok(bytes)) => {
+                                                    match decode::<ClientMessage>(&bytes) {
+                                                        Ok(message) => {
+                                                            if let Err(err) = event_tx_read.send(ServerEvent::ClientMessageReceived {
+                                                                from: client_id,
+                                                                message,
+                                                            }) {
+                                                                log::error!("Failed to send ClientMessageReceived event: {}", err);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            log::error!("Failed to decode message from client {}: {}", client_id.0, e);
+                                                        }
+                                                    }
+                                                }
+                                                Some(Err(e)) => {
+                                                    log::error!("Stream error from client {}: {}", client_id.0, e);
+                                                    break;
+                                                }
+                                                None => {
+                                                    log::info!("Client {} disconnected (read stream closed)", client_id.0);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+
+                            let client_cancel_write = client_cancel.clone();
+                            let mut write_handle = tokio::spawn(async move {
+                                loop {
+                                    tokio::select! {
+                                        _ = cancel_token_write.cancelled() => {
+                                            log::debug!("Write loop cancelled for client {} (server shutdown)", client_id.0);
+                                            break;
+                                        }
+                                        _ = client_cancel_write.cancelled() => {
+                                            log::debug!("Write loop cancelled for client {} (client shutdown)", client_id.0);
+                                            break;
+                                        }
+                                        bytes = write_rx.recv() => {
+                                            match bytes {
+                                                Some(bytes) => {
+                                                    if let Err(e) = framed_write.send(bytes).await {
+                                                        log::error!("Failed to send to client {} (stream error): {}", client_id.0, e);
+                                                        break;
+                                                    }
+                                                }
+                                                None => {
+                                                    log::debug!("Write channel closed for client {}", client_id.0);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+
+                            // Wait for any task to complete or connection to close.
+                            tokio::select! {
+                                _ = &mut read_handle => {
+                                    log::debug!("Read task completed for client {}", client_id.0);
+                                }
+                                _ = &mut write_handle => {
+                                    log::debug!("Write task completed for client {}", client_id.0);
+                                }
+                                _ = connection.closed() => {
+                                    log::info!("Connection closed for client {}", client_id.0);
+                                }
+                            }
+
+                            // Cancel all per-client tasks.
+                            client_cancel.cancel();
+
+                            // Wait for control-stream tasks.
+                            let (read_result, write_result) =
+                                tokio::join!(read_handle, write_handle);
+                            if let Err(e) = read_result {
+                                log::error!("Read task for client {} panicked: {}", client_id.0, e);
+                            }
+                            if let Err(e) = write_result {
+                                log::error!("Write task for client {} panicked: {}", client_id.0, e);
+                            }
+                            // Wait for all per-stream write tasks.
+                            for handle in stream_write_handles {
+                                let _ = handle.await;
+                            }
+
+                            // Cleanup: remove control-stream sender.
+                            {
+                                let mut senders = client_senders_cleanup.lock().await;
+                                senders.remove(&client_id);
+                            }
+                            // Cleanup: remove per-stream senders for this client.
+                            {
+                                let mut ps = per_stream_senders_cleanup.lock().await;
+                                for stream_map in ps.values_mut() {
+                                    stream_map.remove(&client_id);
+                                }
+                            }
+
+                            if let Err(err) =
+                                event_tx.send(ServerEvent::ClientDisconnected { id: client_id })
+                            {
+                                log::error!(
+                                    "Failed to send ClientDisconnected event: {}",
+                                    err
+                                );
                             }
                         }
                         Err(e) => {
@@ -257,7 +494,6 @@ async fn run_server_inner(
             cmd = server_cmd_rx.recv() => {
                 match cmd {
                     Some(ServerCommand::SendTo { client, message }) => {
-                        // Encode message
                         match encode(&message) {
                             Ok(bytes) => {
                                 let senders = client_senders.lock().await;
@@ -275,14 +511,10 @@ async fn run_server_inner(
                         }
                     }
                     Some(ServerCommand::Broadcast { message }) => {
-                        // Encode message once
                         match encode(&message) {
                             Ok(bytes) => {
                                 let bytes = Bytes::from(bytes);
                                 let senders = client_senders.lock().await;
-                                // Note: Individual broadcast failures are logged but don't fail the whole broadcast.
-                                // This is intentional - some clients may be disconnecting while others are healthy.
-                                // Disconnections are reported separately via ClientDisconnected events.
                                 for (client_id, sender) in senders.iter() {
                                     if let Err(e) = sender.try_send(bytes.clone()) {
                                         log::error!("Failed to broadcast to client {} (buffer full or disconnecting): {}", client_id.0, e);
@@ -297,6 +529,45 @@ async fn run_server_inner(
                     None => {
                         log::info!("Server command channel closed");
                         break;
+                    }
+                }
+            }
+            stream_cmd = stream_cmd_rx.recv() => {
+                match stream_cmd {
+                    Some((tag, StreamWriteCmd::SendTo { client, data })) => {
+                        let ps = per_stream_senders.lock().await;
+                        if let Some(stream_map) = ps.get(&tag) {
+                            if let Some(sender) = stream_map.get(&client) {
+                                if let Err(e) = sender.try_send(data) {
+                                    log::error!(
+                                        "Failed to route stream {} data to client {}: {}",
+                                        tag, client.0, e
+                                    );
+                                }
+                            } else {
+                                log::warn!(
+                                    "Stream {} send_to: client {} not found",
+                                    tag, client.0
+                                );
+                            }
+                        }
+                    }
+                    Some((tag, StreamWriteCmd::Broadcast { data })) => {
+                        let ps = per_stream_senders.lock().await;
+                        if let Some(stream_map) = ps.get(&tag) {
+                            for (client_id, sender) in stream_map.iter() {
+                                if let Err(e) = sender.try_send(data.clone()) {
+                                    log::error!(
+                                        "Failed to broadcast stream {} to client {}: {}",
+                                        tag, client_id.0, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // All StreamSenders dropped — normal on server stop.
+                        log::debug!("Stream command channel closed");
                     }
                 }
             }
