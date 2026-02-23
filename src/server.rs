@@ -120,13 +120,36 @@ fn handle_client_message(
             };
 
             // Send initial tilemap snapshot on stream 1, then signal ready.
-            if let (Some(ts), Some(map)) = (tiles_sender, tilemap) {
-                if let Err(e) = ts.send_to(*from, &map.to_stream_message()) {
-                    warn!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
+            let ts = match tiles_sender {
+                Some(ts) => ts,
+                None => {
+                    warn!(
+                        "No TilesStreamMessage sender available to process hello for ClientId({})",
+                        from.0
+                    );
+                    return;
                 }
-                if let Err(e) = ts.send_stream_ready_to(*from) {
-                    warn!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
+            };
+
+            let map = match tilemap {
+                Some(map) => map,
+                None => {
+                    warn!(
+                        "No Tilemap resource available to process hello for ClientId({})",
+                        from.0
+                    );
+                    return;
                 }
+            };
+
+            if let Err(e) = ts.send_to(*from, &map.to_stream_message()) {
+                warn!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
+                return;
+            }
+
+            if let Err(e) = ts.send_stream_ready_to(*from) {
+                warn!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
+                return;
             }
 
             // Catch-up: send EntitySpawned for every existing replicated entity

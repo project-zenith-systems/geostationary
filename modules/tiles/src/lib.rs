@@ -134,13 +134,9 @@ pub fn decode_tiles_message(bytes: &[u8]) -> Result<TilesStreamMessage, String> 
 
 impl Tilemap {
     /// Serialize the tilemap to bytes using the `TilesStreamMessage::TilemapData` wire format.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        wincode::serialize(&self.to_stream_message()).unwrap_or_else(|e| {
-            panic!(
-                "Failed to serialize Tilemap ({}×{}): {e}",
-                self.width, self.height
-            )
-        })
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        wincode::serialize(&self.to_stream_message())
+            .map_err(|e| format!("Failed to serialize Tilemap ({}×{}): {e}", self.width, self.height))
     }
 
     /// Build the stream 1 wire message for this tilemap.
@@ -163,7 +159,24 @@ impl Tilemap {
 
     /// Deserialize a tilemap from bytes produced by [`Tilemap::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        decode_tiles_message(bytes).map(Tilemap::from_stream_message)
+        let msg = decode_tiles_message(bytes)?;
+        match &msg {
+            TilesStreamMessage::TilemapData { width, height, tiles } => {
+                let expected = width
+                    .checked_mul(*height)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| {
+                        format!("Tilemap dimensions {width}×{height} overflow")
+                    })?;
+                if tiles.len() != expected {
+                    return Err(format!(
+                        "tile data length mismatch: expected {expected}, got {}",
+                        tiles.len()
+                    ));
+                }
+            }
+        }
+        Ok(Tilemap::from_stream_message(msg))
     }
 }
 
@@ -393,7 +406,7 @@ mod tests {
     #[test]
     fn test_tilemap_to_from_bytes_roundtrip() {
         let original = Tilemap::test_room();
-        let bytes = original.to_bytes();
+        let bytes = original.to_bytes().expect("to_bytes should succeed");
         let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
 
         assert_eq!(restored.width(), original.width());
@@ -409,7 +422,7 @@ mod tests {
         tilemap.set(IVec2::new(0, 0), TileKind::Wall);
         tilemap.set(IVec2::new(2, 1), TileKind::Wall);
 
-        let bytes = tilemap.to_bytes();
+        let bytes = tilemap.to_bytes().expect("to_bytes should succeed");
         let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
 
         assert_eq!(restored.width(), 3);
