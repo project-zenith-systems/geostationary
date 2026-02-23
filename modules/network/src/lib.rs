@@ -386,10 +386,12 @@ impl StreamRegistry {
     /// Number of registered server→client streams.
     /// Sent as `expected_streams` in the `Welcome` message.
     pub fn server_to_client_count(&self) -> u8 {
-        self.entries
+        let count = self
+            .entries
             .iter()
             .filter(|d| d.direction == StreamDirection::ServerToClient)
-            .count() as u8
+            .count();
+        u8::try_from(count).expect("too many server→client streams registered; maximum is 255")
     }
 
     /// Called by the server startup path.  Creates a fresh command channel,

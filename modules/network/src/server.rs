@@ -8,6 +8,7 @@ use bytes::Bytes;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +24,22 @@ const PER_PEER_BUFFER_SIZE: usize = 100;
 /// Per-stream, per-client write channels: stream_tag → client_id → sender.
 type PerStreamSenders =
     Arc<tokio::sync::Mutex<HashMap<u8, HashMap<ClientId, mpsc::Sender<Bytes>>>>>;
+
+/// Cancel all per-stream writer tasks for a client and remove their senders from the shared map.
+/// Call this on every early-return path after stream setup to prevent task leaks and stale senders.
+async fn cleanup_client_stream_writers(
+    client_cancel: &CancellationToken,
+    stream_write_handles: &mut JoinSet<()>,
+    per_stream_senders: &PerStreamSenders,
+    client_id: ClientId,
+) {
+    client_cancel.cancel();
+    stream_write_handles.shutdown().await;
+    let mut ps = per_stream_senders.lock().await;
+    for stream_map in ps.values_mut() {
+        stream_map.remove(&client_id);
+    }
+}
 
 pub(crate) async fn run_server(
     port: u16,
@@ -78,10 +95,16 @@ async fn run_server_inner(
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     // Number of server→client module streams (determines expected_streams in Welcome).
-    let server_to_client_count = stream_defs
+    let server_to_client_count_usize = stream_defs
         .iter()
         .filter(|d| d.direction == StreamDirection::ServerToClient)
-        .count() as u8;
+        .count();
+    let server_to_client_count = u8::try_from(server_to_client_count_usize).map_err(|_| {
+        format!(
+            "Too many server→client streams registered: {} (maximum supported is 255)",
+            server_to_client_count_usize
+        )
+    })?;
 
     loop {
         tokio::select! {
@@ -121,7 +144,7 @@ async fn run_server_inner(
                             // Each stream: write 1-byte tag, then LengthDelimitedCodec frames.
                             // Writing the tag byte makes the stream visible to accept_uni() on
                             // the client (Quinn only delivers a stream once it has data).
-                            let mut stream_write_handles = Vec::new();
+                            let mut stream_write_handles: JoinSet<()> = JoinSet::new();
                             let mut stream_setup_ok = true;
 
                             for def in stream_defs_conn
@@ -179,7 +202,7 @@ async fn run_server_inner(
                                 let tag = def.tag;
                                 let cancel_global = cancel_token_clone.clone();
                                 let cancel_client = client_cancel.clone();
-                                let handle = tokio::spawn(async move {
+                                stream_write_handles.spawn(async move {
                                     loop {
                                         tokio::select! {
                                             _ = cancel_global.cancelled() => {
@@ -204,17 +227,18 @@ async fn run_server_inner(
                                         }
                                     }
                                 });
-                                stream_write_handles.push(handle);
                             }
 
                             // If any stream setup step failed, cancel all started tasks and
                             // remove stale per-stream senders for this client before returning.
                             if !stream_setup_ok {
-                                client_cancel.cancel();
-                                let mut ps = per_stream_senders.lock().await;
-                                for stream_map in ps.values_mut() {
-                                    stream_map.remove(&client_id);
-                                }
+                                cleanup_client_stream_writers(
+                                    &client_cancel,
+                                    &mut stream_write_handles,
+                                    &per_stream_senders,
+                                    client_id,
+                                )
+                                .await;
                                 return;
                             }
 
@@ -224,10 +248,12 @@ async fn run_server_inner(
                                 _ = cancel_token_clone.cancelled() => {
                                     log::info!("Server shutdown while waiting for bi-directional stream from client {}", client_id.0);
                                     connection.close(0u32.into(), b"server shutdown");
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                                 _ = connection.closed() => {
                                     log::info!("Connection closed before bi-directional stream opened for client {}", client_id.0);
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                             };
@@ -239,6 +265,7 @@ async fn run_server_inner(
                                         "Failed to accept bi-directional stream from {}: {}",
                                         addr, e
                                     );
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                             };
@@ -253,10 +280,12 @@ async fn run_server_inner(
                                 frame = framed_read.next() => frame,
                                 _ = cancel_token_clone.cancelled() => {
                                     connection.close(0u32.into(), b"server shutdown");
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                                 _ = connection.closed() => {
                                     log::info!("Client {} closed before sending Hello", client_id.0);
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                             };
@@ -270,6 +299,7 @@ async fn run_server_inner(
                                             client_id.0, other
                                         );
                                         connection.close(0u32.into(), b"protocol violation: expected Hello");
+                                        cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                         return;
                                     }
                                     Err(e) => {
@@ -277,6 +307,7 @@ async fn run_server_inner(
                                             "Failed to decode Hello from client {}: {}",
                                             client_id.0, e
                                         );
+                                        cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                         return;
                                     }
                                 },
@@ -285,6 +316,7 @@ async fn run_server_inner(
                                         "Stream error reading Hello from client {}: {}",
                                         client_id.0, e
                                     );
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                                 None => {
@@ -292,6 +324,7 @@ async fn run_server_inner(
                                         "Client {} disconnected before sending Hello",
                                         client_id.0
                                     );
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                             };
@@ -310,6 +343,7 @@ async fn run_server_inner(
                                             "Failed to send Welcome to client {}: {}",
                                             client_id.0, e
                                         );
+                                        cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                         return;
                                     }
                                 }
@@ -318,6 +352,7 @@ async fn run_server_inner(
                                         "Failed to encode Welcome for client {}: {}",
                                         client_id.0, e
                                     );
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                             }
@@ -335,6 +370,7 @@ async fn run_server_inner(
                                             "Failed to send InitialStateDone to client {}: {}",
                                             client_id.0, e
                                         );
+                                        cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                         return;
                                     }
                                 }
@@ -343,6 +379,7 @@ async fn run_server_inner(
                                         "Failed to encode InitialStateDone for client {}: {}",
                                         client_id.0, e
                                     );
+                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
                                     return;
                                 }
                             }
@@ -483,9 +520,7 @@ async fn run_server_inner(
                                 log::error!("Write task for client {} panicked: {}", client_id.0, e);
                             }
                             // Wait for all per-stream write tasks.
-                            for handle in stream_write_handles {
-                                let _ = handle.await;
-                            }
+                            stream_write_handles.shutdown().await;
 
                             // Cleanup: remove control-stream sender.
                             {
