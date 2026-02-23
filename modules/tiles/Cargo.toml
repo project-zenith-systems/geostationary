@@ -7,4 +7,4 @@ edition = "2024"
 bevy = { workspace = true }
 physics = { path = "../physics" }
 network = { path = "../network" }
-wincode = { version = "0.4", features = ["derive"] }
+wincode = { workspace = true }

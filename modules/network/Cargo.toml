@@ -18,5 +18,5 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 rcgen = "0.14"
 
-wincode = { version = "0.4", features = ["derive"] }
+wincode = { workspace = true }
 bytes = "1.11"

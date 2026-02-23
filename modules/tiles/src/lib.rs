@@ -3,7 +3,7 @@ use network::{StreamDef, StreamDirection, StreamRegistry, StreamSender};
 use physics::{Collider, RigidBody};
 use wincode::{SchemaRead, SchemaWrite};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, SchemaRead, SchemaWrite)]
 #[reflect(Debug, PartialEq)]
 pub enum TileKind {
     Floor,
@@ -121,11 +121,16 @@ impl Tilemap {
 #[derive(Debug, Clone, SchemaRead, SchemaWrite)]
 pub enum TilesStreamMessage {
     /// Full tilemap snapshot sent once on connect.
-    TilemapData { width: u32, height: u32, tiles: Vec<u8> },
+    TilemapData { width: u32, height: u32, tiles: Vec<TileKind> },
 }
 
 /// Stream tag for the server→client tiles stream (stream 1).
 pub const TILES_STREAM_TAG: u8 = 1;
+
+/// Decode a [`TilesStreamMessage`] from raw stream-frame bytes.
+pub fn decode_tiles_message(bytes: &[u8]) -> Result<TilesStreamMessage, String> {
+    wincode::deserialize(bytes).map_err(|e| e.to_string())
+}
 
 impl Tilemap {
     /// Serialize the tilemap to bytes using the `TilesStreamMessage::TilemapData` wire format.
@@ -143,43 +148,22 @@ impl Tilemap {
         TilesStreamMessage::TilemapData {
             width: self.width,
             height: self.height,
-            tiles: self.tiles.iter().map(|k| tile_kind_to_byte(*k)).collect(),
+            tiles: self.tiles.clone(),
+        }
+    }
+
+    /// Construct a [`Tilemap`] from a decoded [`TilesStreamMessage`].
+    pub fn from_stream_message(msg: TilesStreamMessage) -> Self {
+        match msg {
+            TilesStreamMessage::TilemapData { width, height, tiles } => {
+                Tilemap { width, height, tiles }
+            }
         }
     }
 
     /// Deserialize a tilemap from bytes produced by [`Tilemap::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let msg: TilesStreamMessage = wincode::deserialize(bytes).map_err(|e| e.to_string())?;
-        match msg {
-            TilesStreamMessage::TilemapData { width, height, tiles } => {
-                let expected = (width * height) as usize;
-                if tiles.len() != expected {
-                    return Err(format!(
-                        "tile data length mismatch: expected {expected}, got {}",
-                        tiles.len()
-                    ));
-                }
-                Ok(Tilemap {
-                    width,
-                    height,
-                    tiles: tiles.iter().map(|b| byte_to_tile_kind(*b)).collect(),
-                })
-            }
-        }
-    }
-}
-
-fn tile_kind_to_byte(kind: TileKind) -> u8 {
-    match kind {
-        TileKind::Floor => 0,
-        TileKind::Wall => 1,
-    }
-}
-
-fn byte_to_tile_kind(b: u8) -> TileKind {
-    match b {
-        0 => TileKind::Floor,
-        _ => TileKind::Wall,
+        decode_tiles_message(bytes).map(Tilemap::from_stream_message)
     }
 }
 

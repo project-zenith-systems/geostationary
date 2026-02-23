@@ -8,7 +8,7 @@ use network::{
 };
 use player::PlayerControlled;
 use things::{DisplayName, InputDirection, SpawnThing, Thing};
-use tiles::{Tilemap, TILES_STREAM_TAG};
+use tiles::{Tilemap, TILES_STREAM_TAG, decode_tiles_message};
 
 use crate::app_state::AppState;
 
@@ -85,8 +85,9 @@ fn handle_client_events(
                 );
             }
             ClientEvent::StreamFrame { tag, data } if *tag == TILES_STREAM_TAG => {
-                match Tilemap::from_bytes(data) {
-                    Ok(tilemap) => {
+                match decode_tiles_message(data) {
+                    Ok(msg) => {
+                        let tilemap = Tilemap::from_stream_message(msg);
                         info!(
                             "Received tilemap {}×{} from server",
                             tilemap.width(),
