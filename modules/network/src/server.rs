@@ -151,17 +151,23 @@ async fn run_server_inner(
                                 .iter()
                                 .filter(|d| d.direction == StreamDirection::ServerToClient)
                             {
-                                let open_result = tokio::select! {
-                                    result = connection.open_uni() => result,
+                                let open_result_opt = tokio::select! {
+                                    result = connection.open_uni() => Some(result),
                                     _ = cancel_token_clone.cancelled() => {
                                         log::info!("Server shutdown while opening stream {} for client {}", def.tag, client_id.0);
                                         connection.close(0u32.into(), b"server shutdown");
-                                        return;
+                                        stream_setup_ok = false;
+                                        None
                                     }
                                     _ = connection.closed() => {
                                         log::info!("Connection closed before stream {} opened for client {}", def.tag, client_id.0);
-                                        return;
+                                        stream_setup_ok = false;
+                                        None
                                     }
+                                };
+                                let open_result = match open_result_opt {
+                                    Some(r) => r,
+                                    None => break,
                                 };
 
                                 let mut send = match open_result {

@@ -154,6 +154,10 @@ async fn run_client_inner(
                                 continue;
                             }
                             let tag = tag_buf[0];
+                            if tag == 0 {
+                                log::warn!("Ignoring uni stream with reserved tag=0");
+                                continue;
+                            }
                             log::debug!("Accepted uni stream tag={}", tag);
 
                             // Spawn an independent read loop for this stream with cancellation support.
