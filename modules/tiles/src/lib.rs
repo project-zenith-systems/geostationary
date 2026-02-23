@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use network::{StreamDef, StreamDirection, StreamRegistry, StreamSender};
+use network::{Client, ClientEvent, NetworkSet, StreamDef, StreamDirection, StreamRegistry, StreamSender};
 use physics::{Collider, RigidBody};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -132,29 +132,31 @@ pub fn decode_tiles_message(bytes: &[u8]) -> Result<TilesStreamMessage, String> 
     wincode::deserialize(bytes).map_err(|e| e.to_string())
 }
 
-impl Tilemap {
-    /// Serialize the tilemap to bytes using the `TilesStreamMessage::TilemapData` wire format.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        wincode::serialize(&self.to_stream_message())
-            .map_err(|e| format!("Failed to serialize Tilemap ({}×{}): {e}", self.width, self.height))
-    }
-
-    /// Build the stream 1 wire message for this tilemap.
-    pub fn to_stream_message(&self) -> TilesStreamMessage {
+impl From<&Tilemap> for TilesStreamMessage {
+    fn from(tilemap: &Tilemap) -> Self {
         TilesStreamMessage::TilemapData {
-            width: self.width,
-            height: self.height,
-            tiles: self.tiles.clone(),
+            width: tilemap.width,
+            height: tilemap.height,
+            tiles: tilemap.tiles.clone(),
         }
     }
+}
 
-    /// Construct a [`Tilemap`] from a decoded [`TilesStreamMessage`].
-    pub fn from_stream_message(msg: TilesStreamMessage) -> Self {
+impl From<TilesStreamMessage> for Tilemap {
+    fn from(msg: TilesStreamMessage) -> Self {
         match msg {
             TilesStreamMessage::TilemapData { width, height, tiles } => {
                 Tilemap { width, height, tiles }
             }
         }
+    }
+}
+
+impl Tilemap {
+    /// Serialize the tilemap to bytes using the `TilesStreamMessage::TilemapData` wire format.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        wincode::serialize(&TilesStreamMessage::from(self))
+            .map_err(|e| format!("Failed to serialize Tilemap ({}×{}): {e}", self.width, self.height))
     }
 
     /// Deserialize a tilemap from bytes produced by [`Tilemap::to_bytes`].
@@ -176,7 +178,7 @@ impl Tilemap {
                 }
             }
         }
-        Ok(Tilemap::from_stream_message(msg))
+        Ok(Tilemap::from(msg))
     }
 }
 
@@ -189,16 +191,27 @@ impl Plugin for TilesPlugin {
         app.register_type::<Tile>();
         app.init_resource::<TileMeshes>();
         app.add_systems(Update, spawn_tile_meshes);
+        app.add_systems(
+            PreUpdate,
+            handle_tiles_stream
+                .run_if(resource_exists::<Client>)
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send),
+        );
 
-        // Register stream 1 (server→client tiles stream) if NetworkPlugin is present.
-        if let Some(mut registry) = app.world_mut().get_resource_mut::<StreamRegistry>() {
-            let sender: StreamSender<TilesStreamMessage> = registry.register(StreamDef {
-                tag: TILES_STREAM_TAG,
-                name: "tiles",
-                direction: StreamDirection::ServerToClient,
-            });
-            app.insert_resource(sender);
-        }
+        // Register stream 1 (server→client tiles stream). Requires NetworkPlugin to be added first.
+        let mut registry = app
+            .world_mut()
+            .get_resource_mut::<StreamRegistry>()
+            .expect(
+                "TilesPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)",
+            );
+        let sender: StreamSender<TilesStreamMessage> = registry.register(StreamDef {
+            tag: TILES_STREAM_TAG,
+            name: "tiles",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
     }
 }
 
@@ -293,6 +306,52 @@ fn spawn_tile_meshes(
         }
     }
 
+}
+
+/// Bevy system that handles incoming tilemap snapshots from the server on stream 1.
+/// Decodes the [`TilesStreamMessage`], explicitly matches on the [`TilesStreamMessage::TilemapData`]
+/// variant, validates dimensions, and inserts the [`Tilemap`] resource.
+fn handle_tiles_stream(
+    mut commands: Commands,
+    mut reader: MessageReader<ClientEvent>,
+) {
+    for event in reader.read() {
+        let ClientEvent::StreamFrame { tag, data } = event else {
+            continue;
+        };
+        if *tag != TILES_STREAM_TAG {
+            continue;
+        }
+        match decode_tiles_message(data) {
+            Ok(msg) => match msg {
+                TilesStreamMessage::TilemapData { width, height, tiles } => {
+                    let expected = width
+                        .checked_mul(height)
+                        .and_then(|n| usize::try_from(n).ok());
+                    match expected {
+                        Some(n) if n == tiles.len() => {
+                            info!("Received tilemap {}×{} from server", width, height);
+                            commands.insert_resource(Tilemap { width, height, tiles });
+                        }
+                        _ => {
+                            error!(
+                                "Invalid tilemap data on stream {TILES_STREAM_TAG}: \
+                                 {}×{} declared but {} tiles received",
+                                width,
+                                height,
+                                tiles.len()
+                            );
+                        }
+                    }
+                }
+            },
+            Err(e) => {
+                error!(
+                    "Failed to decode TilesStreamMessage on stream {TILES_STREAM_TAG}: {e}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

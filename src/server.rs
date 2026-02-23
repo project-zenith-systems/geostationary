@@ -111,7 +111,7 @@ fn handle_client_message(
             let sender = match sender.as_mut() {
                 Some(s) => s,
                 None => {
-                    warn!(
+                    error!(
                         "No NetServerSender available to process hello for ClientId({})",
                         from.0
                     );
@@ -123,7 +123,7 @@ fn handle_client_message(
             let ts = match tiles_sender {
                 Some(ts) => ts,
                 None => {
-                    warn!(
+                    error!(
                         "No TilesStreamMessage sender available to process hello for ClientId({})",
                         from.0
                     );
@@ -134,7 +134,7 @@ fn handle_client_message(
             let map = match tilemap {
                 Some(map) => map,
                 None => {
-                    warn!(
+                    error!(
                         "No Tilemap resource available to process hello for ClientId({})",
                         from.0
                     );
@@ -142,13 +142,13 @@ fn handle_client_message(
                 }
             };
 
-            if let Err(e) = ts.send_to(*from, &map.to_stream_message()) {
-                warn!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
+            if let Err(e) = ts.send_to(*from, &TilesStreamMessage::from(map)) {
+                error!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
                 return;
             }
 
             if let Err(e) = ts.send_stream_ready_to(*from) {
-                warn!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
+                error!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
                 return;
             }
 
