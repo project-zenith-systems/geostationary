@@ -370,7 +370,15 @@ fn send_tilemap_on_connect(
 
         if let Err(e) = ts.send_stream_ready_to(*from) {
             error!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
+            continue;
         }
+
+        info!(
+            "Sent tilemap snapshot {}×{} + StreamReady to ClientId({})",
+            map.width(),
+            map.height(),
+            from.0
+        );
     }
 }
 

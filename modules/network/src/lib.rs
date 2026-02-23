@@ -391,6 +391,7 @@ impl StreamRegistry {
             def.tag
         );
         let tag = def.tag;
+        log::info!("StreamRegistry: registered stream '{}' (tag={})", def.name, tag);
         let buf: Arc<Mutex<VecDeque<Bytes>>> = Arc::new(Mutex::new(VecDeque::new()));
         self.per_stream_bufs.insert(tag, buf.clone());
         self.entries.push(def);
@@ -407,6 +408,7 @@ impl StreamRegistry {
     /// corresponding [`StreamReader`] can decode it.
     pub(crate) fn route_stream_frame(&self, tag: u8, data: Bytes) {
         if let Some(buf) = self.per_stream_bufs.get(&tag) {
+            log::debug!("route_stream_frame: tag={} ({} bytes)", tag, data.len());
             buf.lock().unwrap_or_else(|e| e.into_inner()).push_back(data);
         } else {
             log::error!("route_stream_frame: received frame for unregistered stream tag {tag}");
@@ -436,6 +438,10 @@ impl StreamRegistry {
         let (tx, rx) = mpsc::channel(STREAM_CMD_BUFFER_SIZE);
         *self.shared_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
         let defs = self.entries.clone();
+        log::info!(
+            "StreamRegistry: server started with {} stream(s)",
+            defs.len()
+        );
         (defs, rx)
     }
 
@@ -443,6 +449,7 @@ impl StreamRegistry {
     /// [`StreamSender`] calls made while no server is running are rejected.
     pub(crate) fn on_server_stop(&self) {
         *self.shared_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        log::info!("StreamRegistry: server stopped, stream senders disconnected");
     }
 }
 

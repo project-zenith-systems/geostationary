@@ -116,6 +116,7 @@ fn handle_client_message(
             };
 
             // Notify domain modules that this client has joined.
+            info!("Emitting ClientJoined for ClientId({})", from.0);
             joined.write(ClientJoined { id: *from });
 
             // Catch-up: send EntitySpawned for every existing replicated entity
