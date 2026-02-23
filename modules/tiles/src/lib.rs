@@ -1,5 +1,8 @@
 use bevy::prelude::*;
-use network::{NetworkSet, StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender};
+use network::{
+    ClientMessage, NetworkSet, Server, ServerEvent, StreamDef, StreamDirection, StreamReader,
+    StreamRegistry, StreamSender,
+};
 use physics::{Collider, RigidBody};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -190,6 +193,13 @@ impl Plugin for TilesPlugin {
             PreUpdate,
             handle_tiles_stream.after(NetworkSet::Receive),
         );
+        app.add_systems(
+            PreUpdate,
+            send_tilemap_on_connect
+                .run_if(resource_exists::<Server>)
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send),
+        );
 
         // Register stream 1 (server→client tiles stream). Requires NetworkPlugin to be added first.
         let mut registry = app
@@ -303,21 +313,68 @@ fn spawn_tile_meshes(
 }
 
 /// Bevy system that handles incoming tilemap snapshots from the server on stream 1.
-/// Reads decoded [`TilesStreamMessage`] values from [`StreamReader`], converts to [`Tilemap`]
-/// via [`TryFrom`] (which validates dimensions), and inserts the resource.
+/// Drains [`StreamReader<TilesStreamMessage>`], explicitly matches on each variant,
+/// validates dimensions via [`TryFrom`], and inserts the [`Tilemap`] resource.
 fn handle_tiles_stream(
     mut commands: Commands,
     mut reader: ResMut<StreamReader<TilesStreamMessage>>,
 ) {
     for msg in reader.drain() {
-        match Tilemap::try_from(msg) {
-            Ok(tilemap) => {
-                info!("Received tilemap {}×{} from server", tilemap.width, tilemap.height);
-                commands.insert_resource(tilemap);
+        match msg {
+            variant @ TilesStreamMessage::TilemapData { .. } => {
+                match Tilemap::try_from(variant) {
+                    Ok(tilemap) => {
+                        info!("Received tilemap {}×{} from server", tilemap.width, tilemap.height);
+                        commands.insert_resource(tilemap);
+                    }
+                    Err(e) => error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}"),
+                }
             }
-            Err(e) => {
-                error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}");
+        }
+    }
+}
+
+/// Server-side system: sends a full tilemap snapshot + [`StreamReady`] to each connecting client.
+/// Lives in `TilesPlugin` so that `src/server.rs` has no knowledge of the tiles domain.
+fn send_tilemap_on_connect(
+    mut events: MessageReader<ServerEvent>,
+    tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
+    tilemap: Option<Res<Tilemap>>,
+) {
+    for event in events.read() {
+        let ServerEvent::ClientMessageReceived { from, message } = event else {
+            continue;
+        };
+        let ClientMessage::Hello { .. } = message else {
+            continue;
+        };
+
+        let ts = match tiles_sender.as_deref() {
+            Some(ts) => ts,
+            None => {
+                error!(
+                    "No TilesStreamMessage sender available for ClientId({})",
+                    from.0
+                );
+                continue;
             }
+        };
+
+        let map = match tilemap.as_deref() {
+            Some(map) => map,
+            None => {
+                error!("No Tilemap resource available for ClientId({})", from.0);
+                continue;
+            }
+        };
+
+        if let Err(e) = ts.send_to(*from, &TilesStreamMessage::from(map)) {
+            error!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
+            continue;
+        }
+
+        if let Err(e) = ts.send_stream_ready_to(*from) {
+            error!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
         }
     }
 }

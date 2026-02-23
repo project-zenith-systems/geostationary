@@ -3,11 +3,10 @@ use std::net::SocketAddr;
 use bevy::prelude::*;
 use network::{
     ClientId, ClientMessage, ControlledByClient, EntityState, NETWORK_UPDATE_INTERVAL, NetCommand,
-    NetId, NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage, StreamSender,
+    NetId, NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage,
 };
 use physics::LinearVelocity;
 use things::InputDirection;
-use tiles::{Tilemap, TilesStreamMessage};
 
 pub struct ServerPlugin;
 
@@ -50,8 +49,6 @@ fn handle_server_events(
         &LinearVelocity,
         &mut InputDirection,
     )>,
-    tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
-    tilemap: Option<Res<Tilemap>>,
 ) {
     for event in messages.read() {
         match event {
@@ -80,8 +77,6 @@ fn handle_server_events(
                     &mut sender,
                     &mut server,
                     &mut entities,
-                    tiles_sender.as_deref(),
-                    tilemap.as_deref(),
                 );
             }
         }
@@ -100,8 +95,6 @@ fn handle_client_message(
         &LinearVelocity,
         &mut InputDirection,
     )>,
-    tiles_sender: Option<&StreamSender<TilesStreamMessage>>,
-    tilemap: Option<&Tilemap>,
 ) {
     match message {
         ClientMessage::Hello { name } => {
@@ -118,39 +111,6 @@ fn handle_client_message(
                     return;
                 }
             };
-
-            // Send initial tilemap snapshot on stream 1, then signal ready.
-            let ts = match tiles_sender {
-                Some(ts) => ts,
-                None => {
-                    error!(
-                        "No TilesStreamMessage sender available to process hello for ClientId({})",
-                        from.0
-                    );
-                    return;
-                }
-            };
-
-            let map = match tilemap {
-                Some(map) => map,
-                None => {
-                    error!(
-                        "No Tilemap resource available to process hello for ClientId({})",
-                        from.0
-                    );
-                    return;
-                }
-            };
-
-            if let Err(e) = ts.send_to(*from, &TilesStreamMessage::from(map)) {
-                error!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
-                return;
-            }
-
-            if let Err(e) = ts.send_stream_ready_to(*from) {
-                error!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
-                return;
-            }
 
             // Catch-up: send EntitySpawned for every existing replicated entity
             for (net_id, controlled_by, transform, velocity, _) in entities.iter() {
