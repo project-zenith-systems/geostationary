@@ -300,7 +300,7 @@ async fn run_server_inner(
                                 Some(Ok(bytes)) => match decode::<ClientMessage>(&bytes) {
                                     Ok(ClientMessage::Hello { name }) => name,
                                     Ok(other) => {
-                                        log::warn!(
+                                        log::error!(
                                             "Expected Hello from client {}, got {:?} — closing connection",
                                             client_id.0, other
                                         );
@@ -610,13 +610,13 @@ async fn run_server_inner(
                                     );
                                 }
                             } else {
-                                log::warn!(
+                                log::error!(
                                     "Stream {} send_to: client {} not found",
                                     tag, client.0
                                 );
                             }
                         } else {
-                            log::warn!(
+                            log::error!(
                                 "Stream {} send_to: no registered stream with that tag",
                                 tag
                             );
@@ -634,7 +634,7 @@ async fn run_server_inner(
                                 }
                             }
                         } else {
-                            log::warn!(
+                            log::error!(
                                 "Stream {} broadcast: no registered stream with that tag",
                                 tag
                             );

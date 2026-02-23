@@ -143,7 +143,7 @@ impl NetServerSender {
             client,
             message: message.clone(),
         }) {
-            log::warn!("Failed to send message to client {}: {}", client.0, e);
+            log::error!("Failed to send message to client {}: {}", client.0, e);
         }
     }
 
@@ -152,7 +152,7 @@ impl NetServerSender {
         if let Err(e) = self.tx.send(ServerCommand::Broadcast {
             message: message.clone(),
         }) {
-            log::warn!("Failed to broadcast message: {}", e);
+            log::error!("Failed to broadcast message: {}", e);
         }
     }
 }
@@ -284,7 +284,7 @@ impl<T: Send + Sync + 'static> StreamSender<T> {
             Some(tx) => match tx.try_send((self.tag, cmd)) {
                 Ok(_) => Ok(()),
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    log::warn!(
+                    log::error!(
                         "StreamSender (tag {}): command buffer full, message dropped",
                         self.tag
                     );
@@ -293,7 +293,7 @@ impl<T: Send + Sync + 'static> StreamSender<T> {
                 Err(mpsc::error::TrySendError::Closed(_)) => Err(StreamSendError::Closed),
             },
             None => {
-                log::warn!(
+                log::error!(
                     "StreamSender (tag {}): send called but no server is running",
                     self.tag
                 );
@@ -409,7 +409,7 @@ impl StreamRegistry {
         if let Some(buf) = self.per_stream_bufs.get(&tag) {
             buf.lock().unwrap_or_else(|e| e.into_inner()).push_back(data);
         } else {
-            log::warn!("route_stream_frame: received frame for unregistered stream tag {tag}");
+            log::error!("route_stream_frame: received frame for unregistered stream tag {tag}");
         }
     }
 
@@ -702,6 +702,7 @@ mod tests {
 
         app.insert_resource(ClientEventReceiver(event_rx));
         app.init_resource::<ClientEventCount>();
+        app.init_resource::<StreamRegistry>();
         app.add_message::<ClientEvent>();
         app.add_systems(
             Update,

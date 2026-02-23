@@ -191,7 +191,9 @@ impl Plugin for TilesPlugin {
         app.add_systems(Update, spawn_tile_meshes);
         app.add_systems(
             PreUpdate,
-            handle_tiles_stream.after(NetworkSet::Receive),
+            handle_tiles_stream
+                .run_if(not(resource_exists::<Server>))
+                .after(NetworkSet::Receive),
         );
         app.add_systems(
             PreUpdate,
@@ -309,7 +311,6 @@ fn spawn_tile_meshes(
             }
         }
     }
-
 }
 
 /// Bevy system that handles incoming tilemap snapshots from the server on stream 1.
@@ -514,5 +515,20 @@ mod tests {
     fn test_from_bytes_invalid() {
         let result = Tilemap::from_bytes(&[0xFF, 0x00]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_from_dimension_overflow() {
+        let msg = TilesStreamMessage::TilemapData {
+            width: u32::MAX,
+            height: 2,
+            tiles: vec![TileKind::Floor; 4],
+        };
+        let result = Tilemap::try_from(msg);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("overflow"),
+            "error should mention overflow"
+        );
     }
 }

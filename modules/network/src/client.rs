@@ -80,7 +80,7 @@ async fn run_client_inner(
     let (send_stream, recv_stream) = match open_result {
         Ok(streams) => streams,
         Err(e) => {
-            log::warn!("Failed to open bi-directional stream: {}", e);
+            log::error!("Failed to open bi-directional stream: {}", e);
             if let Err(err) = event_tx.send(ClientEvent::Disconnected {
                 reason: format!("Failed to open stream: {}", e),
             }) {
@@ -347,10 +347,10 @@ async fn run_client_inner(
     let (read_result, write_result, _) =
         tokio::join!(read_handle, write_handle, uni_accept_handle);
     if let Err(e) = read_result {
-        log::warn!("Read task panicked: {}", e);
+        log::error!("Read task panicked: {}", e);
     }
     if let Err(e) = write_result {
-        log::warn!("Write task panicked: {}", e);
+        log::error!("Write task panicked: {}", e);
     }
 
     log::info!("Disconnected from {addr}");
