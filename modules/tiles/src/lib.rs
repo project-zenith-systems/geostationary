@@ -199,8 +199,7 @@ impl Plugin for TilesPlugin {
             PreUpdate,
             send_tilemap_on_connect
                 .run_if(resource_exists::<Server>)
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
+                .after(NetworkSet::Send),
         );
 
         // Register stream 1 (server→client tiles stream). Requires NetworkPlugin to be added first.

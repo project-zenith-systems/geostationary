@@ -127,6 +127,12 @@ async fn run_client_inner(
     // route framed messages to ClientEvent::StreamFrame / StreamReady events.
     // Per-stream tasks are tracked in a JoinSet and awaited before the handle
     // returns, preventing post-disconnect events from leaking out.
+    // Pre-compute the canonical StreamReady encoding for exact byte comparison.
+    // Using decode::<StreamReady> is unreliable because wincode may not check
+    // for trailing bytes on unit structs, causing false positives.
+    let stream_ready_bytes: Bytes =
+        Bytes::from(encode(&StreamReady).expect("StreamReady must encode"));
+
     let event_tx_uni = event_tx.clone();
     let cancel_token_uni = cancel_token.clone();
     let client_cancel_uni = client_cancel.clone();
@@ -158,12 +164,13 @@ async fn run_client_inner(
                                 log::warn!("Ignoring uni stream with reserved tag=0");
                                 continue;
                             }
-                            log::debug!("Accepted uni stream tag={}", tag);
+                            log::info!("Accepted uni stream tag={}", tag);
 
                             // Spawn an independent read loop for this stream with cancellation support.
                             let frame_tx = event_tx_uni.clone();
                             let cancel_token_stream = cancel_token_uni.clone();
                             let client_cancel_stream = client_cancel_uni.clone();
+                            let ready_bytes = stream_ready_bytes.clone();
                             stream_tasks.spawn(async move {
                                 let mut framed =
                                     FramedRead::new(recv, LengthDelimitedCodec::new());
@@ -180,14 +187,15 @@ async fn run_client_inner(
                                         frame = framed.next() => {
                                             match frame {
                                                 Some(Ok(bytes)) => {
-                                                    // Detect the StreamReady sentinel via canonical wincode decode.
-                                                    // StreamReady is a unit struct so decoding is a
-                                                    // fast byte-length check with no allocation.
-                                                    if decode::<StreamReady>(&bytes).is_ok() {
-                                                        log::debug!("StreamReady received on stream tag={}", tag);
+                                                    // Detect the StreamReady sentinel via exact
+                                                    // byte comparison against the pre-computed
+                                                    // canonical encoding.
+                                                    if bytes[..] == ready_bytes[..] {
+                                                        log::info!("StreamReady received on tag={}", tag);
                                                         let _ = frame_tx
                                                             .send(ClientEvent::StreamReady { tag });
                                                     } else {
+                                                        log::info!("StreamFrame received on tag={} ({} bytes)", tag, bytes.len());
                                                         let _ = frame_tx.send(
                                                             ClientEvent::StreamFrame {
                                                                 tag,
