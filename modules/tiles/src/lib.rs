@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use network::{
-    ClientMessage, NetworkSet, Server, ServerEvent, StreamDef, StreamDirection, StreamReader,
-    StreamRegistry, StreamSender,
+    ClientJoined, NetworkSet, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
+    StreamSender,
 };
 use physics::{Collider, RigidBody};
 use wincode::{SchemaRead, SchemaWrite};
@@ -334,21 +334,15 @@ fn handle_tiles_stream(
     }
 }
 
-/// Server-side system: sends a full tilemap snapshot + [`StreamReady`] to each connecting client.
-/// Lives in `TilesPlugin` so that `src/server.rs` has no knowledge of the tiles domain.
+/// Server-side system: sends a full tilemap snapshot + [`StreamReady`] to each joining client.
+/// Listens to the [`ClientJoined`] lifecycle event so `TilesPlugin` is decoupled from
+/// internal network events ([`ServerEvent`]).
 fn send_tilemap_on_connect(
-    mut events: MessageReader<ServerEvent>,
+    mut events: MessageReader<ClientJoined>,
     tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
     tilemap: Option<Res<Tilemap>>,
 ) {
-    for event in events.read() {
-        let ServerEvent::ClientMessageReceived { from, message } = event else {
-            continue;
-        };
-        let ClientMessage::Hello { .. } = message else {
-            continue;
-        };
-
+    for ClientJoined { id: from } in events.read() {
         let ts = match tiles_sender.as_deref() {
             Some(ts) => ts,
             None => {

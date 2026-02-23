@@ -2,8 +2,8 @@ use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use network::{
-    ClientId, ClientMessage, ControlledByClient, EntityState, NETWORK_UPDATE_INTERVAL, NetCommand,
-    NetId, NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage,
+    ClientId, ClientJoined, ClientMessage, ControlledByClient, EntityState, NETWORK_UPDATE_INTERVAL,
+    NetCommand, NetId, NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage,
 };
 use physics::LinearVelocity;
 use things::InputDirection;
@@ -40,6 +40,7 @@ impl Default for StateBroadcastTimer {
 fn handle_server_events(
     mut messages: MessageReader<ServerEvent>,
     mut net_commands: MessageWriter<NetCommand>,
+    mut joined: MessageWriter<ClientJoined>,
     mut sender: Option<ResMut<NetServerSender>>,
     mut server: ResMut<Server>,
     mut entities: Query<(
@@ -74,6 +75,7 @@ fn handle_server_events(
                 handle_client_message(
                     from,
                     message,
+                    &mut joined,
                     &mut sender,
                     &mut server,
                     &mut entities,
@@ -86,6 +88,7 @@ fn handle_server_events(
 fn handle_client_message(
     from: &ClientId,
     message: &ClientMessage,
+    joined: &mut MessageWriter<ClientJoined>,
     sender: &mut Option<ResMut<NetServerSender>>,
     server: &mut ResMut<Server>,
     entities: &mut Query<(
@@ -111,6 +114,9 @@ fn handle_client_message(
                     return;
                 }
             };
+
+            // Notify domain modules that this client has joined.
+            joined.write(ClientJoined { id: *from });
 
             // Catch-up: send EntitySpawned for every existing replicated entity
             for (net_id, controlled_by, transform, velocity, _) in entities.iter() {

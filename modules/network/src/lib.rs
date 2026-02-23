@@ -78,6 +78,14 @@ pub struct Client {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ControlledByClient(pub ClientId);
 
+/// Lifecycle event emitted (server-side) when a client completes the handshake.
+/// Domain modules (e.g. tiles, atmospherics) should listen to this instead of
+/// [`ServerEvent::ClientMessageReceived`] so they are decoupled from raw network events.
+#[derive(Message, Clone, Debug)]
+pub struct ClientJoined {
+    pub id: ClientId,
+}
+
 /// Events emitted by the server side of the network layer.
 #[derive(Message, Clone, Debug)]
 pub enum ServerEvent {
@@ -492,6 +500,7 @@ impl Plugin for NetworkPlugin {
         app.add_message::<NetCommand>();
         app.add_message::<ServerEvent>();
         app.add_message::<ClientEvent>();
+        app.add_message::<ClientJoined>();
         app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
         app.add_systems(
             PreUpdate,
