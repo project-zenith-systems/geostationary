@@ -5,6 +5,7 @@ use bytes::Bytes;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 
@@ -124,11 +125,14 @@ async fn run_client_inner(
     // Uni-stream accept loop: runs concurrently with the control-stream loops.
     // For each server→client unidirectional stream: read the tag byte, then
     // route framed messages to ClientEvent::StreamFrame / StreamReady events.
+    // Per-stream tasks are tracked in a JoinSet and awaited before the handle
+    // returns, preventing post-disconnect events from leaking out.
     let event_tx_uni = event_tx.clone();
     let cancel_token_uni = cancel_token.clone();
     let client_cancel_uni = client_cancel.clone();
     let connection_uni = connection.clone();
     let uni_accept_handle = tokio::spawn(async move {
+        let mut stream_tasks: JoinSet<()> = JoinSet::new();
         loop {
             tokio::select! {
                 _ = cancel_token_uni.cancelled() => {
@@ -156,7 +160,7 @@ async fn run_client_inner(
                             let frame_tx = event_tx_uni.clone();
                             let cancel_token_stream = cancel_token_uni.clone();
                             let client_cancel_stream = client_cancel_uni.clone();
-                            tokio::spawn(async move {
+                            stream_tasks.spawn(async move {
                                 let mut framed =
                                     FramedRead::new(recv, LengthDelimitedCodec::new());
                                 loop {
@@ -213,6 +217,9 @@ async fn run_client_inner(
                 }
             }
         }
+        // Await all per-stream reader tasks before returning so that no
+        // StreamFrame/StreamReady events can be emitted after Disconnected.
+        stream_tasks.shutdown().await;
     });
 
     // Control-stream read loop

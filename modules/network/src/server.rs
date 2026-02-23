@@ -30,7 +30,7 @@ pub(crate) async fn run_server(
     server_cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
     cancel_token: CancellationToken,
     stream_defs: Vec<StreamDef>,
-    stream_cmd_rx: mpsc::UnboundedReceiver<(u8, StreamWriteCmd)>,
+    stream_cmd_rx: mpsc::Receiver<(u8, StreamWriteCmd)>,
 ) {
     if let Err(e) = run_server_inner(
         port,
@@ -57,7 +57,7 @@ async fn run_server_inner(
     mut server_cmd_rx: mpsc::UnboundedReceiver<ServerCommand>,
     cancel_token: CancellationToken,
     stream_defs: Vec<StreamDef>,
-    mut stream_cmd_rx: mpsc::UnboundedReceiver<(u8, StreamWriteCmd)>,
+    mut stream_cmd_rx: mpsc::Receiver<(u8, StreamWriteCmd)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server_config = config::build_server_config()?;
     let addr: SocketAddr = ([0, 0, 0, 0], port).into();
@@ -266,10 +266,11 @@ async fn run_server_inner(
                                     Ok(ClientMessage::Hello { name }) => name,
                                     Ok(other) => {
                                         log::warn!(
-                                            "Expected Hello from client {}, got {:?}",
+                                            "Expected Hello from client {}, got {:?} — closing connection",
                                             client_id.0, other
                                         );
-                                        String::new()
+                                        connection.close(0u32.into(), b"protocol violation: expected Hello");
+                                        return;
                                     }
                                     Err(e) => {
                                         log::error!(

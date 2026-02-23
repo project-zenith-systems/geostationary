@@ -217,6 +217,9 @@ pub struct StreamDef {
     pub direction: StreamDirection,
 }
 
+/// Bounded buffer size for the StreamSender → server stream command channel.
+const STREAM_CMD_BUFFER_SIZE: usize = 512;
+
 /// Internal command for writing bytes to a specific module stream.
 #[derive(Debug)]
 pub(crate) enum StreamWriteCmd {
@@ -233,6 +236,8 @@ pub enum StreamSendError {
     Encode,
     /// The server is not running or the channel is closed.
     Closed,
+    /// The stream command buffer is full; the message was dropped.
+    BufferFull,
 }
 
 impl std::fmt::Display for StreamSendError {
@@ -240,30 +245,26 @@ impl std::fmt::Display for StreamSendError {
         match self {
             StreamSendError::Encode => write!(f, "encode error"),
             StreamSendError::Closed => write!(f, "channel closed / server not running"),
+            StreamSendError::BufferFull => write!(f, "stream command buffer full"),
         }
     }
 }
 
 /// Shared sender end for a module stream's write-command channel.
 /// `None` when no server is running; replaced each time the server starts.
-type SharedStreamTx = Arc<Mutex<Option<mpsc::UnboundedSender<(u8, StreamWriteCmd)>>>>;
+type SharedStreamTx = Arc<Mutex<Option<mpsc::Sender<(u8, StreamWriteCmd)>>>>;
 
 /// Typed resource that modules use to write messages to their registered stream.
 ///
 /// Obtain one by calling [`StreamRegistry::register`] and inserting the
 /// returned value as a Bevy resource.  The sender is live only while a server
-/// is running; calls made when no server is active are silently dropped with a
-/// warning log.
+/// is running; if no server is active, send attempts log a warning and return
+/// [`Err(StreamSendError::Closed)`].
 pub struct StreamSender<T: Send + Sync + 'static> {
     tag: u8,
     shared_tx: SharedStreamTx,
     _phantom: std::marker::PhantomData<T>,
 }
-
-// SAFETY: SharedStreamTx is Arc<Mutex<…>> which is Send+Sync.
-// PhantomData<T> with T: Send+Sync makes the whole type Send+Sync.
-unsafe impl<T: Send + Sync + 'static> Send for StreamSender<T> {}
-unsafe impl<T: Send + Sync + 'static> Sync for StreamSender<T> {}
 
 impl<T: Send + Sync + 'static> bevy::ecs::resource::Resource for StreamSender<T> {}
 
@@ -271,9 +272,17 @@ impl<T: Send + Sync + 'static> StreamSender<T> {
     fn send_raw(&self, cmd: StreamWriteCmd) -> Result<(), StreamSendError> {
         let guard = self.shared_tx.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
-            Some(tx) => tx
-                .send((self.tag, cmd))
-                .map_err(|_| StreamSendError::Closed),
+            Some(tx) => match tx.try_send((self.tag, cmd)) {
+                Ok(_) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    log::warn!(
+                        "StreamSender (tag {}): command buffer full, message dropped",
+                        self.tag
+                    );
+                    Err(StreamSendError::BufferFull)
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(StreamSendError::Closed),
+            },
             None => {
                 log::warn!(
                     "StreamSender (tag {}): send called but no server is running",
@@ -390,9 +399,9 @@ impl StreamRegistry {
         &mut self,
     ) -> (
         Vec<StreamDef>,
-        mpsc::UnboundedReceiver<(u8, StreamWriteCmd)>,
+        mpsc::Receiver<(u8, StreamWriteCmd)>,
     ) {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(STREAM_CMD_BUFFER_SIZE);
         *self.shared_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
         let defs = self.entries.clone();
         (defs, rx)
