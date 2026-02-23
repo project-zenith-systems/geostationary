@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use network::{Client, ClientEvent, NetworkSet, StreamDef, StreamDirection, StreamRegistry, StreamSender};
+use network::{NetworkSet, StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender};
 use physics::{Collider, RigidBody};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -142,11 +142,23 @@ impl From<&Tilemap> for TilesStreamMessage {
     }
 }
 
-impl From<TilesStreamMessage> for Tilemap {
-    fn from(msg: TilesStreamMessage) -> Self {
+impl TryFrom<TilesStreamMessage> for Tilemap {
+    type Error = String;
+
+    fn try_from(msg: TilesStreamMessage) -> Result<Self, Self::Error> {
         match msg {
             TilesStreamMessage::TilemapData { width, height, tiles } => {
-                Tilemap { width, height, tiles }
+                let expected = width
+                    .checked_mul(height)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| format!("Tilemap dimensions {width}×{height} overflow"))?;
+                if tiles.len() != expected {
+                    return Err(format!(
+                        "tile data length mismatch: expected {expected}, got {}",
+                        tiles.len()
+                    ));
+                }
+                Ok(Tilemap { width, height, tiles })
             }
         }
     }
@@ -161,24 +173,7 @@ impl Tilemap {
 
     /// Deserialize a tilemap from bytes produced by [`Tilemap::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let msg = decode_tiles_message(bytes)?;
-        match &msg {
-            TilesStreamMessage::TilemapData { width, height, tiles } => {
-                let expected = width
-                    .checked_mul(*height)
-                    .and_then(|n| usize::try_from(n).ok())
-                    .ok_or_else(|| {
-                        format!("Tilemap dimensions {width}×{height} overflow")
-                    })?;
-                if tiles.len() != expected {
-                    return Err(format!(
-                        "tile data length mismatch: expected {expected}, got {}",
-                        tiles.len()
-                    ));
-                }
-            }
-        }
-        Ok(Tilemap::from(msg))
+        decode_tiles_message(bytes).and_then(Tilemap::try_from)
     }
 }
 
@@ -193,10 +188,7 @@ impl Plugin for TilesPlugin {
         app.add_systems(Update, spawn_tile_meshes);
         app.add_systems(
             PreUpdate,
-            handle_tiles_stream
-                .run_if(resource_exists::<Client>)
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
+            handle_tiles_stream.after(NetworkSet::Receive),
         );
 
         // Register stream 1 (server→client tiles stream). Requires NetworkPlugin to be added first.
@@ -206,12 +198,14 @@ impl Plugin for TilesPlugin {
             .expect(
                 "TilesPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)",
             );
-        let sender: StreamSender<TilesStreamMessage> = registry.register(StreamDef {
-            tag: TILES_STREAM_TAG,
-            name: "tiles",
-            direction: StreamDirection::ServerToClient,
-        });
+        let (sender, reader): (StreamSender<TilesStreamMessage>, StreamReader<TilesStreamMessage>) =
+            registry.register(StreamDef {
+                tag: TILES_STREAM_TAG,
+                name: "tiles",
+                direction: StreamDirection::ServerToClient,
+            });
         app.insert_resource(sender);
+        app.insert_resource(reader);
     }
 }
 
@@ -309,46 +303,20 @@ fn spawn_tile_meshes(
 }
 
 /// Bevy system that handles incoming tilemap snapshots from the server on stream 1.
-/// Decodes the [`TilesStreamMessage`], explicitly matches on the [`TilesStreamMessage::TilemapData`]
-/// variant, validates dimensions, and inserts the [`Tilemap`] resource.
+/// Reads decoded [`TilesStreamMessage`] values from [`StreamReader`], converts to [`Tilemap`]
+/// via [`TryFrom`] (which validates dimensions), and inserts the resource.
 fn handle_tiles_stream(
     mut commands: Commands,
-    mut reader: MessageReader<ClientEvent>,
+    mut reader: ResMut<StreamReader<TilesStreamMessage>>,
 ) {
-    for event in reader.read() {
-        let ClientEvent::StreamFrame { tag, data } = event else {
-            continue;
-        };
-        if *tag != TILES_STREAM_TAG {
-            continue;
-        }
-        match decode_tiles_message(data) {
-            Ok(msg) => match msg {
-                TilesStreamMessage::TilemapData { width, height, tiles } => {
-                    let expected = width
-                        .checked_mul(height)
-                        .and_then(|n| usize::try_from(n).ok());
-                    match expected {
-                        Some(n) if n == tiles.len() => {
-                            info!("Received tilemap {}×{} from server", width, height);
-                            commands.insert_resource(Tilemap { width, height, tiles });
-                        }
-                        _ => {
-                            error!(
-                                "Invalid tilemap data on stream {TILES_STREAM_TAG}: \
-                                 {}×{} declared but {} tiles received",
-                                width,
-                                height,
-                                tiles.len()
-                            );
-                        }
-                    }
-                }
-            },
+    for msg in reader.drain() {
+        match Tilemap::try_from(msg) {
+            Ok(tilemap) => {
+                info!("Received tilemap {}×{} from server", tilemap.width, tilemap.height);
+                commands.insert_resource(tilemap);
+            }
             Err(e) => {
-                error!(
-                    "Failed to decode TilesStreamMessage on stream {TILES_STREAM_TAG}: {e}"
-                );
+                error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}");
             }
         }
     }
