@@ -91,8 +91,7 @@ async fn run_server_inner(
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     // Per-stream, per-client write channels for registered module streams.
-    let per_stream_senders: PerStreamSenders =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let per_stream_senders: PerStreamSenders = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     // Number of server→client module streams (determines expected_streams in Welcome).
     let server_to_client_count_usize = stream_defs
@@ -300,7 +299,7 @@ async fn run_server_inner(
                                 Some(Ok(bytes)) => match decode::<ClientMessage>(&bytes) {
                                     Ok(ClientMessage::Hello { name }) => name,
                                     Ok(other) => {
-                                        log::warn!(
+                                        log::error!(
                                             "Expected Hello from client {}, got {:?} — closing connection",
                                             client_id.0, other
                                         );
@@ -610,13 +609,13 @@ async fn run_server_inner(
                                     );
                                 }
                             } else {
-                                log::warn!(
+                                log::error!(
                                     "Stream {} send_to: client {} not found",
                                     tag, client.0
                                 );
                             }
                         } else {
-                            log::warn!(
+                            log::error!(
                                 "Stream {} send_to: no registered stream with that tag",
                                 tag
                             );
@@ -634,7 +633,7 @@ async fn run_server_inner(
                                 }
                             }
                         } else {
-                            log::warn!(
+                            log::error!(
                                 "Stream {} broadcast: no registered stream with that tag",
                                 tag
                             );
@@ -704,7 +703,9 @@ mod tests {
                 // The first byte on the stream is the routing tag byte.
                 // Writing it also makes the stream visible to accept_uni() on
                 // the remote side (Quinn only delivers a stream once it has data).
-                send.write_all(&[tag]).await.expect("server: write tag byte");
+                send.write_all(&[tag])
+                    .await
+                    .expect("server: write tag byte");
 
                 // Remaining bytes use independent LengthDelimitedCodec framing.
                 let mut framed = FramedWrite::new(send, LengthDelimitedCodec::new());

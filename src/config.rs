@@ -68,7 +68,10 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
         .set_default("network.port", defaults.network.port)?
         .set_default("window.title", defaults.window.title)?
         .set_default("debug.physics_debug", defaults.debug.physics_debug)?
-        .set_default("atmospherics.standard_pressure", defaults.atmospherics.standard_pressure as f64)?
+        .set_default(
+            "atmospherics.standard_pressure",
+            defaults.atmospherics.standard_pressure as f64,
+        )?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
         .add_source(Environment::with_prefix("GEOSTATIONARY").separator("__"));
