@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 bevy = { workspace = true }
 physics = { path = "../physics" }
+network = { path = "../network" }
+serde = { workspace = true }
+wincode = { workspace = true }

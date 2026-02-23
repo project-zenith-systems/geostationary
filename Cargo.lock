@@ -5603,7 +5603,10 @@ name = "things"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "network",
  "physics",
+ "serde",
+ "wincode",
 ]
 
 [[package]]

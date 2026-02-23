@@ -49,6 +49,8 @@ pub enum ServerMessage {
         velocity: [f32; 3],
         /// If set, the receiving client with this ID should take control of this entity.
         owner: Option<ClientId>,
+        /// Optional display name for the entity (e.g. player name).
+        name: Option<String>,
     },
     /// A replicated entity was despawned.
     EntityDespawned { net_id: NetId },

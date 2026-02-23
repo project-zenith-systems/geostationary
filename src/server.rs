@@ -4,10 +4,10 @@ use bevy::prelude::*;
 use network::{
     ClientId, ClientJoined, ClientMessage, ControlledByClient, EntityState,
     NETWORK_UPDATE_INTERVAL, NetCommand, NetId, NetServerSender, NetworkSet, Server, ServerEvent,
-    ServerMessage,
+    ServerMessage, StreamSender,
 };
 use physics::LinearVelocity;
-use things::InputDirection;
+use things::{InputDirection, ThingsStreamMessage};
 
 pub struct ServerPlugin;
 
@@ -137,6 +137,7 @@ fn handle_client_message(
                         } else {
                             None
                         },
+                        name: None,
                     },
                 );
             }
@@ -155,6 +156,7 @@ fn handle_client_message(
                 position: spawn_pos.into(),
                 velocity: [0.0, 0.0, 0.0],
                 owner: Some(*from),
+                name: None,
             });
         }
         ClientMessage::Input { direction } => {
@@ -168,16 +170,16 @@ fn handle_client_message(
     }
 }
 
-/// System that broadcasts state updates to all clients.
-/// Collects all replicated entity positions and sends StateUpdate.
+/// System that broadcasts state updates to all clients on stream 3.
+/// Collects all replicated entity positions and sends ThingsStreamMessage::StateUpdate.
 /// Throttled to NETWORK_UPDATE_RATE to reduce bandwidth usage.
 fn broadcast_state(
     time: Res<Time>,
     mut timer: ResMut<StateBroadcastTimer>,
-    server_sender: Option<Res<NetServerSender>>,
+    stream_sender: Option<Res<StreamSender<ThingsStreamMessage>>>,
     entities: Query<(&NetId, &Transform, &LinearVelocity)>,
 ) {
-    let Some(sender) = server_sender else {
+    let Some(sender) = stream_sender else {
         return;
     };
 
@@ -195,6 +197,8 @@ fn broadcast_state(
         .collect::<Vec<EntityState>>();
 
     if !states.is_empty() {
-        sender.broadcast(&ServerMessage::StateUpdate { entities: states });
+        if let Err(e) = sender.broadcast(&ThingsStreamMessage::StateUpdate { entities: states }) {
+            error!("Failed to broadcast entity state on things stream: {e}");
+        }
     }
 }
