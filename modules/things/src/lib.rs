@@ -71,6 +71,9 @@ pub enum ThingsStreamMessage {
     StateUpdate { entities: Vec<EntityState> },
 }
 
+/// Fallback display name for entities whose [`ServerMessage::EntitySpawned`] carries no name.
+const DEFAULT_DISPLAY_NAME: &str = "Unknown";
+
 /// Plugin that registers the thing spawning system and shared entity primitives.
 ///
 /// Must be added before any plugin that calls [`ThingRegistry::register`]
@@ -205,7 +208,7 @@ fn handle_entity_lifecycle(
                         .as_deref()
                         .filter(|n| !n.is_empty())
                         .map(|n| DisplayName(n.to_string()))
-                        .unwrap_or_else(|| DisplayName("Unknown".to_string()));
+                        .unwrap_or_else(|| DisplayName(DEFAULT_DISPLAY_NAME.to_string()));
                     commands.entity(entity).insert(display_name);
 
                     if controlled {
