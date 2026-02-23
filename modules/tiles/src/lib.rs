@@ -1,5 +1,7 @@
 use bevy::prelude::*;
+use network::{StreamDef, StreamDirection, StreamRegistry, StreamSender};
 use physics::{Collider, RigidBody};
+use wincode::{SchemaRead, SchemaWrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 #[reflect(Debug, PartialEq)]
@@ -115,6 +117,72 @@ impl Tilemap {
     }
 }
 
+/// Wire format for stream 1 (server→client tiles stream).
+#[derive(Debug, Clone, SchemaRead, SchemaWrite)]
+pub enum TilesStreamMessage {
+    /// Full tilemap snapshot sent once on connect.
+    TilemapData { width: u32, height: u32, tiles: Vec<u8> },
+}
+
+/// Stream tag for the server→client tiles stream (stream 1).
+pub const TILES_STREAM_TAG: u8 = 1;
+
+impl Tilemap {
+    /// Serialize the tilemap to bytes using the `TilesStreamMessage::TilemapData` wire format.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        wincode::serialize(&self.to_stream_message()).unwrap_or_else(|e| {
+            panic!(
+                "Failed to serialize Tilemap ({}×{}): {e}",
+                self.width, self.height
+            )
+        })
+    }
+
+    /// Build the stream 1 wire message for this tilemap.
+    pub fn to_stream_message(&self) -> TilesStreamMessage {
+        TilesStreamMessage::TilemapData {
+            width: self.width,
+            height: self.height,
+            tiles: self.tiles.iter().map(|k| tile_kind_to_byte(*k)).collect(),
+        }
+    }
+
+    /// Deserialize a tilemap from bytes produced by [`Tilemap::to_bytes`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let msg: TilesStreamMessage = wincode::deserialize(bytes).map_err(|e| e.to_string())?;
+        match msg {
+            TilesStreamMessage::TilemapData { width, height, tiles } => {
+                let expected = (width * height) as usize;
+                if tiles.len() != expected {
+                    return Err(format!(
+                        "tile data length mismatch: expected {expected}, got {}",
+                        tiles.len()
+                    ));
+                }
+                Ok(Tilemap {
+                    width,
+                    height,
+                    tiles: tiles.iter().map(|b| byte_to_tile_kind(*b)).collect(),
+                })
+            }
+        }
+    }
+}
+
+fn tile_kind_to_byte(kind: TileKind) -> u8 {
+    match kind {
+        TileKind::Floor => 0,
+        TileKind::Wall => 1,
+    }
+}
+
+fn byte_to_tile_kind(b: u8) -> TileKind {
+    match b {
+        0 => TileKind::Floor,
+        _ => TileKind::Wall,
+    }
+}
+
 pub struct TilesPlugin;
 
 impl Plugin for TilesPlugin {
@@ -124,6 +192,16 @@ impl Plugin for TilesPlugin {
         app.register_type::<Tile>();
         app.init_resource::<TileMeshes>();
         app.add_systems(Update, spawn_tile_meshes);
+
+        // Register stream 1 (server→client tiles stream) if NetworkPlugin is present.
+        if let Some(mut registry) = app.world_mut().get_resource_mut::<StreamRegistry>() {
+            let sender: StreamSender<TilesStreamMessage> = registry.register(StreamDef {
+                tag: TILES_STREAM_TAG,
+                name: "tiles",
+                direction: StreamDirection::ServerToClient,
+            });
+            app.insert_resource(sender);
+        }
     }
 }
 
@@ -326,5 +404,40 @@ mod tests {
         assert_eq!(tiles[1], (IVec2::new(1, 0), TileKind::Floor));
         assert_eq!(tiles[2], (IVec2::new(0, 1), TileKind::Floor));
         assert_eq!(tiles[3], (IVec2::new(1, 1), TileKind::Wall));
+    }
+
+    #[test]
+    fn test_tilemap_to_from_bytes_roundtrip() {
+        let original = Tilemap::test_room();
+        let bytes = original.to_bytes();
+        let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
+
+        assert_eq!(restored.width(), original.width());
+        assert_eq!(restored.height(), original.height());
+        for (pos, kind) in original.iter() {
+            assert_eq!(restored.get(pos), Some(kind));
+        }
+    }
+
+    #[test]
+    fn test_tilemap_to_from_bytes_small() {
+        let mut tilemap = Tilemap::new(3, 2, TileKind::Floor);
+        tilemap.set(IVec2::new(0, 0), TileKind::Wall);
+        tilemap.set(IVec2::new(2, 1), TileKind::Wall);
+
+        let bytes = tilemap.to_bytes();
+        let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
+
+        assert_eq!(restored.width(), 3);
+        assert_eq!(restored.height(), 2);
+        assert_eq!(restored.get(IVec2::new(0, 0)), Some(TileKind::Wall));
+        assert_eq!(restored.get(IVec2::new(1, 0)), Some(TileKind::Floor));
+        assert_eq!(restored.get(IVec2::new(2, 1)), Some(TileKind::Wall));
+    }
+
+    #[test]
+    fn test_from_bytes_invalid() {
+        let result = Tilemap::from_bytes(&[0xFF, 0x00]);
+        assert!(result.is_err());
     }
 }

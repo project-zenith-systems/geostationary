@@ -8,6 +8,7 @@ use network::{
 };
 use player::PlayerControlled;
 use things::{DisplayName, InputDirection, SpawnThing, Thing};
+use tiles::{Tilemap, TILES_STREAM_TAG};
 
 use crate::app_state::AppState;
 
@@ -83,9 +84,22 @@ fn handle_client_events(
                     &mut net_id_index,
                 );
             }
+            ClientEvent::StreamFrame { tag, data } if *tag == TILES_STREAM_TAG => {
+                match Tilemap::from_bytes(data) {
+                    Ok(tilemap) => {
+                        info!(
+                            "Received tilemap {}×{} from server",
+                            tilemap.width(),
+                            tilemap.height()
+                        );
+                        commands.insert_resource(tilemap);
+                    }
+                    Err(e) => {
+                        warn!("Failed to decode TilesStreamMessage on stream {TILES_STREAM_TAG}: {e}");
+                    }
+                }
+            }
             ClientEvent::StreamFrame { tag, data: _ } => {
-                // Module-specific handling (tiles, atmospherics, things) will be added
-                // when each module registers and implements its domain stream handler.
                 debug!("Stream frame received on tag={}", tag);
             }
             ClientEvent::StreamReady { tag } => {

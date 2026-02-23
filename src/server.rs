@@ -3,10 +3,11 @@ use std::net::SocketAddr;
 use bevy::prelude::*;
 use network::{
     ClientId, ClientMessage, ControlledByClient, EntityState, NETWORK_UPDATE_INTERVAL, NetCommand,
-    NetId, NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage,
+    NetId, NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage, StreamSender,
 };
 use physics::LinearVelocity;
 use things::InputDirection;
+use tiles::{Tilemap, TilesStreamMessage};
 
 pub struct ServerPlugin;
 
@@ -49,6 +50,8 @@ fn handle_server_events(
         &LinearVelocity,
         &mut InputDirection,
     )>,
+    tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
+    tilemap: Option<Res<Tilemap>>,
 ) {
     for event in messages.read() {
         match event {
@@ -71,7 +74,15 @@ fn handle_server_events(
                 info!("Client {} disconnected", id.0);
             }
             ServerEvent::ClientMessageReceived { from, message } => {
-                handle_client_message(from, message, &mut sender, &mut server, &mut entities);
+                handle_client_message(
+                    from,
+                    message,
+                    &mut sender,
+                    &mut server,
+                    &mut entities,
+                    tiles_sender.as_deref(),
+                    tilemap.as_deref(),
+                );
             }
         }
     }
@@ -89,6 +100,8 @@ fn handle_client_message(
         &LinearVelocity,
         &mut InputDirection,
     )>,
+    tiles_sender: Option<&StreamSender<TilesStreamMessage>>,
+    tilemap: Option<&Tilemap>,
 ) {
     match message {
         ClientMessage::Hello { name } => {
@@ -105,6 +118,16 @@ fn handle_client_message(
                     return;
                 }
             };
+
+            // Send initial tilemap snapshot on stream 1, then signal ready.
+            if let (Some(ts), Some(map)) = (tiles_sender, tilemap) {
+                if let Err(e) = ts.send_to(*from, &map.to_stream_message()) {
+                    warn!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
+                }
+                if let Err(e) = ts.send_stream_ready_to(*from) {
+                    warn!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
+                }
+            }
 
             // Catch-up: send EntitySpawned for every existing replicated entity
             for (net_id, controlled_by, transform, velocity, _) in entities.iter() {
