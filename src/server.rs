@@ -64,8 +64,8 @@ fn handle_server_events(
             ServerEvent::Error(msg) => {
                 error!("Network error: {msg}");
             }
-            ServerEvent::ClientConnected { id, addr } => {
-                info!("Client {} connected from {addr}", id.0);
+            ServerEvent::ClientConnected { id, addr, name } => {
+                info!("Client {} ('{}') connected from {addr}", id.0, name);
             }
             ServerEvent::ClientDisconnected { id } => {
                 info!("Client {} disconnected", id.0);
@@ -91,8 +91,9 @@ fn handle_client_message(
     )>,
 ) {
     match message {
-        ClientMessage::Hello => {
-            info!("Received client hello from ClientId({})", from.0);
+        ClientMessage::Hello { name } => {
+            info!("Received client hello from ClientId({}), name: {:?}", from.0, name);
+            // Welcome is now sent automatically by the network task; do not re-send it here.
 
             let sender = match sender.as_mut() {
                 Some(s) => s,
@@ -104,8 +105,6 @@ fn handle_client_message(
                     return;
                 }
             };
-
-            sender.send_to(*from, &ServerMessage::Welcome { client_id: *from });
 
             // Catch-up: send EntitySpawned for every existing replicated entity
             for (net_id, controlled_by, transform, velocity, _) in entities.iter() {
