@@ -13,8 +13,8 @@ mod protocol;
 mod runtime;
 mod server;
 
-pub use protocol::{ClientId, ClientMessage, EntityState, NetId, ServerMessage, StreamReady};
 use protocol::encode as proto_encode;
+pub use protocol::{ClientId, ClientMessage, EntityState, NetId, ServerMessage, StreamReady};
 use runtime::{
     ClientEventReceiver, ClientEventSender, NetworkRuntime, NetworkTasks, ServerCommand,
     ServerEventReceiver, ServerEventSender,
@@ -113,14 +113,21 @@ pub enum ServerEvent {
 #[derive(Message, Clone, Debug)]
 pub enum ClientEvent {
     Connected,
-    Disconnected { reason: String },
+    Disconnected {
+        reason: String,
+    },
     ServerMessageReceived(ServerMessage),
     /// Raw framed data received on a module stream (non-control, tag > 0).
     /// Modules subscribe to this event and filter by `tag` to decode their own messages.
-    StreamFrame { tag: u8, data: Bytes },
+    StreamFrame {
+        tag: u8,
+        data: Bytes,
+    },
     /// Emitted when a module stream sends the [`StreamReady`] sentinel.
     /// The client tracks these to determine when initial sync is complete.
-    StreamReady { tag: u8 },
+    StreamReady {
+        tag: u8,
+    },
     Error(String),
 }
 
@@ -306,7 +313,11 @@ impl<T: Send + Sync + 'static> StreamSender<T> {
     /// Call this after all initial-burst data has been sent on this stream.
     pub fn send_stream_ready_to(&self, client: ClientId) -> Result<(), StreamSendError> {
         let bytes = proto_encode(&StreamReady).map_err(|e| {
-            log::error!("StreamSender (tag {}): failed to encode StreamReady: {}", self.tag, e);
+            log::error!(
+                "StreamSender (tag {}): failed to encode StreamReady: {}",
+                self.tag,
+                e
+            );
             StreamSendError::Encode
         })?;
         self.send_raw(StreamWriteCmd::SendTo {
@@ -357,6 +368,13 @@ pub struct StreamRegistry {
     shared_tx: SharedStreamTx,
     /// Per-tag receive buffers, shared with [`StreamReader`] instances.
     per_stream_bufs: HashMap<u8, Arc<Mutex<VecDeque<Bytes>>>>,
+    /// StreamReady events deferred to the next frame.  When a StreamReady
+    /// arrives in the same drain batch as the data frames, game systems have
+    /// not yet had a chance to process that data.  By buffering the ready
+    /// sentinel here and emitting it on the *next* `drain_client_events` call,
+    /// we guarantee at least one full frame of processing before downstream
+    /// systems see the ready signal.
+    deferred_ready: Vec<u8>,
 }
 
 impl Default for StreamRegistry {
@@ -365,6 +383,7 @@ impl Default for StreamRegistry {
             entries: Vec::new(),
             shared_tx: Arc::new(Mutex::new(None)),
             per_stream_bufs: HashMap::new(),
+            deferred_ready: Vec::new(),
         }
     }
 }
@@ -384,14 +403,21 @@ impl StreamRegistry {
         &mut self,
         def: StreamDef,
     ) -> (StreamSender<T>, StreamReader<T>) {
-        assert_ne!(def.tag, 0, "stream tag 0 is reserved for the control stream");
+        assert_ne!(
+            def.tag, 0,
+            "stream tag 0 is reserved for the control stream"
+        );
         assert!(
             !self.entries.iter().any(|e| e.tag == def.tag),
             "stream tag {} is already registered",
             def.tag
         );
         let tag = def.tag;
-        log::info!("StreamRegistry: registered stream '{}' (tag={})", def.name, tag);
+        log::info!(
+            "StreamRegistry: registered stream '{}' (tag={})",
+            def.name,
+            tag
+        );
         let buf: Arc<Mutex<VecDeque<Bytes>>> = Arc::new(Mutex::new(VecDeque::new()));
         self.per_stream_bufs.insert(tag, buf.clone());
         self.entries.push(def);
@@ -400,7 +426,10 @@ impl StreamRegistry {
             shared_tx: self.shared_tx.clone(),
             _phantom: std::marker::PhantomData,
         };
-        let reader = StreamReader { buf, _phantom: std::marker::PhantomData };
+        let reader = StreamReader {
+            buf,
+            _phantom: std::marker::PhantomData,
+        };
         (sender, reader)
     }
 
@@ -409,7 +438,9 @@ impl StreamRegistry {
     pub(crate) fn route_stream_frame(&self, tag: u8, data: Bytes) {
         if let Some(buf) = self.per_stream_bufs.get(&tag) {
             log::debug!("route_stream_frame: tag={} ({} bytes)", tag, data.len());
-            buf.lock().unwrap_or_else(|e| e.into_inner()).push_back(data);
+            buf.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(data);
         } else {
             log::error!("route_stream_frame: received frame for unregistered stream tag {tag}");
         }
@@ -431,10 +462,7 @@ impl StreamRegistry {
     /// and command receiver to pass to the server task.
     pub(crate) fn prepare_server_start(
         &mut self,
-    ) -> (
-        Vec<StreamDef>,
-        mpsc::Receiver<(u8, StreamWriteCmd)>,
-    ) {
+    ) -> (Vec<StreamDef>, mpsc::Receiver<(u8, StreamWriteCmd)>) {
         let (tx, rx) = mpsc::channel(STREAM_CMD_BUFFER_SIZE);
         *self.shared_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
         let defs = self.entries.clone();
@@ -450,6 +478,21 @@ impl StreamRegistry {
     pub(crate) fn on_server_stop(&self) {
         *self.shared_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
         log::info!("StreamRegistry: server stopped, stream senders disconnected");
+    }
+
+    /// Buffer a `StreamReady` tag to be emitted next frame instead of
+    /// immediately, giving game systems a full frame to process the data.
+    pub(crate) fn defer_stream_ready(&mut self, tag: u8) {
+        log::debug!(
+            "StreamRegistry: deferring StreamReady for tag={} to next frame",
+            tag
+        );
+        self.deferred_ready.push(tag);
+    }
+
+    /// Drain all deferred `StreamReady` tags, returning them for emission.
+    pub(crate) fn take_deferred_ready(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.deferred_ready)
     }
 }
 
@@ -561,8 +604,16 @@ fn drain_client_events(
     mut commands: Commands,
     mut receiver: ResMut<ClientEventReceiver>,
     mut writer: MessageWriter<ClientEvent>,
-    registry: Res<StreamRegistry>,
+    mut registry: ResMut<StreamRegistry>,
 ) {
+    // Emit StreamReady events that were deferred from the previous frame.
+    // This guarantees game systems had a full frame to process the stream data
+    // before any downstream system sees the ready signal.
+    for tag in registry.take_deferred_ready() {
+        log::info!("Emitting deferred StreamReady for tag={}", tag);
+        writer.write(ClientEvent::StreamReady { tag });
+    }
+
     let mut count = 0;
     while count < MAX_NET_EVENTS_PER_FRAME {
         match receiver.0.try_recv() {
@@ -576,6 +627,14 @@ fn drain_client_events(
                 // Route stream frames to per-tag StreamReader buffers.
                 if let ClientEvent::StreamFrame { tag, data } = &event {
                     registry.route_stream_frame(*tag, data.clone());
+                }
+
+                // Defer StreamReady to next frame so game systems can process
+                // the stream data before the ready signal is visible.
+                if let ClientEvent::StreamReady { tag } = &event {
+                    registry.defer_stream_ready(*tag);
+                    count += 1;
+                    continue;
                 }
 
                 writer.write(event);

@@ -1,5 +1,5 @@
-use bevy::prelude::*;
 use atmospherics::AtmosphericsPlugin;
+use bevy::prelude::*;
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::NetworkPlugin;
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};

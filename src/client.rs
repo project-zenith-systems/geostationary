@@ -102,7 +102,10 @@ fn handle_server_message(
     net_id_index: &mut ResMut<NetIdIndex>,
 ) {
     match message {
-        ServerMessage::Welcome { client_id, expected_streams } => {
+        ServerMessage::Welcome {
+            client_id,
+            expected_streams,
+        } => {
             info!(
                 "Received Welcome, local ClientId assigned: {}, expecting {} module stream(s)",
                 client_id.0, expected_streams

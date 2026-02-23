@@ -124,7 +124,11 @@ impl Tilemap {
 #[derive(Debug, Clone, SchemaRead, SchemaWrite)]
 pub enum TilesStreamMessage {
     /// Full tilemap snapshot sent once on connect.
-    TilemapData { width: u32, height: u32, tiles: Vec<TileKind> },
+    TilemapData {
+        width: u32,
+        height: u32,
+        tiles: Vec<TileKind>,
+    },
 }
 
 /// Stream tag for the server→client tiles stream (stream 1).
@@ -150,7 +154,11 @@ impl TryFrom<TilesStreamMessage> for Tilemap {
 
     fn try_from(msg: TilesStreamMessage) -> Result<Self, Self::Error> {
         match msg {
-            TilesStreamMessage::TilemapData { width, height, tiles } => {
+            TilesStreamMessage::TilemapData {
+                width,
+                height,
+                tiles,
+            } => {
                 let expected = width
                     .checked_mul(height)
                     .and_then(|n| usize::try_from(n).ok())
@@ -161,7 +169,11 @@ impl TryFrom<TilesStreamMessage> for Tilemap {
                         tiles.len()
                     ));
                 }
-                Ok(Tilemap { width, height, tiles })
+                Ok(Tilemap {
+                    width,
+                    height,
+                    tiles,
+                })
             }
         }
     }
@@ -170,8 +182,12 @@ impl TryFrom<TilesStreamMessage> for Tilemap {
 impl Tilemap {
     /// Serialize the tilemap to bytes using the `TilesStreamMessage::TilemapData` wire format.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        wincode::serialize(&TilesStreamMessage::from(self))
-            .map_err(|e| format!("Failed to serialize Tilemap ({}×{}): {e}", self.width, self.height))
+        wincode::serialize(&TilesStreamMessage::from(self)).map_err(|e| {
+            format!(
+                "Failed to serialize Tilemap ({}×{}): {e}",
+                self.width, self.height
+            )
+        })
     }
 
     /// Deserialize a tilemap from bytes produced by [`Tilemap::to_bytes`].
@@ -195,26 +211,27 @@ impl Plugin for TilesPlugin {
                 .run_if(not(resource_exists::<Server>))
                 .after(NetworkSet::Receive),
         );
+        // Runs in Update (not PreUpdate) so that StateTransition has already
+        // processed OnEnter(InGame) → setup_world → Tilemap inserted.
+        // ClientJoined messages written in PreUpdate are still readable here
+        // thanks to double-buffered message semantics.
         app.add_systems(
-            PreUpdate,
-            send_tilemap_on_connect
-                .run_if(resource_exists::<Server>)
-                .after(NetworkSet::Send),
+            Update,
+            send_tilemap_on_connect.run_if(resource_exists::<Server>),
         );
 
         // Register stream 1 (server→client tiles stream). Requires NetworkPlugin to be added first.
-        let mut registry = app
-            .world_mut()
-            .get_resource_mut::<StreamRegistry>()
-            .expect(
-                "TilesPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)",
-            );
-        let (sender, reader): (StreamSender<TilesStreamMessage>, StreamReader<TilesStreamMessage>) =
-            registry.register(StreamDef {
-                tag: TILES_STREAM_TAG,
-                name: "tiles",
-                direction: StreamDirection::ServerToClient,
-            });
+        let mut registry = app.world_mut().get_resource_mut::<StreamRegistry>().expect(
+            "TilesPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)",
+        );
+        let (sender, reader): (
+            StreamSender<TilesStreamMessage>,
+            StreamReader<TilesStreamMessage>,
+        ) = registry.register(StreamDef {
+            tag: TILES_STREAM_TAG,
+            name: "tiles",
+            direction: StreamDirection::ServerToClient,
+        });
         app.insert_resource(sender);
         app.insert_resource(reader);
     }
@@ -321,15 +338,16 @@ fn handle_tiles_stream(
 ) {
     for msg in reader.drain() {
         match msg {
-            variant @ TilesStreamMessage::TilemapData { .. } => {
-                match Tilemap::try_from(variant) {
-                    Ok(tilemap) => {
-                        info!("Received tilemap {}×{} from server", tilemap.width, tilemap.height);
-                        commands.insert_resource(tilemap);
-                    }
-                    Err(e) => error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}"),
+            variant @ TilesStreamMessage::TilemapData { .. } => match Tilemap::try_from(variant) {
+                Ok(tilemap) => {
+                    info!(
+                        "Received tilemap {}×{} from server",
+                        tilemap.width, tilemap.height
+                    );
+                    commands.insert_resource(tilemap);
                 }
-            }
+                Err(e) => error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}"),
+            },
         }
     }
 }

@@ -37,7 +37,10 @@ pub struct EntityState {
 #[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum ServerMessage {
     /// Assigns the connecting client their identity and the number of module streams to expect.
-    Welcome { client_id: ClientId, expected_streams: u8 },
+    Welcome {
+        client_id: ClientId,
+        expected_streams: u8,
+    },
     /// A replicated entity was spawned. `kind` is an opaque tag for future use.
     EntitySpawned {
         net_id: NetId,

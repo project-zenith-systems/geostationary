@@ -352,8 +352,7 @@ async fn run_client_inner(
     // Cancel all client tasks to ensure they stop cleanly.
     client_cancel.cancel();
 
-    let (read_result, write_result, _) =
-        tokio::join!(read_handle, write_handle, uni_accept_handle);
+    let (read_result, write_result, _) = tokio::join!(read_handle, write_handle, uni_accept_handle);
     if let Err(e) = read_result {
         log::error!("Read task panicked: {}", e);
     }

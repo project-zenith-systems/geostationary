@@ -2,8 +2,9 @@ use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use network::{
-    ClientId, ClientJoined, ClientMessage, ControlledByClient, EntityState, NETWORK_UPDATE_INTERVAL,
-    NetCommand, NetId, NetServerSender, NetworkSet, Server, ServerEvent, ServerMessage,
+    ClientId, ClientJoined, ClientMessage, ControlledByClient, EntityState,
+    NETWORK_UPDATE_INTERVAL, NetCommand, NetId, NetServerSender, NetworkSet, Server, ServerEvent,
+    ServerMessage,
 };
 use physics::LinearVelocity;
 use things::InputDirection;
@@ -101,7 +102,10 @@ fn handle_client_message(
 ) {
     match message {
         ClientMessage::Hello { name } => {
-            info!("Received client hello from ClientId({}), name: {:?}", from.0, name);
+            info!(
+                "Received client hello from ClientId({}), name: {:?}",
+                from.0, name
+            );
             // Welcome is now sent automatically by the network task; do not re-send it here.
 
             let sender = match sender.as_mut() {

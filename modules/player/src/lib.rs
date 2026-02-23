@@ -61,9 +61,15 @@ fn read_player_input(
 /// Spawns an absolutely-positioned UI [`Text`] node with a [`Nameplate`] marker
 /// and a [`NameplateTarget`] linking it back to the 3D entity.
 /// [`update_nameplate_positions`] moves it to the correct screen position each frame.
-fn spawn_nameplate(trigger: On<Add, DisplayName>, mut commands: Commands, names: Query<&DisplayName>) {
+fn spawn_nameplate(
+    trigger: On<Add, DisplayName>,
+    mut commands: Commands,
+    names: Query<&DisplayName>,
+) {
     let entity = trigger.event_target();
-    let display_name = names.get(entity).expect("DisplayName missing on trigger target");
+    let display_name = names
+        .get(entity)
+        .expect("DisplayName missing on trigger target");
 
     commands.spawn((
         Text::new(display_name.0.clone()),
@@ -122,15 +128,14 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_observer(spawn_nameplate);
 
-        let target = app
-            .world_mut()
-            .spawn(DisplayName("Hero".to_string()))
-            .id();
+        let target = app.world_mut().spawn(DisplayName("Hero".to_string())).id();
 
         app.update();
 
         // Find the nameplate entity.
-        let mut nameplate_query = app.world_mut().query_filtered::<(Entity, &NameplateTarget), With<Nameplate>>();
+        let mut nameplate_query = app
+            .world_mut()
+            .query_filtered::<(Entity, &NameplateTarget), With<Nameplate>>();
         let nameplates: Vec<_> = nameplate_query.iter(app.world()).collect();
         assert_eq!(nameplates.len(), 1, "Exactly one nameplate expected");
         let (_, nameplate_target) = nameplates[0];

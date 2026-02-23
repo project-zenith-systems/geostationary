@@ -1,6 +1,6 @@
+use atmospherics::GasGrid;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use atmospherics::GasGrid;
 use physics::{Collider, Restitution, RigidBody};
 use tiles::Tilemap;
 
@@ -15,8 +15,9 @@ pub fn setup_world(
     config: Res<AppConfig>,
 ) {
     let tilemap = Tilemap::test_room();
-    let gas_grid = atmospherics::initialize_gas_grid(&tilemap, config.atmospherics.standard_pressure);
-    
+    let gas_grid =
+        atmospherics::initialize_gas_grid(&tilemap, config.atmospherics.standard_pressure);
+
     // Insert resources
     commands.insert_resource(tilemap);
     commands.insert_resource(gas_grid);
@@ -76,17 +77,17 @@ mod tests {
     #[test]
     fn test_atmosphere_initialization() {
         const TEST_STANDARD_PRESSURE: f32 = 101.325;
-        
+
         // Create a test tilemap
         let tilemap = Tilemap::test_room();
-        
+
         // Initialize GasGrid using the atmospherics module function
         let gas_grid = atmospherics::initialize_gas_grid(&tilemap, TEST_STANDARD_PRESSURE);
-        
+
         // Verify that floor cells have standard pressure
         let mut floor_cells_checked = 0;
         let mut wall_cells_checked = 0;
-        
+
         for y in 0..tilemap.height() {
             for x in 0..tilemap.width() {
                 let pos = IVec2::new(x as i32, y as i32);
@@ -111,11 +112,11 @@ mod tests {
                 }
             }
         }
-        
+
         // Verify we checked both types of cells
         assert!(floor_cells_checked > 0, "Should have some floor cells");
         assert!(wall_cells_checked > 0, "Should have some wall cells");
-        
+
         // Verify total moles equals floor cells * standard pressure
         let expected_total_moles = floor_cells_checked as f32 * TEST_STANDARD_PRESSURE;
         let actual_total_moles = gas_grid.total_moles();
