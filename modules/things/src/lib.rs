@@ -106,6 +106,7 @@ impl Plugin for ThingsPlugin {
         app.add_systems(
             PreUpdate,
             (handle_entity_lifecycle, apply_state_updates)
+                .chain()
                 .run_if(resource_exists::<Client>)
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
@@ -163,6 +164,8 @@ fn handle_entity_lifecycle(
                     commands.entity(entity).despawn();
                 }
             }
+            // ClientEvent::Error is always followed by ClientEvent::Disconnected in the
+            // network module, so cleanup happens there rather than being duplicated here.
             ClientEvent::ServerMessageReceived(message) => match message {
                 ServerMessage::Welcome {
                     client_id,

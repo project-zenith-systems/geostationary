@@ -1,6 +1,8 @@
 use bevy::prelude::*;
+use bevy::state::state_scoped::DespawnOnExit;
 use network::{
     Client, ClientEvent, ClientMessage, NETWORK_UPDATE_INTERVAL, NetClientSender, NetworkSet,
+    NetId,
 };
 use things::{InputDirection, PlayerControlled};
 
@@ -12,6 +14,7 @@ impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InputSendTimer>();
         app.init_resource::<LastSentDirection>();
+        app.add_observer(on_net_id_added);
         app.add_systems(
             PreUpdate,
             handle_client_events
@@ -21,6 +24,17 @@ impl Plugin for ClientPlugin {
         );
         app.add_systems(Update, send_client_input.run_if(resource_exists::<Client>));
     }
+}
+
+/// Inserts [`DespawnOnExit`] on every replicated entity when it receives a [`NetId`].
+///
+/// This is the main-crate counterpart of the spawning logic in `ThingsPlugin`:
+/// the `things` module owns lifecycle management but cannot reference [`AppState`],
+/// so state-scoped cleanup is wired here instead.
+fn on_net_id_added(trigger: On<Add, NetId>, mut commands: Commands) {
+    commands
+        .entity(trigger.event_target())
+        .insert(DespawnOnExit(AppState::InGame));
 }
 
 /// Timer for throttling client input sends.
