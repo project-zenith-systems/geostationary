@@ -117,11 +117,12 @@ async fn run_server_inner(
                             // Create per-client cancellation token to coordinate shutdown.
                             let client_cancel = CancellationToken::new();
 
-                            // ── Open registered server→client unidirectional streams ──────────────
+                            // Open registered server→client unidirectional streams.
                             // Each stream: write 1-byte tag, then LengthDelimitedCodec frames.
                             // Writing the tag byte makes the stream visible to accept_uni() on
                             // the client (Quinn only delivers a stream once it has data).
                             let mut stream_write_handles = Vec::new();
+                            let mut stream_setup_ok = true;
 
                             for def in stream_defs_conn
                                 .iter()
@@ -147,7 +148,8 @@ async fn run_server_inner(
                                             "Failed to open uni stream {} for client {}: {}",
                                             def.tag, client_id.0, e
                                         );
-                                        return;
+                                        stream_setup_ok = false;
+                                        break;
                                     }
                                 };
 
@@ -157,7 +159,8 @@ async fn run_server_inner(
                                         "Failed to write tag byte for stream {} client {}: {}",
                                         def.tag, client_id.0, e
                                     );
-                                    return;
+                                    stream_setup_ok = false;
+                                    break;
                                 }
 
                                 let mut framed_write =
@@ -204,7 +207,18 @@ async fn run_server_inner(
                                 stream_write_handles.push(handle);
                             }
 
-                            // ── Accept client's bidirectional control stream (tag 0) ──────────────
+                            // If any stream setup step failed, cancel all started tasks and
+                            // remove stale per-stream senders for this client before returning.
+                            if !stream_setup_ok {
+                                client_cancel.cancel();
+                                let mut ps = per_stream_senders.lock().await;
+                                for stream_map in ps.values_mut() {
+                                    stream_map.remove(&client_id);
+                                }
+                                return;
+                            }
+
+                            // Accept client's bidirectional control stream (tag 0).
                             let accept_result = tokio::select! {
                                 result = connection.accept_bi() => result,
                                 _ = cancel_token_clone.cancelled() => {
@@ -234,7 +248,7 @@ async fn run_server_inner(
                             let mut framed_write =
                                 FramedWrite::new(send_stream, LengthDelimitedCodec::new());
 
-                            // ── Read Hello ────────────────────────────────────────────────────────
+                            // Read Hello
                             let hello_frame = tokio::select! {
                                 frame = framed_read.next() => frame,
                                 _ = cancel_token_clone.cancelled() => {
@@ -281,7 +295,7 @@ async fn run_server_inner(
                                 }
                             };
 
-                            // ── Send Welcome ──────────────────────────────────────────────────────
+                            // Send Welcome
                             let welcome = ServerMessage::Welcome {
                                 client_id,
                                 expected_streams: server_to_client_count,
@@ -307,23 +321,32 @@ async fn run_server_inner(
                                 }
                             }
 
-                            // ── Send InitialStateDone ─────────────────────────────────────────────
+                            // Send InitialStateDone.
                             // Sent immediately since no module streams carry initial data yet.
                             // TODO: defer until all module streams have sent StreamReady once
                             //       domain stream handlers are implemented.
-                            if let Ok(bytes) = encode(&ServerMessage::InitialStateDone) {
-                                if let Err(e) =
-                                    framed_write.send(Bytes::from(bytes)).await
-                                {
+                            match encode(&ServerMessage::InitialStateDone) {
+                                Ok(bytes) => {
+                                    if let Err(e) =
+                                        framed_write.send(Bytes::from(bytes)).await
+                                    {
+                                        log::error!(
+                                            "Failed to send InitialStateDone to client {}: {}",
+                                            client_id.0, e
+                                        );
+                                        return;
+                                    }
+                                }
+                                Err(e) => {
                                     log::error!(
-                                        "Failed to send InitialStateDone to client {}: {}",
+                                        "Failed to encode InitialStateDone for client {}: {}",
                                         client_id.0, e
                                     );
                                     return;
                                 }
                             }
 
-                            // ── Register control-stream write channel ─────────────────────────────
+                            // Register control-stream write channel.
                             let (write_tx, mut write_rx) =
                                 mpsc::channel::<Bytes>(PER_PEER_BUFFER_SIZE);
                             {
@@ -550,6 +573,11 @@ async fn run_server_inner(
                                     tag, client.0
                                 );
                             }
+                        } else {
+                            log::warn!(
+                                "Stream {} send_to: no registered stream with that tag",
+                                tag
+                            );
                         }
                     }
                     Some((tag, StreamWriteCmd::Broadcast { data })) => {
@@ -563,6 +591,11 @@ async fn run_server_inner(
                                     );
                                 }
                             }
+                        } else {
+                            log::warn!(
+                                "Stream {} broadcast: no registered stream with that tag",
+                                tag
+                            );
                         }
                     }
                     None => {

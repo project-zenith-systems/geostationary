@@ -121,8 +121,7 @@ async fn run_client_inner(
     // Create per-client cancellation token to coordinate shutdown.
     let client_cancel = CancellationToken::new();
 
-    // ── Uni-stream accept loop ───────────────────────────────────────────────
-    // Runs concurrently with the control-stream loops.
+    // Uni-stream accept loop: runs concurrently with the control-stream loops.
     // For each server→client unidirectional stream: read the tag byte, then
     // route framed messages to ClientEvent::StreamFrame / StreamReady events.
     let event_tx_uni = event_tx.clone();
@@ -147,39 +146,60 @@ async fn run_client_inner(
                             let mut tag_buf = [0u8; 1];
                             if let Err(e) = recv.read_exact(&mut tag_buf).await {
                                 log::error!("Failed to read stream tag byte: {}", e);
-                                break;
+                                // Tag read failure is stream-local; continue accepting other streams.
+                                continue;
                             }
                             let tag = tag_buf[0];
                             log::debug!("Accepted uni stream tag={}", tag);
 
-                            // Spawn an independent read loop for this stream.
+                            // Spawn an independent read loop for this stream with cancellation support.
                             let frame_tx = event_tx_uni.clone();
+                            let cancel_token_stream = cancel_token_uni.clone();
+                            let client_cancel_stream = client_cancel_uni.clone();
                             tokio::spawn(async move {
                                 let mut framed =
                                     FramedRead::new(recv, LengthDelimitedCodec::new());
-                                while let Some(frame) = framed.next().await {
-                                    match frame {
-                                        Ok(bytes) => {
-                                            // Detect the StreamReady sentinel.
-                                            if &bytes[..] == StreamReady::BYTES {
-                                                log::debug!("StreamReady received on stream tag={}", tag);
-                                                let _ = frame_tx
-                                                    .send(ClientEvent::StreamReady { tag });
-                                            } else {
-                                                let _ = frame_tx.send(
-                                                    ClientEvent::StreamFrame {
-                                                        tag,
-                                                        data: bytes.freeze(),
-                                                    },
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            log::error!(
-                                                "Stream tag={} read error: {}",
-                                                tag, e
-                                            );
+                                loop {
+                                    tokio::select! {
+                                        _ = cancel_token_stream.cancelled() => {
+                                            log::debug!("Uni-stream reader cancelled (disconnect requested), tag={}", tag);
                                             break;
+                                        }
+                                        _ = client_cancel_stream.cancelled() => {
+                                            log::debug!("Uni-stream reader cancelled (client shutdown), tag={}", tag);
+                                            break;
+                                        }
+                                        frame = framed.next() => {
+                                            match frame {
+                                                Some(Ok(bytes)) => {
+                                                    // Detect the StreamReady sentinel via canonical wincode decode.
+                                                    // StreamReady is a unit struct so decoding is a
+                                                    // fast byte-length check with no allocation.
+                                                    if decode::<StreamReady>(&bytes).is_ok() {
+                                                        log::debug!("StreamReady received on stream tag={}", tag);
+                                                        let _ = frame_tx
+                                                            .send(ClientEvent::StreamReady { tag });
+                                                    } else {
+                                                        let _ = frame_tx.send(
+                                                            ClientEvent::StreamFrame {
+                                                                tag,
+                                                                data: bytes.freeze(),
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                                Some(Err(e)) => {
+                                                    log::error!(
+                                                        "Stream tag={} read error: {}",
+                                                        tag, e
+                                                    );
+                                                    break;
+                                                }
+                                                None => {
+                                                    // Stream closed naturally.
+                                                    break;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -195,7 +215,7 @@ async fn run_client_inner(
         }
     });
 
-    // ── Control-stream read loop ─────────────────────────────────────────────
+    // Control-stream read loop
     let client_cancel_read = client_cancel.clone();
     let event_tx_read = event_tx.clone();
     let cancel_token_read = cancel_token.clone();
@@ -238,7 +258,7 @@ async fn run_client_inner(
         }
     });
 
-    // ── Control-stream write loop ────────────────────────────────────────────
+    // Control-stream write loop
     let client_cancel_write = client_cancel.clone();
     let cancel_token_write = cancel_token.clone();
     let mut write_handle = tokio::spawn(async move {

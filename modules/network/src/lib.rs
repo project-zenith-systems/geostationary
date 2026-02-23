@@ -13,6 +13,7 @@ mod runtime;
 mod server;
 
 pub use protocol::{ClientId, ClientMessage, EntityState, NetId, ServerMessage, StreamReady};
+use protocol::encode as proto_encode;
 use runtime::{
     ClientEventReceiver, ClientEventSender, NetworkRuntime, NetworkTasks, ServerCommand,
     ServerEventReceiver, ServerEventSender,
@@ -194,9 +195,7 @@ impl NetClientSender {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Multi-stream infrastructure
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// Direction of a registered QUIC stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,9 +287,13 @@ impl<T: Send + Sync + 'static> StreamSender<T> {
     /// Send the [`StreamReady`] sentinel to a specific client.
     /// Call this after all initial-burst data has been sent on this stream.
     pub fn send_stream_ready_to(&self, client: ClientId) -> Result<(), StreamSendError> {
+        let bytes = proto_encode(&StreamReady).map_err(|e| {
+            log::error!("StreamSender (tag {}): failed to encode StreamReady: {}", self.tag, e);
+            StreamSendError::Encode
+        })?;
         self.send_raw(StreamWriteCmd::SendTo {
             client,
-            data: Bytes::from_static(StreamReady::BYTES),
+            data: Bytes::from(bytes),
         })
     }
 }
@@ -351,7 +354,17 @@ impl StreamRegistry {
     /// Insert the returned sender as a Bevy resource so that your module's
     /// systems can write to the stream via [`StreamSender::send_to`] /
     /// [`StreamSender::broadcast`].
+    ///
+    /// # Panics
+    /// Panics if `def.tag == 0` (reserved for the control stream) or if the
+    /// tag has already been registered.
     pub fn register<T: Send + Sync + 'static>(&mut self, def: StreamDef) -> StreamSender<T> {
+        assert_ne!(def.tag, 0, "stream tag 0 is reserved for the control stream");
+        assert!(
+            !self.entries.iter().any(|e| e.tag == def.tag),
+            "stream tag {} is already registered",
+            def.tag
+        );
         let tag = def.tag;
         self.entries.push(def);
         StreamSender {

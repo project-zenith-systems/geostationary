@@ -69,13 +69,9 @@ pub enum ClientMessage {
 /// Sentinel written by modules to their stream after all initial-burst data has been sent.
 /// Written as a framed `LengthDelimitedCodec` message via [`crate::StreamSender::send_stream_ready_to`].
 /// Recognized by the client to count toward the initial sync barrier (`expected_streams`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Encoded using the same wincode scheme as other protocol messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct StreamReady;
-
-impl StreamReady {
-    /// Wire bytes for this sentinel. Does not use wincode encoding; treated as a raw literal.
-    pub const BYTES: &'static [u8] = &[0xFF, 0x00, 0x53, 0x52]; // ÿ\0SR
-}
 
 /// Encodes a message using wincode.
 pub(crate) fn encode<T>(msg: &T) -> wincode::WriteResult<Vec<u8>>
