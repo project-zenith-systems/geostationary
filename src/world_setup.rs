@@ -1,18 +1,22 @@
 use atmospherics::GasGrid;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use physics::{Collider, Restitution, RigidBody};
+use network::Server;
+use physics::{Collider, GravityScale, Restitution};
+use things::ThingRegistry;
 use tiles::Tilemap;
 
 use crate::app_state::AppState;
 use crate::config::AppConfig;
 
-/// System that sets up the world when entering InGame state.
+const BALL_RADIUS: f32 = 0.3;
+const BALL_COLOR: (f32, f32, f32) = (1.0, 0.8, 0.0); // Bright yellow
+
+/// System that sets up the world when entering InGame state (server only).
 pub fn setup_world(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     config: Res<AppConfig>,
+    mut server: ResMut<Server>,
 ) {
     let tilemap = Tilemap::test_room();
     let gas_grid =
@@ -22,7 +26,17 @@ pub fn setup_world(
     commands.insert_resource(tilemap);
     commands.insert_resource(gas_grid);
 
-    // Spawn a light
+    // Player capsule spawn removed - now handled by server.rs and client.rs
+
+    // Spawn a bouncing ball above the floor using the thing prefab system (kind 1).
+    // Position it at y=5.0 so it has room to fall and bounce.
+    let (ball, _net_id) =
+        things::spawn_thing(&mut commands, &mut server, 1, Vec3::new(6.0, 5.0, 3.0));
+    commands.entity(ball).insert(DespawnOnExit(AppState::InGame));
+}
+
+/// System that sets up world lighting for all peers (server and clients).
+fn setup_lighting(mut commands: Commands) {
     commands.spawn((
         DirectionalLight {
             illuminance: 10000.0,
@@ -30,27 +44,6 @@ pub fn setup_world(
             ..default()
         },
         Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::new(4.0, 0.0, 4.0), Vec3::Y),
-        DespawnOnExit(AppState::InGame),
-    ));
-
-    // Player capsule spawn removed - now handled by server.rs and client.rs
-
-    // Spawn a bouncing ball above the floor
-    // Position it at y=5.0 so it has room to fall and bounce
-    const BALL_RADIUS: f32 = 0.3;
-    let ball_mesh = meshes.add(Sphere::new(BALL_RADIUS));
-    let ball_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.8, 0.0), // Bright yellow
-        ..default()
-    });
-
-    commands.spawn((
-        Mesh3d(ball_mesh),
-        MeshMaterial3d(ball_material),
-        Transform::from_xyz(6.0, 5.0, 3.0), // Above the floor, centered in a walkable area
-        RigidBody::Dynamic,
-        Collider::sphere(BALL_RADIUS),
-        Restitution::new(0.8),
         DespawnOnExit(AppState::InGame),
     ));
 }
@@ -65,7 +58,40 @@ pub struct WorldSetupPlugin;
 
 impl Plugin for WorldSetupPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::InGame), setup_world);
+        // Pre-load ball assets once at startup so every spawned ball reuses the same handles.
+        let ball_mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Sphere::new(BALL_RADIUS));
+        let ball_mat = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                base_color: Color::srgb(BALL_COLOR.0, BALL_COLOR.1, BALL_COLOR.2),
+                ..default()
+            });
+
+        // Register ball as thing kind 1: overrides the default capsule from on_spawn_thing
+        // with a sphere mesh, sphere collider, standard gravity, and bounciness.
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(1, move |entity, _event, commands| {
+                commands.entity(entity).insert((
+                    Mesh3d(ball_mesh.clone()),
+                    MeshMaterial3d(ball_mat.clone()),
+                    Collider::sphere(BALL_RADIUS),
+                    GravityScale(1.0),
+                    Restitution::new(0.8),
+                ));
+            });
+
+        app.add_systems(
+            OnEnter(AppState::InGame),
+            (
+                setup_world.run_if(resource_exists::<Server>),
+                setup_lighting,
+            ),
+        );
         app.add_systems(OnExit(AppState::InGame), cleanup_world);
     }
 }

@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use physics::LinearVelocity;
+use physics::{GravityScale, LinearVelocity, LockedAxes};
 use things::{InputDirection, ThingRegistry};
 
 /// Marker component for creatures - entities that can move and act in the world.
@@ -39,6 +39,8 @@ impl Plugin for CreaturesPlugin {
                     Creature,
                     MovementSpeed::default(),
                     InputDirection::default(),
+                    LockedAxes::ROTATION_LOCKED.lock_translation_y(),
+                    GravityScale(0.0),
                 ));
             });
     }
