@@ -350,7 +350,9 @@ name = "atmospherics"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "network",
  "tiles",
+ "wincode",
 ]
 
 [[package]]

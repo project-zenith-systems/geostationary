@@ -83,6 +83,16 @@ impl GasGrid {
         }
     }
 
+    /// Returns the width of the gas grid.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Returns the height of the gas grid.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
     /// Converts a 2D position to a 1D index in the cells/passable arrays.
     /// Returns None if the position is out of bounds.
     fn coord_to_index(&self, pos: IVec2) -> Option<usize> {
@@ -138,6 +148,46 @@ impl GasGrid {
     /// to demonstrate conservation of mass.
     pub fn total_moles(&self) -> f32 {
         self.cells.iter().map(|cell| cell.moles).sum()
+    }
+
+    /// Returns the moles of every cell as a flat `Vec<f32>` in row-major order.
+    /// Used to serialize the gas grid for network transmission.
+    pub fn moles_vec(&self) -> Vec<f32> {
+        self.cells.iter().map(|cell| cell.moles).collect()
+    }
+
+    /// Reconstructs a [`GasGrid`] from dimensions and a flat moles slice produced by
+    /// [`GasGrid::moles_vec`].
+    ///
+    /// Returns an error if the length of `gas_moles` does not match `width * height`.
+    pub fn from_moles_vec(width: u32, height: u32, gas_moles: Vec<f32>) -> Result<Self, String> {
+        let expected = width
+            .checked_mul(height)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| format!("GasGrid dimensions {width}×{height} overflow"))?;
+        if gas_moles.len() != expected {
+            return Err(format!(
+                "gas_moles length mismatch: expected {expected}, got {}",
+                gas_moles.len()
+            ));
+        }
+        let size = expected;
+        let cells = gas_moles
+            .into_iter()
+            .map(|moles| GasCell {
+                moles: moles.max(0.0),
+            })
+            .collect();
+        Ok(Self {
+            width,
+            height,
+            cells,
+            passable: vec![true; size],
+            scratch_flows: Vec::new(),
+            scratch_outgoing: vec![0.0; size],
+            scratch_source_scale: vec![1.0; size],
+            scratch_delta: vec![0.0; size],
+        })
     }
 
     /// Performs one diffusion step using a Jacobi-style update.
@@ -591,5 +641,52 @@ mod tests {
             assert!(cell.moles.is_finite());
             assert!(cell.moles >= 0.0);
         }
+    }
+
+    #[test]
+    fn test_moles_vec_roundtrip() {
+        let mut grid = GasGrid::new(3, 2);
+        grid.set_moles(IVec2::new(0, 0), 1.0);
+        grid.set_moles(IVec2::new(1, 0), 2.5);
+        grid.set_moles(IVec2::new(2, 1), 7.0);
+
+        let moles = grid.moles_vec();
+        assert_eq!(moles.len(), 6);
+        assert_eq!(moles[0], 1.0);
+        assert_eq!(moles[1], 2.5);
+        assert_eq!(moles[5], 7.0);
+
+        let restored = GasGrid::from_moles_vec(3, 2, moles).expect("roundtrip should succeed");
+        assert_eq!(restored.total_moles(), grid.total_moles());
+        assert_eq!(
+            restored.pressure_at(IVec2::new(0, 0)),
+            grid.pressure_at(IVec2::new(0, 0))
+        );
+        assert_eq!(
+            restored.pressure_at(IVec2::new(2, 1)),
+            grid.pressure_at(IVec2::new(2, 1))
+        );
+    }
+
+    #[test]
+    fn test_from_moles_vec_length_mismatch() {
+        let result = GasGrid::from_moles_vec(3, 2, vec![1.0; 5]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("mismatch"));
+    }
+
+    #[test]
+    fn test_from_moles_vec_negative_clamped() {
+        let grid =
+            GasGrid::from_moles_vec(2, 1, vec![-5.0, 3.0]).expect("construction should succeed");
+        assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(0.0));
+        assert_eq!(grid.pressure_at(IVec2::new(1, 0)), Some(3.0));
+    }
+
+    #[test]
+    fn test_from_moles_vec_overflow() {
+        let result = GasGrid::from_moles_vec(u32::MAX, 2, vec![]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("overflow"));
     }
 }

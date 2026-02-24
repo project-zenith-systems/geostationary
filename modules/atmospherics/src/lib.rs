@@ -1,6 +1,11 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use network::{
+    ClientJoined, NetworkSet, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
+    StreamSender,
+};
 use tiles::{TileKind, Tilemap};
+use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
 pub use gas_grid::{GasCell, GasGrid};
@@ -13,6 +18,20 @@ pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
 /// Toggle with F5.
 #[derive(Resource, Default)]
 pub struct AtmosSimPaused(pub bool);
+
+/// Stream tag for the server→client atmospherics stream (stream 2).
+pub const ATMOS_STREAM_TAG: u8 = 2;
+
+/// Wire format for stream 2 (server→client atmospherics stream).
+#[derive(Debug, Clone, SchemaRead, SchemaWrite)]
+pub enum AtmosStreamMessage {
+    /// Full gas grid snapshot sent once on connect.
+    GasGridData {
+        width: u32,
+        height: u32,
+        gas_moles: Vec<f32>,
+    },
+}
 
 /// Creates and initializes a GasGrid from a Tilemap.
 /// All floor cells are filled with the given standard atmospheric pressure.
@@ -216,6 +235,120 @@ impl Plugin for AtmosphericsPlugin {
                 debug_overlay::update_overlay_colors,
             )
                 .chain(),
+        );
+        app.add_systems(
+            PreUpdate,
+            handle_atmos_stream
+                .run_if(not(resource_exists::<Server>))
+                .after(NetworkSet::Receive),
+        );
+        app.add_systems(
+            Update,
+            send_gas_grid_on_connect.run_if(resource_exists::<Server>),
+        );
+
+        // Register stream 2 (server→client atmospherics stream). Requires NetworkPlugin to be added first.
+        let mut registry = app
+            .world_mut()
+            .get_resource_mut::<StreamRegistry>()
+            .expect(
+                "AtmosphericsPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)",
+            );
+        let (sender, reader): (
+            StreamSender<AtmosStreamMessage>,
+            StreamReader<AtmosStreamMessage>,
+        ) = registry.register(StreamDef {
+            tag: ATMOS_STREAM_TAG,
+            name: "atmospherics",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
+    }
+}
+
+/// Client-side system: handles incoming gas grid snapshots from the server on stream 2.
+/// Drains [`StreamReader<AtmosStreamMessage>`], reconstructs a [`GasGrid`] via
+/// [`GasGrid::from_moles_vec`], and inserts it as a resource.
+fn handle_atmos_stream(
+    mut commands: Commands,
+    mut reader: ResMut<StreamReader<AtmosStreamMessage>>,
+) {
+    for msg in reader.drain() {
+        match msg {
+            AtmosStreamMessage::GasGridData {
+                width,
+                height,
+                gas_moles,
+            } => match GasGrid::from_moles_vec(width, height, gas_moles) {
+                Ok(gas_grid) => {
+                    info!(
+                        "Received gas grid {}×{} from server",
+                        width, height
+                    );
+                    commands.insert_resource(gas_grid);
+                }
+                Err(e) => error!("Invalid gas grid data on stream {ATMOS_STREAM_TAG}: {e}"),
+            },
+        }
+    }
+}
+
+/// Server-side system: sends a full gas grid snapshot + [`StreamReady`] to each joining client.
+/// Listens to the [`ClientJoined`] lifecycle event so `AtmosphericsPlugin` is decoupled from
+/// internal network events.
+fn send_gas_grid_on_connect(
+    mut events: MessageReader<ClientJoined>,
+    atmos_sender: Option<Res<StreamSender<AtmosStreamMessage>>>,
+    gas_grid: Option<Res<GasGrid>>,
+) {
+    for ClientJoined { id: from } in events.read() {
+        let sender = match atmos_sender.as_deref() {
+            Some(s) => s,
+            None => {
+                error!(
+                    "No AtmosStreamMessage sender available for ClientId({})",
+                    from.0
+                );
+                continue;
+            }
+        };
+
+        let grid = match gas_grid.as_deref() {
+            Some(g) => g,
+            None => {
+                error!("No GasGrid resource available for ClientId({})", from.0);
+                continue;
+            }
+        };
+
+        let msg = AtmosStreamMessage::GasGridData {
+            width: grid.width(),
+            height: grid.height(),
+            gas_moles: grid.moles_vec(),
+        };
+
+        if let Err(e) = sender.send_to(*from, &msg) {
+            error!(
+                "Failed to send GasGridData to ClientId({}): {}",
+                from.0, e
+            );
+            continue;
+        }
+
+        if let Err(e) = sender.send_stream_ready_to(*from) {
+            error!(
+                "Failed to send StreamReady to ClientId({}): {}",
+                from.0, e
+            );
+            continue;
+        }
+
+        info!(
+            "Sent gas grid snapshot {}×{} + StreamReady to ClientId({})",
+            grid.width(),
+            grid.height(),
+            from.0
         );
     }
 }
