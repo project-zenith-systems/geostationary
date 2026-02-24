@@ -1,0 +1,10 @@
+[package]
+name = "souls"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { workspace = true }
+network = { path = "../network" }
+creatures = { path = "../creatures" }
+things = { path = "../things" }

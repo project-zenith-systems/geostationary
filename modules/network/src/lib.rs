@@ -43,7 +43,7 @@ pub enum NetworkSet {
 #[derive(Message, Clone, Debug)]
 pub enum NetCommand {
     Host { port: u16 },
-    Connect { addr: SocketAddr },
+    Connect { addr: SocketAddr, name: String },
     StopHosting,
     Disconnect,
 }
@@ -84,6 +84,8 @@ pub struct ControlledByClient(pub ClientId);
 #[derive(Message, Clone, Debug)]
 pub struct ClientJoined {
     pub id: ClientId,
+    /// Display name supplied by the client in its `Hello` message.
+    pub name: String,
 }
 
 /// Events emitted by the server side of the network layer.
@@ -703,7 +705,7 @@ fn process_net_commands(
                 ));
                 tasks.server_task = Some((handle, cancel_token));
             }
-            NetCommand::Connect { addr } => {
+            NetCommand::Connect { addr, name } => {
                 // Prevent duplicate connections
                 if tasks.is_connected() {
                     let _ = client_event_tx
@@ -720,10 +722,11 @@ fn process_net_commands(
 
                 let tx = client_event_tx.0.clone();
                 let addr = *addr;
+                let name = name.clone();
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
                 let handle =
-                    runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone));
+                    runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone, name));
                 tasks.client_task = Some((handle, cancel_token));
             }
             NetCommand::StopHosting => {

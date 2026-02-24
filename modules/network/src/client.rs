@@ -18,8 +18,9 @@ pub(crate) async fn run_client(
     event_tx: mpsc::UnboundedSender<ClientEvent>,
     client_msg_rx: mpsc::Receiver<ClientMessage>,
     cancel_token: CancellationToken,
+    name: String,
 ) {
-    if let Err(e) = run_client_inner(addr, &event_tx, client_msg_rx, cancel_token).await {
+    if let Err(e) = run_client_inner(addr, &event_tx, client_msg_rx, cancel_token, name).await {
         let reason = format!("Client error: {e}");
         if let Err(err) = event_tx.send(ClientEvent::Error(reason.clone())) {
             log::error!("Failed to send ClientEvent::Error: {}", err);
@@ -35,6 +36,7 @@ async fn run_client_inner(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     mut client_msg_rx: mpsc::Receiver<ClientMessage>,
     cancel_token: CancellationToken,
+    name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client_config = config::build_client_config()?;
 
@@ -96,10 +98,7 @@ async fn run_client_inner(
 
     // Send Hello immediately — this makes the bi stream visible to accept_bi()
     // on the server and delivers the client's display name.
-    // TODO(souls): read name from config instead of hardcoded empty string.
-    let hello = ClientMessage::Hello {
-        name: String::new(),
-    };
+    let hello = ClientMessage::Hello { name };
     if let Ok(bytes) = encode(&hello) {
         if let Err(e) = framed_write.send(Bytes::from(bytes)).await {
             log::error!("Failed to send client hello: {}", e);

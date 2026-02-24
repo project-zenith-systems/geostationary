@@ -250,24 +250,33 @@ fn handle_entity_lifecycle(
     }
 }
 
-/// Handles server-side entity spawning in response to a client joining.
+/// Handles server-side catch-up on client join for stream 3.
 ///
 /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages for all currently
-/// tracked entities to the joining client, spawns the new player entity in the ECS and
-/// broadcasts it to all clients, then sends the [`StreamReady`] sentinel for stream 3
+/// tracked entities to the joining client, then sends the [`StreamReady`] sentinel for stream 3
 /// so the client can count toward its initial-sync barrier.
+///
+/// Creature spawning and the EntitySpawned broadcast for the new player entity are handled
+/// by the `souls` module's `bind_soul` system, which runs after this system.
 fn handle_client_joined(
-    mut commands: Commands,
     mut messages: MessageReader<ClientJoined>,
-    mut server: ResMut<Server>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
-    entities: Query<(&NetId, &ControlledByClient, &Transform, &LinearVelocity)>,
+    entities: Query<(
+        &NetId,
+        Option<&ControlledByClient>,
+        &Transform,
+        &LinearVelocity,
+        Option<&DisplayName>,
+    )>,
 ) {
     for joined in messages.read() {
         let from = joined.id;
 
         // Catch-up: send EntitySpawned on stream 3 for every existing entity.
-        for (net_id, controlled_by, transform, velocity) in entities.iter() {
+        for (net_id, opt_controlled_by, transform, velocity, opt_name) in entities.iter() {
+            let owner = opt_controlled_by
+                .map(|c| c.0)
+                .filter(|&owner_id| owner_id == from);
             if let Err(e) = stream_sender.send_to(
                 from,
                 &ThingsStreamMessage::EntitySpawned {
@@ -275,12 +284,8 @@ fn handle_client_joined(
                     kind: 0,
                     position: transform.translation.into(),
                     velocity: [velocity.x, velocity.y, velocity.z],
-                    owner: if controlled_by.0 == from {
-                        Some(from)
-                    } else {
-                        None
-                    },
-                    name: None,
+                    owner,
+                    name: opt_name.map(|n| n.0.clone()),
                 },
             ) {
                 error!(
@@ -290,38 +295,8 @@ fn handle_client_joined(
             }
         }
 
-        // Spawn the new player entity in the server ECS and broadcast it to all clients.
-        let net_id = server.next_net_id();
-        let spawn_pos = Vec3::new(6.0, 0.81, 3.0);
-        info!(
-            "Spawning player entity NetId({}) for ClientId({}) at {spawn_pos}",
-            net_id.0, from.0
-        );
-
-        let entity = commands
-            .spawn((net_id, ControlledByClient(from), InputDirection::default()))
-            .id();
-        commands.trigger(SpawnThing {
-            entity,
-            kind: 0,
-            position: spawn_pos,
-        });
-
-        if let Err(e) = stream_sender.broadcast(&ThingsStreamMessage::EntitySpawned {
-            net_id,
-            kind: 0,
-            position: spawn_pos.into(),
-            velocity: [0.0, 0.0, 0.0],
-            owner: Some(from),
-            name: None,
-        }) {
-            error!(
-                "Failed to broadcast EntitySpawned for NetId({}): {e}",
-                net_id.0
-            );
-        }
-
         // Signal that the initial burst for stream 3 is complete.
+        // The new player entity's EntitySpawned is broadcast by the souls module after this.
         if let Err(e) = stream_sender.send_stream_ready_to(from) {
             error!(
                 "Failed to send StreamReady for things stream to ClientId({}): {e}",

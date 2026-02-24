@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub window: WindowConfig,
     pub debug: DebugConfig,
     pub atmospherics: AtmosphericsConfig,
+    pub souls: SoulsConfig,
 }
 
 impl Default for AppConfig {
@@ -26,6 +27,9 @@ impl Default for AppConfig {
             },
             atmospherics: AtmosphericsConfig {
                 standard_pressure: 101.325,
+            },
+            souls: SoulsConfig {
+                player_name: "Player".to_string(),
             },
         }
     }
@@ -51,6 +55,12 @@ pub struct AtmosphericsConfig {
     pub standard_pressure: f32,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct SoulsConfig {
+    /// Display name shown above the player's creature.
+    pub player_name: String,
+}
+
 pub fn load_config() -> AppConfig {
     match load_config_inner() {
         Ok(config) => config,
@@ -72,6 +82,7 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
             "atmospherics.standard_pressure",
             defaults.atmospherics.standard_pressure as f64,
         )?
+        .set_default("souls.player_name", defaults.souls.player_name)?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
         .add_source(Environment::with_prefix("GEOSTATIONARY").separator("__"));
@@ -90,5 +101,6 @@ mod tests {
         assert_eq!(config.window.title, "Geostationary");
         assert_eq!(config.debug.physics_debug, false);
         assert_eq!(config.atmospherics.standard_pressure, 101.325);
+        assert_eq!(config.souls.player_name, "Player");
     }
 }

@@ -39,6 +39,7 @@ fn main() {
         .add_plugins(ThingsPlugin)
         .add_plugins(AtmosphericsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
+        .add_plugins(souls::SoulsPlugin)
         .add_plugins(player::PlayerPlugin)
         .add_plugins(camera::CameraPlugin::<app_state::AppState>::in_state(
             app_state::AppState::InGame,

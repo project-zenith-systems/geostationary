@@ -360,7 +360,7 @@ fn send_tilemap_on_connect(
     tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
     tilemap: Option<Res<Tilemap>>,
 ) {
-    for ClientJoined { id: from } in events.read() {
+    for ClientJoined { id: from, .. } in events.read() {
         let ts = match tiles_sender.as_deref() {
             Some(ts) => ts,
             None => {
