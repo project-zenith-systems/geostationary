@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use network::{
     Client, ClientEvent, ClientMessage, NETWORK_UPDATE_INTERVAL, NetClientSender, NetworkSet,
-    NetId,
+    NetId, ServerMessage,
 };
 use things::{InputDirection, PlayerControlled};
 
@@ -28,8 +28,7 @@ impl Plugin for ClientPlugin {
 
 /// Inserts [`DespawnOnExit`] on every replicated entity when it receives a [`NetId`].
 ///
-/// This is the main-crate counterpart of the spawning logic in `ThingsPlugin`:
-/// the `things` module owns lifecycle management but cannot reference [`AppState`],
+/// The `things` module owns lifecycle management but cannot reference [`AppState`],
 /// so state-scoped cleanup is wired here instead.
 fn on_net_id_added(trigger: On<Add, NetId>, mut commands: Commands) {
     commands
@@ -57,6 +56,7 @@ struct LastSentDirection(Vec3);
 fn handle_client_events(
     mut messages: MessageReader<ClientEvent>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut client: ResMut<Client>,
 ) {
     for event in messages.read() {
         match event {
@@ -79,7 +79,22 @@ fn handle_client_events(
                 // TODO: count toward the initial-sync barrier once expected_streams > 0.
                 debug!("Stream {} ready", tag);
             }
-            ClientEvent::ServerMessageReceived(_) => {}
+            ClientEvent::ServerMessageReceived(message) => match message {
+                ServerMessage::Welcome {
+                    client_id,
+                    expected_streams,
+                } => {
+                    info!(
+                        "Received Welcome, local ClientId assigned: {}, expecting {} module stream(s)",
+                        client_id.0, expected_streams
+                    );
+                    client.local_id = Some(*client_id);
+                }
+                ServerMessage::InitialStateDone => {
+                    debug!("Server initial state done");
+                }
+                _ => {}
+            },
         }
     }
 }

@@ -3,8 +3,7 @@ use std::net::SocketAddr;
 use bevy::prelude::*;
 use network::{
     ClientId, ClientJoined, ClientMessage, ControlledByClient, EntityState,
-    NETWORK_UPDATE_INTERVAL, NetCommand, NetId, NetServerSender, NetworkSet, Server, ServerEvent,
-    ServerMessage, StreamSender,
+    NETWORK_UPDATE_INTERVAL, NetCommand, NetId, NetworkSet, Server, ServerEvent, StreamSender,
 };
 use physics::LinearVelocity;
 use things::{InputDirection, ThingsStreamMessage};
@@ -42,7 +41,7 @@ fn handle_server_events(
     mut messages: MessageReader<ServerEvent>,
     mut net_commands: MessageWriter<NetCommand>,
     mut joined: MessageWriter<ClientJoined>,
-    mut sender: Option<ResMut<NetServerSender>>,
+    stream_sender: Option<Res<StreamSender<ThingsStreamMessage>>>,
     mut server: ResMut<Server>,
     mut entities: Query<(
         &NetId,
@@ -77,7 +76,7 @@ fn handle_server_events(
                     from,
                     message,
                     &mut joined,
-                    &mut sender,
+                    stream_sender.as_deref(),
                     &mut server,
                     &mut entities,
                 );
@@ -90,7 +89,7 @@ fn handle_client_message(
     from: &ClientId,
     message: &ClientMessage,
     joined: &mut MessageWriter<ClientJoined>,
-    sender: &mut Option<ResMut<NetServerSender>>,
+    stream_sender: Option<&StreamSender<ThingsStreamMessage>>,
     server: &mut ResMut<Server>,
     entities: &mut Query<(
         &NetId,
@@ -108,26 +107,23 @@ fn handle_client_message(
             );
             // Welcome is now sent automatically by the network task; do not re-send it here.
 
-            let sender = match sender.as_mut() {
-                Some(s) => s,
-                None => {
-                    error!(
-                        "No NetServerSender available to process hello for ClientId({})",
-                        from.0
-                    );
-                    return;
-                }
+            let Some(stream_sender) = stream_sender else {
+                error!(
+                    "No ThingsStreamMessage sender available to process hello for ClientId({})",
+                    from.0
+                );
+                return;
             };
 
             // Notify domain modules that this client has joined.
             info!("Emitting ClientJoined for ClientId({})", from.0);
             joined.write(ClientJoined { id: *from });
 
-            // Catch-up: send EntitySpawned for every existing replicated entity
+            // Catch-up: send EntitySpawned on stream 3 for every existing replicated entity.
             for (net_id, controlled_by, transform, velocity, _) in entities.iter() {
-                sender.send_to(
+                if let Err(e) = stream_sender.send_to(
                     *from,
-                    &ServerMessage::EntitySpawned {
+                    &ThingsStreamMessage::EntitySpawned {
                         net_id: *net_id,
                         kind: 0,
                         position: transform.translation.into(),
@@ -139,7 +135,9 @@ fn handle_client_message(
                         },
                         name: None,
                     },
-                );
+                ) {
+                    error!("Failed to send EntitySpawned catch-up to ClientId({}): {e}", from.0);
+                }
             }
 
             // Spawn player entity
@@ -150,14 +148,19 @@ fn handle_client_message(
                 net_id.0, from.0
             );
 
-            sender.broadcast(&ServerMessage::EntitySpawned {
+            if let Err(e) = stream_sender.broadcast(&ThingsStreamMessage::EntitySpawned {
                 net_id,
                 kind: 0,
                 position: spawn_pos.into(),
                 velocity: [0.0, 0.0, 0.0],
                 owner: Some(*from),
                 name: None,
-            });
+            }) {
+                error!("Failed to broadcast EntitySpawned for NetId({}): {e}", net_id.0);
+            }
+
+            // The server's own client connection (self-connect) will receive the stream 3
+            // EntitySpawned above and spawn the server-side entity via SpawnThing.
         }
         ClientMessage::Input { direction } => {
             for (_, controlled_by, _, _, mut input_dir) in entities.iter_mut() {

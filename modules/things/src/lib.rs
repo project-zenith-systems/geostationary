@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use network::{
-    Client, ClientEvent, ControlledByClient, EntityState, NetId, NetworkSet, ServerMessage,
-    StreamDef, StreamDirection, StreamReader, StreamRegistry,
+    Client, ClientId, ControlledByClient, EntityState, NetId, NetworkSet, StreamDef,
+    StreamDirection, StreamReader, StreamRegistry,
 };
 use physics::{Collider, GravityScale, LockedAxes, RigidBody};
 use serde::{Deserialize, Serialize};
@@ -67,11 +67,24 @@ pub struct NetIdIndex(pub HashMap<NetId, Entity>);
 /// Stream 3 wire format: server→client messages for the things module.
 #[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum ThingsStreamMessage {
+    /// A replicated entity was spawned.
+    EntitySpawned {
+        net_id: NetId,
+        kind: u16,
+        position: [f32; 3],
+        velocity: [f32; 3],
+        /// If set, the receiving client with this ID should take control of this entity.
+        owner: Option<ClientId>,
+        /// Optional display name for the entity (e.g. player name).
+        name: Option<String>,
+    },
+    /// A replicated entity was despawned.
+    EntityDespawned { net_id: NetId },
     /// Authoritative spatial state update for all replicated things entities.
     StateUpdate { entities: Vec<EntityState> },
 }
 
-/// Fallback display name for entities whose [`ServerMessage::EntitySpawned`] carries no name.
+/// Fallback display name for entities whose [`ThingsStreamMessage::EntitySpawned`] carries no name.
 const DEFAULT_DISPLAY_NAME: &str = "Unknown";
 
 /// Plugin that registers the thing spawning system and shared entity primitives.
@@ -105,8 +118,7 @@ impl Plugin for ThingsPlugin {
 
         app.add_systems(
             PreUpdate,
-            (handle_entity_lifecycle, apply_state_updates)
-                .chain()
+            handle_entity_lifecycle
                 .run_if(resource_exists::<Client>)
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
@@ -144,111 +156,73 @@ fn on_spawn_thing(
     }
 }
 
-/// Handles client-side entity lifecycle events from the control stream.
+/// Handles client-side entity lifecycle and state updates from stream 3.
 ///
-/// Processes: [`ServerMessage::Welcome`] (sets local client ID),
-/// [`ServerMessage::EntitySpawned`] (spawns replica entity, inserts [`DisplayName`],
-/// tracks in [`NetIdIndex`]), and [`ServerMessage::EntityDespawned`] (despawns,
-/// removes from index).  Also clears the index and despawns all tracked entities
-/// on disconnect.
+/// Processes all [`ThingsStreamMessage`] frames:
+/// - [`ThingsStreamMessage::EntitySpawned`]: spawns replica entity via [`SpawnThing`],
+///   inserts [`DisplayName`], and tracks it in [`NetIdIndex`].
+/// - [`ThingsStreamMessage::EntityDespawned`]: despawns the entity and removes it from
+///   the index. [`DespawnOnExit`] provides additional state-transition cleanup.
+/// - [`ThingsStreamMessage::StateUpdate`]: applies authoritative position updates.
 fn handle_entity_lifecycle(
     mut commands: Commands,
-    mut messages: MessageReader<ClientEvent>,
-    mut net_id_index: ResMut<NetIdIndex>,
-    mut client: ResMut<Client>,
-) {
-    for event in messages.read() {
-        match event {
-            ClientEvent::Disconnected { .. } => {
-                for (_, entity) in net_id_index.0.drain() {
-                    commands.entity(entity).despawn();
-                }
-            }
-            // ClientEvent::Error is always followed by ClientEvent::Disconnected in the
-            // network module, so cleanup happens there rather than being duplicated here.
-            ClientEvent::ServerMessageReceived(message) => match message {
-                ServerMessage::Welcome {
-                    client_id,
-                    expected_streams,
-                } => {
-                    info!(
-                        "Received Welcome, local ClientId: {}, expecting {} module stream(s)",
-                        client_id.0, expected_streams
-                    );
-                    client.local_id = Some(*client_id);
-                }
-                ServerMessage::InitialStateDone => {
-                    debug!("Server initial state done");
-                }
-                ServerMessage::EntitySpawned {
-                    net_id,
-                    kind,
-                    position,
-                    velocity: _,
-                    owner,
-                    name,
-                } => {
-                    if net_id_index.0.contains_key(net_id) {
-                        debug!(
-                            "EntitySpawned for NetId({}) already exists, skipping",
-                            net_id.0
-                        );
-                        continue;
-                    }
-
-                    let pos = Vec3::from_array(*position);
-                    info!("Spawning replica entity NetId({}) at {pos}", net_id.0);
-
-                    let controlled = owner.is_some() && *owner == client.local_id;
-                    let entity = commands.spawn(*net_id).id();
-                    commands.trigger(SpawnThing {
-                        entity,
-                        kind: *kind,
-                        position: pos,
-                    });
-
-                    let display_name = name
-                        .as_deref()
-                        .filter(|n| !n.is_empty())
-                        .map(|n| DisplayName(n.to_string()))
-                        .unwrap_or_else(|| DisplayName(DEFAULT_DISPLAY_NAME.to_string()));
-                    commands.entity(entity).insert(display_name);
-
-                    if controlled {
-                        commands.entity(entity).insert(PlayerControlled);
-                    }
-
-                    if let Some(owner_id) = owner {
-                        commands
-                            .entity(entity)
-                            .insert(ControlledByClient(*owner_id));
-                    }
-
-                    net_id_index.0.insert(*net_id, entity);
-                }
-                ServerMessage::EntityDespawned { net_id } => {
-                    info!("Despawning replica entity NetId({})", net_id.0);
-                    if let Some(entity) = net_id_index.0.remove(net_id) {
-                        commands.entity(entity).despawn();
-                    }
-                }
-                ServerMessage::StateUpdate { .. } => {
-                    // State updates are now delivered on stream 3 via ThingsStreamMessage.
-                }
-            },
-            _ => {}
-        }
-    }
-}
-
-/// Applies authoritative position updates from stream 3 to replicated thing entities.
-fn apply_state_updates(
     mut reader: ResMut<StreamReader<ThingsStreamMessage>>,
-    net_id_index: Res<NetIdIndex>,
+    mut net_id_index: ResMut<NetIdIndex>,
+    client: Res<Client>,
     mut entities: Query<&mut Transform, With<Thing>>,
 ) {
     for msg in reader.drain() {
         match msg {
+            ThingsStreamMessage::EntitySpawned {
+                net_id,
+                kind,
+                position,
+                velocity: _,
+                owner,
+                name,
+            } => {
+                if net_id_index.0.contains_key(&net_id) {
+                    debug!(
+                        "EntitySpawned for NetId({}) already exists, skipping",
+                        net_id.0
+                    );
+                    continue;
+                }
+
+                let pos = Vec3::from_array(position);
+                info!("Spawning replica entity NetId({}) at {pos}", net_id.0);
+
+                let controlled = owner.is_some() && owner == client.local_id;
+                let entity = commands.spawn(net_id).id();
+                commands.trigger(SpawnThing {
+                    entity,
+                    kind,
+                    position: pos,
+                });
+
+                let display_name = name
+                    .as_deref()
+                    .filter(|n| !n.is_empty())
+                    .map(|n| DisplayName(n.to_string()))
+                    .unwrap_or_else(|| DisplayName(DEFAULT_DISPLAY_NAME.to_string()));
+                commands.entity(entity).insert(display_name);
+
+                if controlled {
+                    commands.entity(entity).insert(PlayerControlled);
+                }
+
+                if let Some(owner_id) = owner {
+                    commands.entity(entity).insert(ControlledByClient(owner_id));
+                }
+
+                net_id_index.0.insert(net_id, entity);
+            }
+            ThingsStreamMessage::EntityDespawned { net_id } => {
+                info!("Despawning replica entity NetId({})", net_id.0);
+                if let Some(entity) = net_id_index.0.remove(&net_id) {
+                    commands.entity(entity).despawn();
+                }
+            }
             ThingsStreamMessage::StateUpdate { entities: states } => {
                 for state in &states {
                     if let Some(&entity) = net_id_index.0.get(&state.net_id) {
@@ -261,3 +235,4 @@ fn apply_state_updates(
         }
     }
 }
+
