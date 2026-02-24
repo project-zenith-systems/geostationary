@@ -1,7 +1,7 @@
 use atmospherics::GasGrid;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use network::Server;
+use network::{Headless, Server};
 use physics::{Collider, GravityScale, Restitution};
 use things::ThingRegistry;
 use tiles::Tilemap;
@@ -45,32 +45,47 @@ pub struct WorldSetupPlugin;
 
 impl Plugin for WorldSetupPlugin {
     fn build(&self, app: &mut App) {
-        // Pre-load ball assets once at startup so every spawned ball reuses the same handles.
-        let ball_mesh = app
-            .world_mut()
-            .resource_mut::<Assets<Mesh>>()
-            .add(Sphere::new(BALL_RADIUS));
-        let ball_mat = app
-            .world_mut()
-            .resource_mut::<Assets<StandardMaterial>>()
-            .add(StandardMaterial {
-                base_color: Color::srgb(BALL_COLOR.0, BALL_COLOR.1, BALL_COLOR.2),
-                ..default()
-            });
+        let headless = app.world().contains_resource::<Headless>();
 
-        // Register ball as thing kind 1: overrides the default capsule from on_spawn_thing
-        // with a sphere mesh, sphere collider, standard gravity, and bounciness.
-        app.world_mut()
-            .resource_mut::<ThingRegistry>()
-            .register(1, move |entity, _event, commands| {
-                commands.entity(entity).insert((
-                    Mesh3d(ball_mesh.clone()),
-                    MeshMaterial3d(ball_mat.clone()),
-                    Collider::sphere(BALL_RADIUS),
-                    GravityScale(1.0),
-                    Restitution::new(0.8),
-                ));
-            });
+        if headless {
+            // In headless mode, no rendering is available: register the ball with physics only.
+            app.world_mut()
+                .resource_mut::<ThingRegistry>()
+                .register(1, |entity, _event, commands| {
+                    commands.entity(entity).insert((
+                        Collider::sphere(BALL_RADIUS),
+                        GravityScale(1.0),
+                        Restitution::new(0.8),
+                    ));
+                });
+        } else {
+            // Pre-load ball assets once at startup so every spawned ball reuses the same handles.
+            let ball_mesh = app
+                .world_mut()
+                .resource_mut::<Assets<Mesh>>()
+                .add(Sphere::new(BALL_RADIUS));
+            let ball_mat = app
+                .world_mut()
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(StandardMaterial {
+                    base_color: Color::srgb(BALL_COLOR.0, BALL_COLOR.1, BALL_COLOR.2),
+                    ..default()
+                });
+
+            // Register ball as thing kind 1: overrides the default capsule from on_spawn_thing
+            // with a sphere mesh, sphere collider, standard gravity, and bounciness.
+            app.world_mut()
+                .resource_mut::<ThingRegistry>()
+                .register(1, move |entity, _event, commands| {
+                    commands.entity(entity).insert((
+                        Mesh3d(ball_mesh.clone()),
+                        MeshMaterial3d(ball_mat.clone()),
+                        Collider::sphere(BALL_RADIUS),
+                        GravityScale(1.0),
+                        Restitution::new(0.8),
+                    ));
+                });
+        }
 
         app.add_systems(
             OnEnter(AppState::InGame),

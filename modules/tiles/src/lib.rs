@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use network::{
-    ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader,
-    StreamRegistry, StreamSender,
+    Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection,
+    StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{Collider, RigidBody};
 use wincode::{SchemaRead, SchemaWrite};
@@ -203,8 +203,14 @@ impl Plugin for TilesPlugin {
         app.register_type::<TileKind>();
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
-        app.init_resource::<TileMeshes>();
-        app.add_systems(Update, spawn_tile_meshes);
+
+        let headless = app.world().contains_resource::<Headless>();
+        if !headless {
+            // Tile mesh spawning is visual-only; skip in headless server mode.
+            app.init_resource::<TileMeshes>();
+            app.add_systems(Update, spawn_tile_meshes);
+        }
+
         app.add_systems(
             PreUpdate,
             handle_tiles_stream
