@@ -5,7 +5,7 @@ use network::{
     Client, ClientId, ControlledByClient, EntityState, NetId, NetworkSet, PlayerEvent, Server,
     StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender, NETWORK_UPDATE_INTERVAL,
 };
-use physics::{Collider, GravityScale, LinearVelocity, LockedAxes, RigidBody};
+use physics::{Collider, LinearVelocity, RigidBody};
 use serde::{Deserialize, Serialize};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -112,6 +112,20 @@ impl Default for StateBroadcastTimer {
     }
 }
 
+/// Spawns a thing entity with a [`NetId`] and triggers [`SpawnThing`] so that the
+/// registered template for the given `kind` adds type-specific components.
+///
+/// Returns the spawned [`Entity`] id.
+pub fn spawn_thing(commands: &mut Commands, net_id: NetId, kind: u16, position: Vec3) -> Entity {
+    let entity = commands.spawn(net_id).id();
+    commands.trigger(SpawnThing {
+        entity,
+        kind,
+        position,
+    });
+    entity
+}
+
 /// Spawns a player-controlled thing entity with a [`NetId`], [`ControlledByClient`],
 /// [`InputDirection`], and [`DisplayName`], then triggers [`SpawnThing`] so that the
 /// registered template (kind 0 = creature) adds physics and type-specific components.
@@ -126,17 +140,12 @@ pub fn spawn_player_creature(
     position: Vec3,
     display_name: &str,
 ) -> Entity {
-    let creature = commands
-        .spawn((net_id, ControlledByClient(owner), InputDirection::default()))
-        .id();
-    commands.trigger(SpawnThing {
-        entity: creature,
-        kind: 0,
-        position,
-    });
-    commands
-        .entity(creature)
-        .insert(DisplayName(display_name.to_string()));
+    let creature = spawn_thing(commands, net_id, 0, position);
+    commands.entity(creature).insert((
+        ControlledByClient(owner),
+        InputDirection::default(),
+        DisplayName(display_name.to_string()),
+    ));
     creature
 }
 
@@ -206,8 +215,6 @@ fn on_spawn_thing(
         Transform::from_translation(event.position),
         RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),
-        LockedAxes::ROTATION_LOCKED.lock_translation_y(),
-        GravityScale(0.0),
         Thing,
         ThingKind(event.kind),
     ));

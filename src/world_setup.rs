@@ -2,8 +2,8 @@ use atmospherics::GasGrid;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use network::Server;
-use physics::{Collider, GravityScale, LockedAxes, Restitution, RigidBody};
-use things::{Thing, ThingKind, ThingRegistry};
+use physics::{Collider, GravityScale, Restitution};
+use things::ThingRegistry;
 use tiles::Tilemap;
 
 use crate::app_state::AppState;
@@ -15,8 +15,6 @@ const BALL_COLOR: (f32, f32, f32) = (1.0, 0.8, 0.0); // Bright yellow
 /// System that sets up the world when entering InGame state.
 pub fn setup_world(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     config: Res<AppConfig>,
     mut server: ResMut<Server>,
 ) {
@@ -41,27 +39,11 @@ pub fn setup_world(
 
     // Player capsule spawn removed - now handled by server.rs and client.rs
 
-    // Spawn a bouncing ball above the floor
-    // Position it at y=5.0 so it has room to fall and bounce
+    // Spawn a bouncing ball above the floor using the thing prefab system (kind 1).
+    // Position it at y=5.0 so it has room to fall and bounce.
     let ball_net_id = server.next_net_id();
-    let ball_mesh = meshes.add(Sphere::new(BALL_RADIUS));
-    let ball_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(BALL_COLOR.0, BALL_COLOR.1, BALL_COLOR.2),
-        ..default()
-    });
-
-    commands.spawn((
-        ball_net_id,
-        Thing,
-        ThingKind(1),
-        Mesh3d(ball_mesh),
-        MeshMaterial3d(ball_material),
-        Transform::from_xyz(6.0, 5.0, 3.0), // Above the floor, centered in a walkable area
-        RigidBody::Dynamic,
-        Collider::sphere(BALL_RADIUS),
-        Restitution::new(0.8),
-        DespawnOnExit(AppState::InGame),
-    ));
+    let ball = things::spawn_thing(&mut commands, ball_net_id, 1, Vec3::new(6.0, 5.0, 3.0));
+    commands.entity(ball).insert(DespawnOnExit(AppState::InGame));
 }
 
 /// System that cleans up the world when exiting InGame state.
@@ -80,14 +62,11 @@ impl Plugin for WorldSetupPlugin {
         );
         app.add_systems(OnExit(AppState::InGame), cleanup_world);
 
-        // Register ball as thing kind 1 so clients can spawn the correct visual
-        // when they receive EntitySpawned { kind: 1 } on stream 3.
+        // Register ball as thing kind 1: overrides the default capsule from on_spawn_thing
+        // with a sphere mesh, sphere collider, standard gravity, and bounciness.
         app.world_mut()
             .resource_mut::<ThingRegistry>()
             .register(1, |entity, _event, commands| {
-                // `on_spawn_thing` inserts creature defaults (capsule mesh, locked axes,
-                // zero gravity) for all kinds. Override them here with ball-appropriate
-                // values. Uses commands.queue to access Assets inside an observer.
                 commands.queue(move |world: &mut World| {
                     let mesh = world
                         .resource_mut::<Assets<Mesh>>()
@@ -103,8 +82,6 @@ impl Plugin for WorldSetupPlugin {
                             Mesh3d(mesh),
                             MeshMaterial3d(mat),
                             Collider::sphere(BALL_RADIUS),
-                            // Unlock all axes (on_spawn_thing locks rotation+y for creatures).
-                            LockedAxes::default(),
                             GravityScale(1.0),
                             Restitution::new(0.8),
                         ));
