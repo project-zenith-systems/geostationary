@@ -4,7 +4,7 @@ use network::{
     Client, ClientEvent, ClientMessage, NETWORK_UPDATE_INTERVAL, NetClientSender, NetworkSet,
     NetId, ServerMessage,
 };
-use things::{InputDirection, PlayerControlled};
+use things::{InputDirection, NetIdIndex, PlayerControlled};
 
 use crate::app_state::AppState;
 
@@ -15,6 +15,7 @@ impl Plugin for ClientPlugin {
         app.init_resource::<InputSendTimer>();
         app.init_resource::<LastSentDirection>();
         app.add_observer(on_net_id_added);
+        app.add_systems(OnExit(AppState::InGame), clear_net_id_index);
         app.add_systems(
             PreUpdate,
             handle_client_events
@@ -34,6 +35,14 @@ fn on_net_id_added(trigger: On<Add, NetId>, mut commands: Commands) {
     commands
         .entity(trigger.event_target())
         .insert(DespawnOnExit(AppState::InGame));
+}
+
+/// Clears the [`NetIdIndex`] when leaving [`AppState::InGame`].
+///
+/// Entities are already despawned via [`DespawnOnExit`]; this removes the now-stale
+/// mappings so a subsequent connection starts with a clean index.
+fn clear_net_id_index(mut net_id_index: ResMut<NetIdIndex>) {
+    net_id_index.0.clear();
 }
 
 /// Timer for throttling client input sends.

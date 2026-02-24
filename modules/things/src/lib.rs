@@ -118,7 +118,8 @@ impl Plugin for ThingsPlugin {
         // Register stream 3 (server→client) with StreamRegistry.
         let (sender, reader) = app
             .world_mut()
-            .resource_mut::<StreamRegistry>()
+            .get_resource_mut::<StreamRegistry>()
+            .expect("ThingsPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)")
             .register::<ThingsStreamMessage>(StreamDef {
                 tag: 3,
                 name: "things",
@@ -252,9 +253,11 @@ fn handle_entity_lifecycle(
 /// Handles server-side entity spawning in response to a client joining.
 ///
 /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages for all currently
-/// tracked entities to the joining client, then assigns a new [`NetId`] and broadcasts
-/// the new player entity to all clients.
+/// tracked entities to the joining client, spawns the new player entity in the ECS and
+/// broadcasts it to all clients, then sends the [`StreamReady`] sentinel for stream 3
+/// so the client can count toward its initial-sync barrier.
 fn handle_client_joined(
+    mut commands: Commands,
     mut messages: MessageReader<ClientJoined>,
     mut server: ResMut<Server>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
@@ -287,13 +290,22 @@ fn handle_client_joined(
             }
         }
 
-        // Spawn the new player entity and broadcast it to all clients.
+        // Spawn the new player entity in the server ECS and broadcast it to all clients.
         let net_id = server.next_net_id();
         let spawn_pos = Vec3::new(6.0, 0.81, 3.0);
         info!(
             "Spawning player entity NetId({}) for ClientId({}) at {spawn_pos}",
             net_id.0, from.0
         );
+
+        let entity = commands
+            .spawn((net_id, ControlledByClient(from), InputDirection::default()))
+            .id();
+        commands.trigger(SpawnThing {
+            entity,
+            kind: 0,
+            position: spawn_pos,
+        });
 
         if let Err(e) = stream_sender.broadcast(&ThingsStreamMessage::EntitySpawned {
             net_id,
@@ -306,6 +318,14 @@ fn handle_client_joined(
             error!(
                 "Failed to broadcast EntitySpawned for NetId({}): {e}",
                 net_id.0
+            );
+        }
+
+        // Signal that the initial burst for stream 3 is complete.
+        if let Err(e) = stream_sender.send_stream_ready_to(from) {
+            error!(
+                "Failed to send StreamReady for things stream to ClientId({}): {e}",
+                from.0
             );
         }
     }
