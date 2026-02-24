@@ -76,16 +76,16 @@ fn bind_soul(
             continue;
         };
 
-        let net_id = server.next_net_id();
         let spawn_pos = Vec3::new(6.0, 0.81, 3.0);
+
+        // Spawn the creature via the things module (allocates NetId internally).
+        let (creature, net_id) =
+            things::spawn_player_creature(&mut commands, &mut server, *id, spawn_pos, name);
 
         info!(
             "Binding soul for ClientId({}) '{}': spawning creature NetId({})",
             id.0, name, net_id.0
         );
-
-        // Spawn the creature via the things module.
-        let creature = things::spawn_player_creature(&mut commands, net_id, *id, spawn_pos, name);
 
         // Spawn the soul entity that binds this client to the creature.
         commands.spawn(Soul {

@@ -18,16 +18,13 @@ pub enum ThingsSet {
 }
 
 /// Marker component for non-grid-bound world objects.
-#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[derive(Component, Debug, Clone, Copy, Reflect)]
 #[reflect(Component)]
-pub struct Thing;
-
-/// Stores the thing kind index so the correct `ThingRegistry` template is used
-/// during both initial spawning and client catch-up broadcasts.
-/// Kind 0 = creature, kind 1 = ball, etc.
-#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
-#[reflect(Component)]
-pub struct ThingKind(pub u16);
+pub struct Thing {
+    /// Kind index used to look up the registered [`ThingRegistry`] template.
+    /// Kind 0 = creature, kind 1 = ball, etc.
+    pub kind: u16,
+}
 
 /// Marker component for the entity controlled by the local player.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
@@ -112,41 +109,50 @@ impl Default for StateBroadcastTimer {
     }
 }
 
-/// Spawns a thing entity with a [`NetId`] and triggers [`SpawnThing`] so that the
-/// registered template for the given `kind` adds type-specific components.
+/// Spawns a thing entity with a server-assigned [`NetId`] and triggers [`SpawnThing`]
+/// so that the registered template for the given `kind` adds type-specific components.
 ///
-/// Returns the spawned [`Entity`] id.
-pub fn spawn_thing(commands: &mut Commands, net_id: NetId, kind: u16, position: Vec3) -> Entity {
+/// Calls [`Server::next_net_id`] internally — callers must not pre-allocate the id.
+///
+/// Returns the spawned [`Entity`] and its assigned [`NetId`].
+pub fn spawn_thing(
+    commands: &mut Commands,
+    server: &mut Server,
+    kind: u16,
+    position: Vec3,
+) -> (Entity, NetId) {
+    let net_id = server.next_net_id();
     let entity = commands.spawn(net_id).id();
     commands.trigger(SpawnThing {
         entity,
         kind,
         position,
     });
-    entity
+    (entity, net_id)
 }
 
-/// Spawns a player-controlled thing entity with a [`NetId`], [`ControlledByClient`],
-/// [`InputDirection`], and [`DisplayName`], then triggers [`SpawnThing`] so that the
-/// registered template (kind 0 = creature) adds physics and type-specific components.
+/// Spawns a player-controlled thing entity with a server-assigned [`NetId`],
+/// [`ControlledByClient`], [`InputDirection`], and [`DisplayName`], then triggers
+/// [`SpawnThing`] so that the registered template (kind 0 = creature) adds physics
+/// and type-specific components.
 ///
-/// Returns the spawned [`Entity`] id.
+/// Returns the spawned [`Entity`] and its assigned [`NetId`].
 ///
 /// Called by the `souls` module when binding a soul to a newly connected client.
 pub fn spawn_player_creature(
     commands: &mut Commands,
-    net_id: NetId,
+    server: &mut Server,
     owner: ClientId,
     position: Vec3,
     display_name: &str,
-) -> Entity {
-    let creature = spawn_thing(commands, net_id, 0, position);
+) -> (Entity, NetId) {
+    let (creature, net_id) = spawn_thing(commands, server, 0, position);
     commands.entity(creature).insert((
         ControlledByClient(owner),
         InputDirection::default(),
         DisplayName(display_name.to_string()),
     ));
-    creature
+    (creature, net_id)
 }
 
 /// Plugin that registers the thing spawning system and shared entity primitives.
@@ -159,7 +165,6 @@ pub struct ThingsPlugin;
 impl Plugin for ThingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Thing>();
-        app.register_type::<ThingKind>();
         app.register_type::<PlayerControlled>();
         app.register_type::<InputDirection>();
         app.register_type::<DisplayName>();
@@ -215,8 +220,7 @@ fn on_spawn_thing(
         Transform::from_translation(event.position),
         RigidBody::Dynamic,
         Collider::capsule(0.3, 1.0),
-        Thing,
-        ThingKind(event.kind),
+        Thing { kind: event.kind },
     ));
 
     if let Some(builder) = registry.templates.get(&event.kind) {
@@ -320,7 +324,7 @@ fn handle_client_joined(
         &Transform,
         &LinearVelocity,
         Option<&DisplayName>,
-        Option<&ThingKind>,
+        &Thing,
     )>,
 ) {
     for event in messages.read() {
@@ -328,17 +332,16 @@ fn handle_client_joined(
             continue;
         };
 
-        // Catch-up: send EntitySpawned on stream 3 for every existing entity.
-        for (net_id, opt_controlled_by, transform, velocity, opt_name, opt_kind) in entities.iter() {
+        // Catch-up: send EntitySpawned on stream 3 for every existing Thing entity.
+        for (net_id, opt_controlled_by, transform, velocity, opt_name, thing) in entities.iter() {
             let owner = opt_controlled_by
                 .map(|c| c.0)
                 .filter(|&owner_id| owner_id == *from);
-            let kind = opt_kind.map_or(0, |k| k.0);
             if let Err(e) = stream_sender.send_to(
                 *from,
                 &ThingsStreamMessage::EntitySpawned {
                     net_id: *net_id,
-                    kind,
+                    kind: thing.kind,
                     position: transform.translation.into(),
                     velocity: [velocity.x, velocity.y, velocity.z],
                     owner,
