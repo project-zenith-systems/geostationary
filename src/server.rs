@@ -2,17 +2,15 @@ use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use network::{
-    ClientId, ClientJoined, ClientMessage, ControlledByClient, EntityState,
-    NETWORK_UPDATE_INTERVAL, NetCommand, NetId, NetworkSet, Server, ServerEvent, StreamSender,
+    ClientId, ClientJoined, ClientMessage, ControlledByClient, NetCommand, NetworkSet, Server,
+    ServerEvent,
 };
-use physics::LinearVelocity;
-use things::{InputDirection, ThingsStreamMessage};
+use things::InputDirection;
 
 pub struct ServerPlugin;
 
 impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<StateBroadcastTimer>();
         app.add_systems(
             PreUpdate,
             handle_server_events
@@ -20,20 +18,6 @@ impl Plugin for ServerPlugin {
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
         );
-        app.add_systems(Update, broadcast_state.run_if(resource_exists::<Server>));
-    }
-}
-
-/// Timer for throttling state broadcasts from the server.
-#[derive(Resource)]
-struct StateBroadcastTimer(Timer);
-
-impl Default for StateBroadcastTimer {
-    fn default() -> Self {
-        Self(Timer::from_seconds(
-            NETWORK_UPDATE_INTERVAL,
-            TimerMode::Repeating,
-        ))
     }
 }
 
@@ -41,15 +25,7 @@ fn handle_server_events(
     mut messages: MessageReader<ServerEvent>,
     mut net_commands: MessageWriter<NetCommand>,
     mut joined: MessageWriter<ClientJoined>,
-    stream_sender: Option<Res<StreamSender<ThingsStreamMessage>>>,
-    mut server: ResMut<Server>,
-    mut entities: Query<(
-        &NetId,
-        &ControlledByClient,
-        &Transform,
-        &LinearVelocity,
-        &mut InputDirection,
-    )>,
+    mut entities: Query<(&ControlledByClient, &mut InputDirection)>,
 ) {
     for event in messages.read() {
         match event {
@@ -72,14 +48,7 @@ fn handle_server_events(
                 info!("Client {} disconnected", id.0);
             }
             ServerEvent::ClientMessageReceived { from, message } => {
-                handle_client_message(
-                    from,
-                    message,
-                    &mut joined,
-                    stream_sender.as_deref(),
-                    &mut server,
-                    &mut entities,
-                );
+                handle_client_message(from, message, &mut joined, &mut entities);
             }
         }
     }
@@ -89,15 +58,7 @@ fn handle_client_message(
     from: &ClientId,
     message: &ClientMessage,
     joined: &mut MessageWriter<ClientJoined>,
-    stream_sender: Option<&StreamSender<ThingsStreamMessage>>,
-    server: &mut ResMut<Server>,
-    entities: &mut Query<(
-        &NetId,
-        &ControlledByClient,
-        &Transform,
-        &LinearVelocity,
-        &mut InputDirection,
-    )>,
+    entities: &mut Query<(&ControlledByClient, &mut InputDirection)>,
 ) {
     match message {
         ClientMessage::Hello { name } => {
@@ -105,65 +66,12 @@ fn handle_client_message(
                 "Received client hello from ClientId({}), name: {:?}",
                 from.0, name
             );
-            // Welcome is now sent automatically by the network task; do not re-send it here.
-
-            let Some(stream_sender) = stream_sender else {
-                error!(
-                    "No ThingsStreamMessage sender available to process hello for ClientId({})",
-                    from.0
-                );
-                return;
-            };
-
-            // Notify domain modules that this client has joined.
-            info!("Emitting ClientJoined for ClientId({})", from.0);
+            // Welcome is sent automatically by the network task.
+            // Entity catch-up and player spawning are handled by ThingsPlugin on ClientJoined.
             joined.write(ClientJoined { id: *from });
-
-            // Catch-up: send EntitySpawned on stream 3 for every existing replicated entity.
-            for (net_id, controlled_by, transform, velocity, _) in entities.iter() {
-                if let Err(e) = stream_sender.send_to(
-                    *from,
-                    &ThingsStreamMessage::EntitySpawned {
-                        net_id: *net_id,
-                        kind: 0,
-                        position: transform.translation.into(),
-                        velocity: [velocity.x, velocity.y, velocity.z],
-                        owner: if controlled_by.0 == *from {
-                            Some(*from)
-                        } else {
-                            None
-                        },
-                        name: None,
-                    },
-                ) {
-                    error!("Failed to send EntitySpawned catch-up to ClientId({}): {e}", from.0);
-                }
-            }
-
-            // Spawn player entity
-            let net_id = server.next_net_id();
-            let spawn_pos = Vec3::new(6.0, 0.81, 3.0);
-            info!(
-                "Spawning player entity NetId({}) for ClientId({}) at {spawn_pos}",
-                net_id.0, from.0
-            );
-
-            if let Err(e) = stream_sender.broadcast(&ThingsStreamMessage::EntitySpawned {
-                net_id,
-                kind: 0,
-                position: spawn_pos.into(),
-                velocity: [0.0, 0.0, 0.0],
-                owner: Some(*from),
-                name: None,
-            }) {
-                error!("Failed to broadcast EntitySpawned for NetId({}): {e}", net_id.0);
-            }
-
-            // The server's own client connection (self-connect) will receive the stream 3
-            // EntitySpawned above and spawn the server-side entity via SpawnThing.
         }
         ClientMessage::Input { direction } => {
-            for (_, controlled_by, _, _, mut input_dir) in entities.iter_mut() {
+            for (controlled_by, mut input_dir) in entities.iter_mut() {
                 if controlled_by.0 == *from {
                     input_dir.0 = Vec3::from_array(*direction);
                     break;
@@ -173,35 +81,3 @@ fn handle_client_message(
     }
 }
 
-/// System that broadcasts state updates to all clients on stream 3.
-/// Collects all replicated entity positions and sends ThingsStreamMessage::StateUpdate.
-/// Throttled to NETWORK_UPDATE_RATE to reduce bandwidth usage.
-fn broadcast_state(
-    time: Res<Time>,
-    mut timer: ResMut<StateBroadcastTimer>,
-    stream_sender: Option<Res<StreamSender<ThingsStreamMessage>>>,
-    entities: Query<(&NetId, &Transform, &LinearVelocity)>,
-) {
-    let Some(sender) = stream_sender else {
-        return;
-    };
-
-    if !timer.0.tick(time.delta()).just_finished() {
-        return;
-    }
-
-    let states = entities
-        .iter()
-        .map(|(net_id, transform, velocity)| EntityState {
-            net_id: *net_id,
-            position: transform.translation.into(),
-            velocity: [velocity.x, velocity.y, velocity.z],
-        })
-        .collect::<Vec<EntityState>>();
-
-    if !states.is_empty() {
-        if let Err(e) = sender.broadcast(&ThingsStreamMessage::StateUpdate { entities: states }) {
-            error!("Failed to broadcast entity state on things stream: {e}");
-        }
-    }
-}

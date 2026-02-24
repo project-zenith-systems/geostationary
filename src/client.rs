@@ -91,9 +91,8 @@ fn handle_client_events(
                     client.local_id = Some(*client_id);
                 }
                 ServerMessage::InitialStateDone => {
-                    debug!("Server initial state done");
+                    info!("Server initial state done");
                 }
-                _ => {}
             },
         }
     }

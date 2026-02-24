@@ -843,17 +843,15 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let sender = NetServerSender::new(tx);
 
-        let message = ServerMessage::EntityDespawned { net_id: NetId(7) };
+        let message = ServerMessage::InitialStateDone;
 
         sender.broadcast(&message);
 
         let received = rx.try_recv().expect("Should receive command");
         match received {
             ServerCommand::Broadcast { message: recv_msg } => match recv_msg {
-                ServerMessage::EntityDespawned { net_id } => {
-                    assert_eq!(net_id, NetId(7));
-                }
-                _ => panic!("Expected EntityDespawned message"),
+                ServerMessage::InitialStateDone => {}
+                _ => panic!("Expected InitialStateDone message"),
             },
             _ => panic!("Expected Broadcast command"),
         }
