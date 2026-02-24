@@ -219,6 +219,7 @@ fn on_spawn_thing(
         })),
         Transform::from_translation(event.position),
         RigidBody::Dynamic,
+        LinearVelocity::default(),
         Collider::capsule(0.3, 1.0),
         Thing { kind: event.kind },
     ));
