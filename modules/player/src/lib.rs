@@ -1,10 +1,7 @@
 use bevy::prelude::*;
 use things::{DisplayName, InputDirection};
 
-/// Marker component for player-controlled entities (camera target, input receiver).
-#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
-#[reflect(Component)]
-pub struct PlayerControlled;
+pub use things::PlayerControlled;
 
 /// Marker component for nameplate UI overlay nodes.
 ///
@@ -26,7 +23,6 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<PlayerControlled>();
         app.register_type::<Nameplate>();
         app.add_observer(spawn_nameplate);
         app.add_systems(Update, (read_player_input, update_nameplate_positions));

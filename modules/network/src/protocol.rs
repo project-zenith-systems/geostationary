@@ -41,19 +41,6 @@ pub enum ServerMessage {
         client_id: ClientId,
         expected_streams: u8,
     },
-    /// A replicated entity was spawned. `kind` is an opaque tag for future use.
-    EntitySpawned {
-        net_id: NetId,
-        kind: u16,
-        position: [f32; 3],
-        velocity: [f32; 3],
-        /// If set, the receiving client with this ID should take control of this entity.
-        owner: Option<ClientId>,
-    },
-    /// A replicated entity was despawned.
-    EntityDespawned { net_id: NetId },
-    /// Authoritative spatial state update for all replicated entities.
-    StateUpdate { entities: Vec<EntityState> },
     /// Signals that the server has finished writing initial data to all module streams.
     /// The client considers initial sync complete when both this message and all expected
     /// `StreamReady` sentinels have been received.
