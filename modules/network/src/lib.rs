@@ -43,7 +43,7 @@ pub enum NetworkSet {
 #[derive(Message, Clone, Debug)]
 pub enum NetCommand {
     Host { port: u16 },
-    Connect { addr: SocketAddr },
+    Connect { addr: SocketAddr, name: String },
     StopHosting,
     Disconnect,
 }
@@ -78,12 +78,16 @@ pub struct Client {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ControlledByClient(pub ClientId);
 
-/// Lifecycle event emitted (server-side) when a client completes the handshake.
-/// Domain modules (e.g. tiles, atmospherics) should listen to this instead of
-/// [`ServerEvent::ClientMessageReceived`] so they are decoupled from raw network events.
+/// Server-side lifecycle events for player (client) connections.
+///
+/// Domain modules (e.g. `tiles`, `things`, `souls`) should listen to this instead of
+/// raw [`ServerEvent`] variants so they are decoupled from the network layer.
 #[derive(Message, Clone, Debug)]
-pub struct ClientJoined {
-    pub id: ClientId,
+pub enum PlayerEvent {
+    /// Emitted when a client completes the handshake.
+    Joined { id: ClientId, name: String },
+    /// Emitted when a client disconnects.
+    Left { id: ClientId },
 }
 
 /// Events emitted by the server side of the network layer.
@@ -550,7 +554,7 @@ impl Plugin for NetworkPlugin {
         app.add_message::<NetCommand>();
         app.add_message::<ServerEvent>();
         app.add_message::<ClientEvent>();
-        app.add_message::<ClientJoined>();
+        app.add_message::<PlayerEvent>();
         app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
         app.add_systems(
             PreUpdate,
@@ -703,7 +707,7 @@ fn process_net_commands(
                 ));
                 tasks.server_task = Some((handle, cancel_token));
             }
-            NetCommand::Connect { addr } => {
+            NetCommand::Connect { addr, name } => {
                 // Prevent duplicate connections
                 if tasks.is_connected() {
                     let _ = client_event_tx
@@ -720,10 +724,11 @@ fn process_net_commands(
 
                 let tx = client_event_tx.0.clone();
                 let addr = *addr;
+                let name = name.clone();
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
                 let handle =
-                    runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone));
+                    runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone, name));
                 tasks.client_task = Some((handle, cancel_token));
             }
             NetCommand::StopHosting => {

@@ -121,6 +121,7 @@ fn menu_message_reader(
             MenuEvent::Join => {
                 net_commands.write(NetCommand::Connect {
                     addr: ([127u8, 0u8, 0u8, 1u8], config.network.port).into(),
+                    name: config.souls.player_name.clone(),
                 });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,

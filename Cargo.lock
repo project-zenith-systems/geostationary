@@ -2829,6 +2829,7 @@ dependencies = [
  "physics",
  "player",
  "serde",
+ "souls",
  "things",
  "tiles",
  "ui",
@@ -5446,6 +5447,15 @@ checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "souls"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "network",
+ "things",
 ]
 
 [[package]]

@@ -1,11 +1,10 @@
 use std::net::SocketAddr;
 
 use bevy::prelude::*;
-use network::{
-    ClientId, ClientJoined, ClientMessage, ControlledByClient, NetCommand, NetworkSet, Server,
-    ServerEvent,
-};
-use things::InputDirection;
+use network::{ClientId, ClientMessage, NetCommand, NetworkSet, PlayerEvent, Server, ServerEvent};
+use souls::ClientInputReceived;
+
+use crate::config::AppConfig;
 
 pub struct ServerPlugin;
 
@@ -24,8 +23,9 @@ impl Plugin for ServerPlugin {
 fn handle_server_events(
     mut messages: MessageReader<ServerEvent>,
     mut net_commands: MessageWriter<NetCommand>,
-    mut joined: MessageWriter<ClientJoined>,
-    mut entities: Query<(&ControlledByClient, &mut InputDirection)>,
+    mut player: MessageWriter<PlayerEvent>,
+    mut input: MessageWriter<ClientInputReceived>,
+    config: Res<AppConfig>,
 ) {
     for event in messages.read() {
         match event {
@@ -33,7 +33,10 @@ fn handle_server_events(
                 info!("Hosting started on port {port}");
                 let addr: SocketAddr = ([127, 0, 0, 1], *port).into();
                 info!("Connecting to self at {addr}");
-                net_commands.write(NetCommand::Connect { addr });
+                net_commands.write(NetCommand::Connect {
+                    addr,
+                    name: config.souls.player_name.clone(),
+                });
             }
             ServerEvent::HostingStopped => {
                 // Server resource removal handled by NetworkPlugin
@@ -46,9 +49,10 @@ fn handle_server_events(
             }
             ServerEvent::ClientDisconnected { id } => {
                 info!("Client {} disconnected", id.0);
+                player.write(PlayerEvent::Left { id: *id });
             }
             ServerEvent::ClientMessageReceived { from, message } => {
-                handle_client_message(from, message, &mut joined, &mut entities);
+                handle_client_message(from, message, &mut player, &mut input);
             }
         }
     }
@@ -57,8 +61,8 @@ fn handle_server_events(
 fn handle_client_message(
     from: &ClientId,
     message: &ClientMessage,
-    joined: &mut MessageWriter<ClientJoined>,
-    entities: &mut Query<(&ControlledByClient, &mut InputDirection)>,
+    player: &mut MessageWriter<PlayerEvent>,
+    input: &mut MessageWriter<ClientInputReceived>,
 ) {
     match message {
         ClientMessage::Hello { name } => {
@@ -66,17 +70,17 @@ fn handle_client_message(
                 "Received client hello from ClientId({}), name: {:?}",
                 from.0, name
             );
-            // Welcome is sent automatically by the network task.
-            // Entity catch-up and player spawning are handled by ThingsPlugin on ClientJoined.
-            joined.write(ClientJoined { id: *from });
+            // Entity catch-up and player spawning are handled by SoulsPlugin on PlayerEvent::Joined.
+            player.write(PlayerEvent::Joined {
+                id: *from,
+                name: name.clone(),
+            });
         }
         ClientMessage::Input { direction } => {
-            for (controlled_by, mut input_dir) in entities.iter_mut() {
-                if controlled_by.0 == *from {
-                    input_dir.0 = Vec3::from_array(*direction);
-                    break;
-                }
-            }
+            input.write(ClientInputReceived {
+                from: *from,
+                direction: *direction,
+            });
         }
     }
 }
