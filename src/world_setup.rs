@@ -35,19 +35,6 @@ pub fn setup_world(
     commands.entity(ball).insert(DespawnOnExit(AppState::InGame));
 }
 
-/// System that sets up world lighting for all peers (server and clients).
-fn setup_lighting(mut commands: Commands) {
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 10000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::new(4.0, 0.0, 4.0), Vec3::Y),
-        DespawnOnExit(AppState::InGame),
-    ));
-}
-
 /// System that cleans up the world when exiting InGame state.
 fn cleanup_world(mut commands: Commands) {
     commands.remove_resource::<Tilemap>();
@@ -87,10 +74,7 @@ impl Plugin for WorldSetupPlugin {
 
         app.add_systems(
             OnEnter(AppState::InGame),
-            (
-                setup_world.run_if(resource_exists::<Server>),
-                setup_lighting,
-            ),
+            setup_world.run_if(resource_exists::<Server>),
         );
         app.add_systems(OnExit(AppState::InGame), cleanup_world);
     }

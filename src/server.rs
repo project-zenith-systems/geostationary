@@ -1,7 +1,10 @@
 use std::net::SocketAddr;
 
 use bevy::prelude::*;
-use network::{ClientId, ClientMessage, NetCommand, NetworkSet, PlayerEvent, Server, ServerEvent};
+use network::{
+    ClientId, ClientMessage, NetCommand, NetServerSender, NetworkSet, PlayerEvent, Server,
+    ServerEvent, ServerMessage,
+};
 use souls::ClientInputReceived;
 
 use crate::config::AppConfig;
@@ -16,6 +19,10 @@ impl Plugin for ServerPlugin {
                 .run_if(resource_exists::<Server>)
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
+        );
+        app.add_systems(
+            PostUpdate,
+            send_initial_state_done.run_if(resource_exists::<Server>),
         );
     }
 }
@@ -82,6 +89,28 @@ fn handle_client_message(
                 direction: *direction,
             });
         }
+    }
+}
+
+/// Server-side system: sends [`ServerMessage::InitialStateDone`] on the control stream to each
+/// client that joined this frame, after all module stream handlers have had a chance to write
+/// their initial data burst in the same frame.
+///
+/// Runs in [`PostUpdate`] so that module systems in [`Update`] (tiles, atmospherics) complete
+/// their initial sends before this sentinel is queued.
+fn send_initial_state_done(
+    mut events: MessageReader<PlayerEvent>,
+    sender: Option<Res<NetServerSender>>,
+) {
+    let Some(sender) = sender else {
+        return;
+    };
+    for event in events.read() {
+        let PlayerEvent::Joined { id, .. } = event else {
+            continue;
+        };
+        sender.send_to(*id, &ServerMessage::InitialStateDone);
+        info!("Sent InitialStateDone to ClientId({})", id.0);
     }
 }
 
