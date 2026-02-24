@@ -90,6 +90,18 @@ pub enum PlayerEvent {
     Left { id: ClientId },
 }
 
+/// Server-side event emitted by a module stream handler after it has sent its initial data
+/// burst and the [`StreamReady`] sentinel to a specific client.
+///
+/// The orchestration system in `src/server.rs` collects these, and once all registered
+/// server→client module streams have reported ready for a given client it sends
+/// [`ServerMessage::InitialStateDone`] on the control stream.  This is event-driven and
+/// works correctly even when initial data spans multiple frames.
+#[derive(Message, Clone, Debug)]
+pub struct ModuleReadySent {
+    pub client: ClientId,
+}
+
 /// Events emitted by the server side of the network layer.
 #[derive(Message, Clone, Debug)]
 pub enum ServerEvent {
@@ -555,6 +567,7 @@ impl Plugin for NetworkPlugin {
         app.add_message::<ServerEvent>();
         app.add_message::<ClientEvent>();
         app.add_message::<PlayerEvent>();
+        app.add_message::<ModuleReadySent>();
         app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
         app.add_systems(
             PreUpdate,

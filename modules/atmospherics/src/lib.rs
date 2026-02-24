@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use network::{
-    ClientJoined, NetworkSet, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
-    StreamSender,
+    ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader,
+    StreamRegistry, StreamSender,
 };
 use tiles::{TileKind, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
@@ -295,14 +295,18 @@ fn handle_atmos_stream(
 }
 
 /// Server-side system: sends a full gas grid snapshot + [`StreamReady`] to each joining client.
-/// Listens to the [`ClientJoined`] lifecycle event so `AtmosphericsPlugin` is decoupled from
+/// Listens to the [`PlayerEvent::Joined`] lifecycle event so `AtmosphericsPlugin` is decoupled from
 /// internal network events.
 fn send_gas_grid_on_connect(
-    mut events: MessageReader<ClientJoined>,
+    mut events: MessageReader<PlayerEvent>,
     atmos_sender: Option<Res<StreamSender<AtmosStreamMessage>>>,
     gas_grid: Option<Res<GasGrid>>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
 ) {
-    for ClientJoined { id: from } in events.read() {
+    for event in events.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
         let sender = match atmos_sender.as_deref() {
             Some(s) => s,
             None => {
@@ -350,5 +354,6 @@ fn send_gas_grid_on_connect(
             grid.height(),
             from.0
         );
+        module_ready.write(ModuleReadySent { client: *from });
     }
 }

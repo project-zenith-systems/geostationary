@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use network::{
-    Client, ClientId, ControlledByClient, EntityState, NetId, NetworkSet, PlayerEvent, Server,
-    StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender, NETWORK_UPDATE_INTERVAL,
+    Client, ClientId, ControlledByClient, EntityState, ModuleReadySent, NetId, NetworkSet,
+    PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender,
+    NETWORK_UPDATE_INTERVAL,
 };
 use physics::{Collider, LinearVelocity, RigidBody};
 use serde::{Deserialize, Serialize};
@@ -327,6 +328,7 @@ fn handle_client_joined(
         Option<&DisplayName>,
         &Thing,
     )>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
 ) {
     for event in messages.read() {
         let PlayerEvent::Joined { id: from, .. } = event else {
@@ -363,6 +365,8 @@ fn handle_client_joined(
                 "Failed to send StreamReady for things stream to ClientId({}): {e}",
                 from.0
             );
+        } else {
+            module_ready.write(ModuleReadySent { client: *from });
         }
     }
 }
