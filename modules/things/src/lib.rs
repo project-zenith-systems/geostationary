@@ -22,6 +22,13 @@ pub enum ThingsSet {
 #[reflect(Component)]
 pub struct Thing;
 
+/// Stores the thing kind index so the correct `ThingRegistry` template is used
+/// during both initial spawning and client catch-up broadcasts.
+/// Kind 0 = creature, kind 1 = ball, etc.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct ThingKind(pub u16);
+
 /// Marker component for the entity controlled by the local player.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
@@ -143,6 +150,7 @@ pub struct ThingsPlugin;
 impl Plugin for ThingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Thing>();
+        app.register_type::<ThingKind>();
         app.register_type::<PlayerControlled>();
         app.register_type::<InputDirection>();
         app.register_type::<DisplayName>();
@@ -201,6 +209,7 @@ fn on_spawn_thing(
         LockedAxes::ROTATION_LOCKED.lock_translation_y(),
         GravityScale(0.0),
         Thing,
+        ThingKind(event.kind),
     ));
 
     if let Some(builder) = registry.templates.get(&event.kind) {
@@ -304,6 +313,7 @@ fn handle_client_joined(
         &Transform,
         &LinearVelocity,
         Option<&DisplayName>,
+        Option<&ThingKind>,
     )>,
 ) {
     for event in messages.read() {
@@ -312,15 +322,16 @@ fn handle_client_joined(
         };
 
         // Catch-up: send EntitySpawned on stream 3 for every existing entity.
-        for (net_id, opt_controlled_by, transform, velocity, opt_name) in entities.iter() {
+        for (net_id, opt_controlled_by, transform, velocity, opt_name, opt_kind) in entities.iter() {
             let owner = opt_controlled_by
                 .map(|c| c.0)
                 .filter(|&owner_id| owner_id == *from);
+            let kind = opt_kind.map_or(0, |k| k.0);
             if let Err(e) = stream_sender.send_to(
                 *from,
                 &ThingsStreamMessage::EntitySpawned {
                     net_id: *net_id,
-                    kind: 0,
+                    kind,
                     position: transform.translation.into(),
                     velocity: [velocity.x, velocity.y, velocity.z],
                     owner,
