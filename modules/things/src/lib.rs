@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use network::{
-    Client, ClientId, ClientJoined, ControlledByClient, EntityState, NetId, NetworkSet, Server,
+    Client, ClientId, ControlledByClient, EntityState, NetId, NetworkSet, PlayerEvent, Server,
     StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender, NETWORK_UPDATE_INTERVAL,
 };
 use physics::{Collider, GravityScale, LinearVelocity, LockedAxes, RigidBody};
@@ -103,6 +103,34 @@ impl Default for StateBroadcastTimer {
             TimerMode::Repeating,
         ))
     }
+}
+
+/// Spawns a player-controlled thing entity with a [`NetId`], [`ControlledByClient`],
+/// [`InputDirection`], and [`DisplayName`], then triggers [`SpawnThing`] so that the
+/// registered template (kind 0 = creature) adds physics and type-specific components.
+///
+/// Returns the spawned [`Entity`] id.
+///
+/// Called by the `souls` module when binding a soul to a newly connected client.
+pub fn spawn_player_creature(
+    commands: &mut Commands,
+    net_id: NetId,
+    owner: ClientId,
+    position: Vec3,
+    display_name: &str,
+) -> Entity {
+    let creature = commands
+        .spawn((net_id, ControlledByClient(owner), InputDirection::default()))
+        .id();
+    commands.trigger(SpawnThing {
+        entity: creature,
+        kind: 0,
+        position,
+    });
+    commands
+        .entity(creature)
+        .insert(DisplayName(display_name.to_string()));
+    creature
 }
 
 /// Plugin that registers the thing spawning system and shared entity primitives.
@@ -268,7 +296,7 @@ fn handle_entity_lifecycle(
 /// Creature spawning and the EntitySpawned broadcast for the new player entity are handled
 /// by the `souls` module's `bind_soul` system.
 fn handle_client_joined(
-    mut messages: MessageReader<ClientJoined>,
+    mut messages: MessageReader<PlayerEvent>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
     entities: Query<(
         &NetId,
@@ -278,16 +306,18 @@ fn handle_client_joined(
         Option<&DisplayName>,
     )>,
 ) {
-    for joined in messages.read() {
-        let from = joined.id;
+    for event in messages.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
 
         // Catch-up: send EntitySpawned on stream 3 for every existing entity.
         for (net_id, opt_controlled_by, transform, velocity, opt_name) in entities.iter() {
             let owner = opt_controlled_by
                 .map(|c| c.0)
-                .filter(|&owner_id| owner_id == from);
+                .filter(|&owner_id| owner_id == *from);
             if let Err(e) = stream_sender.send_to(
-                from,
+                *from,
                 &ThingsStreamMessage::EntitySpawned {
                     net_id: *net_id,
                     kind: 0,
@@ -306,7 +336,7 @@ fn handle_client_joined(
 
         // Signal that the initial burst for stream 3 is complete.
         // The new player entity's EntitySpawned is broadcast by the souls module after this.
-        if let Err(e) = stream_sender.send_stream_ready_to(from) {
+        if let Err(e) = stream_sender.send_stream_ready_to(*from) {
             error!(
                 "Failed to send StreamReady for things stream to ClientId({}): {e}",
                 from.0

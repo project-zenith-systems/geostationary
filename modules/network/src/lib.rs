@@ -78,31 +78,16 @@ pub struct Client {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ControlledByClient(pub ClientId);
 
-/// Lifecycle event emitted (server-side) when a client completes the handshake.
-/// Domain modules (e.g. tiles, atmospherics) should listen to this instead of
-/// [`ServerEvent::ClientMessageReceived`] so they are decoupled from raw network events.
+/// Server-side lifecycle events for player (client) connections.
+///
+/// Domain modules (e.g. `tiles`, `things`, `souls`) should listen to this instead of
+/// raw [`ServerEvent`] variants so they are decoupled from the network layer.
 #[derive(Message, Clone, Debug)]
-pub struct ClientJoined {
-    pub id: ClientId,
-    /// Display name supplied by the client in its `Hello` message.
-    pub name: String,
-}
-
-/// Lifecycle event emitted (server-side) when a client disconnects.
-/// Domain modules should listen to this instead of [`ServerEvent::ClientDisconnected`]
-/// so they are decoupled from raw network events.
-#[derive(Message, Clone, Debug)]
-pub struct ClientLeft {
-    pub id: ClientId,
-}
-
-/// Lifecycle event emitted (server-side) when a client sends a [`ClientMessage::Input`] message.
-/// Domain modules should listen to this instead of [`ServerEvent::ClientMessageReceived`]
-/// so they are decoupled from raw network events.
-#[derive(Message, Clone, Debug)]
-pub struct ClientInputReceived {
-    pub from: ClientId,
-    pub direction: [f32; 3],
+pub enum PlayerEvent {
+    /// Emitted when a client completes the handshake.
+    Joined { id: ClientId, name: String },
+    /// Emitted when a client disconnects.
+    Left { id: ClientId },
 }
 
 /// Events emitted by the server side of the network layer.
@@ -569,9 +554,7 @@ impl Plugin for NetworkPlugin {
         app.add_message::<NetCommand>();
         app.add_message::<ServerEvent>();
         app.add_message::<ClientEvent>();
-        app.add_message::<ClientJoined>();
-        app.add_message::<ClientLeft>();
-        app.add_message::<ClientInputReceived>();
+        app.add_message::<PlayerEvent>();
         app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
         app.add_systems(
             PreUpdate,

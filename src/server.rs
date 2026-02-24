@@ -1,10 +1,8 @@
 use std::net::SocketAddr;
 
 use bevy::prelude::*;
-use network::{
-    ClientId, ClientInputReceived, ClientJoined, ClientLeft, ClientMessage, NetCommand, NetworkSet,
-    Server, ServerEvent,
-};
+use network::{ClientId, ClientMessage, NetCommand, NetworkSet, PlayerEvent, Server, ServerEvent};
+use souls::ClientInputReceived;
 
 use crate::config::AppConfig;
 
@@ -25,8 +23,7 @@ impl Plugin for ServerPlugin {
 fn handle_server_events(
     mut messages: MessageReader<ServerEvent>,
     mut net_commands: MessageWriter<NetCommand>,
-    mut joined: MessageWriter<ClientJoined>,
-    mut left: MessageWriter<ClientLeft>,
+    mut player: MessageWriter<PlayerEvent>,
     mut input: MessageWriter<ClientInputReceived>,
     config: Res<AppConfig>,
 ) {
@@ -52,10 +49,10 @@ fn handle_server_events(
             }
             ServerEvent::ClientDisconnected { id } => {
                 info!("Client {} disconnected", id.0);
-                left.write(ClientLeft { id: *id });
+                player.write(PlayerEvent::Left { id: *id });
             }
             ServerEvent::ClientMessageReceived { from, message } => {
-                handle_client_message(from, message, &mut joined, &mut input);
+                handle_client_message(from, message, &mut player, &mut input);
             }
         }
     }
@@ -64,7 +61,7 @@ fn handle_server_events(
 fn handle_client_message(
     from: &ClientId,
     message: &ClientMessage,
-    joined: &mut MessageWriter<ClientJoined>,
+    player: &mut MessageWriter<PlayerEvent>,
     input: &mut MessageWriter<ClientInputReceived>,
 ) {
     match message {
@@ -73,8 +70,8 @@ fn handle_client_message(
                 "Received client hello from ClientId({}), name: {:?}",
                 from.0, name
             );
-            // Entity catch-up and player spawning are handled by SoulsPlugin on ClientJoined.
-            joined.write(ClientJoined {
+            // Entity catch-up and player spawning are handled by SoulsPlugin on PlayerEvent::Joined.
+            player.write(PlayerEvent::Joined {
                 id: *from,
                 name: name.clone(),
             });

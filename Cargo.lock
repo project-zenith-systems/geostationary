@@ -5452,7 +5452,6 @@ name = "souls"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "creatures",
  "network",
  "things",
 ]
