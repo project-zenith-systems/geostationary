@@ -88,6 +88,23 @@ pub struct ClientJoined {
     pub name: String,
 }
 
+/// Lifecycle event emitted (server-side) when a client disconnects.
+/// Domain modules should listen to this instead of [`ServerEvent::ClientDisconnected`]
+/// so they are decoupled from raw network events.
+#[derive(Message, Clone, Debug)]
+pub struct ClientLeft {
+    pub id: ClientId,
+}
+
+/// Lifecycle event emitted (server-side) when a client sends a [`ClientMessage::Input`] message.
+/// Domain modules should listen to this instead of [`ServerEvent::ClientMessageReceived`]
+/// so they are decoupled from raw network events.
+#[derive(Message, Clone, Debug)]
+pub struct ClientInputReceived {
+    pub from: ClientId,
+    pub direction: [f32; 3],
+}
+
 /// Events emitted by the server side of the network layer.
 #[derive(Message, Clone, Debug)]
 pub enum ServerEvent {
@@ -553,6 +570,8 @@ impl Plugin for NetworkPlugin {
         app.add_message::<ServerEvent>();
         app.add_message::<ClientEvent>();
         app.add_message::<ClientJoined>();
+        app.add_message::<ClientLeft>();
+        app.add_message::<ClientInputReceived>();
         app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
         app.add_systems(
             PreUpdate,

@@ -1,7 +1,10 @@
 use std::net::SocketAddr;
 
 use bevy::prelude::*;
-use network::{ClientId, ClientJoined, ClientMessage, NetCommand, NetworkSet, Server, ServerEvent};
+use network::{
+    ClientId, ClientInputReceived, ClientJoined, ClientLeft, ClientMessage, NetCommand, NetworkSet,
+    Server, ServerEvent,
+};
 
 use crate::config::AppConfig;
 
@@ -23,6 +26,8 @@ fn handle_server_events(
     mut messages: MessageReader<ServerEvent>,
     mut net_commands: MessageWriter<NetCommand>,
     mut joined: MessageWriter<ClientJoined>,
+    mut left: MessageWriter<ClientLeft>,
+    mut input: MessageWriter<ClientInputReceived>,
     config: Res<AppConfig>,
 ) {
     for event in messages.read() {
@@ -47,9 +52,10 @@ fn handle_server_events(
             }
             ServerEvent::ClientDisconnected { id } => {
                 info!("Client {} disconnected", id.0);
+                left.write(ClientLeft { id: *id });
             }
             ServerEvent::ClientMessageReceived { from, message } => {
-                handle_client_message(from, message, &mut joined);
+                handle_client_message(from, message, &mut joined, &mut input);
             }
         }
     }
@@ -59,6 +65,7 @@ fn handle_client_message(
     from: &ClientId,
     message: &ClientMessage,
     joined: &mut MessageWriter<ClientJoined>,
+    input: &mut MessageWriter<ClientInputReceived>,
 ) {
     match message {
         ClientMessage::Hello { name } => {
@@ -72,8 +79,11 @@ fn handle_client_message(
                 name: name.clone(),
             });
         }
-        ClientMessage::Input { .. } => {
-            // Input routing is handled by SoulsPlugin.
+        ClientMessage::Input { direction } => {
+            input.write(ClientInputReceived {
+                from: *from,
+                direction: *direction,
+            });
         }
     }
 }

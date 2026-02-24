@@ -9,6 +9,14 @@ use physics::{Collider, GravityScale, LinearVelocity, LockedAxes, RigidBody};
 use serde::{Deserialize, Serialize};
 use wincode::{SchemaRead, SchemaWrite};
 
+/// System set for the things module's server-side lifecycle systems.
+/// Other modules can use this for explicit ordering relative to things systems.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ThingsSet {
+    /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages and [`StreamReady`] to a joining client.
+    HandleClientJoined,
+}
+
 /// Marker component for non-grid-bound world objects.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
@@ -134,7 +142,8 @@ impl Plugin for ThingsPlugin {
                 handle_entity_lifecycle
                     .run_if(resource_exists::<Client>),
                 handle_client_joined
-                    .run_if(resource_exists::<Server>),
+                    .run_if(resource_exists::<Server>)
+                    .in_set(ThingsSet::HandleClientJoined),
             )
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
@@ -257,7 +266,7 @@ fn handle_entity_lifecycle(
 /// so the client can count toward its initial-sync barrier.
 ///
 /// Creature spawning and the EntitySpawned broadcast for the new player entity are handled
-/// by the `souls` module's `bind_soul` system, which runs after this system.
+/// by the `souls` module's `bind_soul` system.
 fn handle_client_joined(
     mut messages: MessageReader<ClientJoined>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,

@@ -1,9 +1,9 @@
 use bevy::prelude::*;
 use network::{
-    Client, ClientId, ClientJoined, ControlledByClient, NetClientSender, NetworkSet, Server,
-    ServerEvent, StreamSender, NETWORK_UPDATE_INTERVAL,
+    Client, ClientId, ClientInputReceived, ClientJoined, ClientLeft, ControlledByClient,
+    NetClientSender, NetworkSet, Server, StreamSender, NETWORK_UPDATE_INTERVAL,
 };
-use things::{DisplayName, InputDirection, SpawnThing, ThingsStreamMessage};
+use things::{DisplayName, InputDirection, SpawnThing, ThingsSet, ThingsStreamMessage};
 
 /// Component placed on a dedicated soul entity to bind a client to a creature.
 ///
@@ -32,17 +32,16 @@ impl Plugin for SoulsPlugin {
         app.add_systems(
             PreUpdate,
             (
-                bind_soul.run_if(resource_exists::<Server>),
+                bind_soul
+                    .run_if(resource_exists::<Server>)
+                    .after(ThingsSet::HandleClientJoined),
                 unbind_soul.run_if(resource_exists::<Server>),
                 route_input.run_if(resource_exists::<Server>),
             )
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
         );
-        app.add_systems(
-            Update,
-            send_input.run_if(resource_exists::<Client>),
-        );
+        app.add_systems(Update, send_input.run_if(resource_exists::<Client>));
         app.init_resource::<InputSendTimer>();
         app.init_resource::<LastSentDirection>();
     }
@@ -52,7 +51,7 @@ impl Plugin for SoulsPlugin {
 /// set `DisplayName` and `ControlledByClient` on the creature, then broadcast
 /// `EntitySpawned` on stream 3 so all clients (including the joining one) see the new creature.
 ///
-/// Runs after the things module's catch-up system so the initial `StreamReady` for stream 3
+/// Runs after [`ThingsSet::HandleClientJoined`] so the initial `StreamReady` for stream 3
 /// has already been sent to the joining client before this broadcasts the new entity.
 fn bind_soul(
     mut commands: Commands,
@@ -104,7 +103,7 @@ fn bind_soul(
     }
 }
 
-/// Server-side system: on `ClientDisconnected`, despawn the soul entity and clear
+/// Server-side system: on [`ClientLeft`], despawn the soul entity and clear
 /// `InputDirection` on the bound creature so it stops moving.
 ///
 /// The creature entity itself remains in the world — it keeps its `Thing`, `Creature`,
@@ -112,15 +111,11 @@ fn bind_soul(
 /// `StateUpdate` broadcasts (standing still because `InputDirection` is zeroed).
 fn unbind_soul(
     mut commands: Commands,
-    mut events: MessageReader<ServerEvent>,
+    mut events: MessageReader<ClientLeft>,
     souls: Query<(Entity, &Soul)>,
     mut input_dirs: Query<&mut InputDirection>,
 ) {
-    for event in events.read() {
-        let ServerEvent::ClientDisconnected { id } = event else {
-            continue;
-        };
-
+    for ClientLeft { id } in events.read() {
         for (soul_entity, soul) in souls.iter() {
             if soul.client_id == *id {
                 info!(
@@ -140,23 +135,14 @@ fn unbind_soul(
     }
 }
 
-/// Server-side system: routes `Input` messages from clients to the `InputDirection`
+/// Server-side system: routes [`ClientInputReceived`] messages to the `InputDirection`
 /// component on the creature bound to that client's soul.
-///
-/// Replaces the direct `ControlledByClient` query that was previously in `src/server.rs`.
 fn route_input(
-    mut events: MessageReader<ServerEvent>,
+    mut events: MessageReader<ClientInputReceived>,
     souls: Query<&Soul>,
     mut input_dirs: Query<&mut InputDirection>,
 ) {
-    for event in events.read() {
-        let ServerEvent::ClientMessageReceived { from, message } = event else {
-            continue;
-        };
-        let network::ClientMessage::Input { direction } = message else {
-            continue;
-        };
-
+    for ClientInputReceived { from, direction } in events.read() {
         for soul in souls.iter() {
             if soul.client_id == *from {
                 if let Ok(mut input_dir) = input_dirs.get_mut(soul.bound_to) {
@@ -225,7 +211,7 @@ fn send_input(
 mod tests {
     use super::*;
 
-    /// Verifies that `bind_soul` creates a `Soul` component with the correct fields.
+    /// Verifies that [`Soul`] can be constructed with all required fields.
     #[test]
     fn soul_component_fields() {
         use network::ClientId;
