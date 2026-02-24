@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use network::{
-    NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
-    StreamSender,
+    ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader,
+    StreamRegistry, StreamSender,
 };
 use physics::{Collider, RigidBody};
 use wincode::{SchemaRead, SchemaWrite};
@@ -359,6 +359,7 @@ fn send_tilemap_on_connect(
     mut events: MessageReader<PlayerEvent>,
     tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
     tilemap: Option<Res<Tilemap>>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
 ) {
     for event in events.read() {
         let PlayerEvent::Joined { id: from, .. } = event else {
@@ -399,6 +400,7 @@ fn send_tilemap_on_connect(
             map.height(),
             from.0
         );
+        module_ready.write(ModuleReadySent { client: *from });
     }
 }
 

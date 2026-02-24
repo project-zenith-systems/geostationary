@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use network::{
-    NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
-    StreamSender,
+    ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader,
+    StreamRegistry, StreamSender,
 };
 use tiles::{TileKind, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
@@ -301,6 +301,7 @@ fn send_gas_grid_on_connect(
     mut events: MessageReader<PlayerEvent>,
     atmos_sender: Option<Res<StreamSender<AtmosStreamMessage>>>,
     gas_grid: Option<Res<GasGrid>>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
 ) {
     for event in events.read() {
         let PlayerEvent::Joined { id: from, .. } = event else {
@@ -353,5 +354,6 @@ fn send_gas_grid_on_connect(
             grid.height(),
             from.0
         );
+        module_ready.write(ModuleReadySent { client: *from });
     }
 }

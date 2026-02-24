@@ -115,6 +115,13 @@ fn handle_client_events(
             }
             ClientEvent::StreamReady { tag } => {
                 sync.streams_ready += 1;
+                if sync.expected_streams > 0 && sync.streams_ready > sync.expected_streams {
+                    warn!(
+                        "Received more StreamReady sentinels than expected \
+                         (tag={}, got {}, expected {}); server/client stream count mismatch",
+                        tag, sync.streams_ready, sync.expected_streams
+                    );
+                }
                 debug!(
                     "Stream {} ready ({}/{})",
                     tag, sync.streams_ready, sync.expected_streams
