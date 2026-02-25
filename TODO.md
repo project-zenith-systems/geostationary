@@ -29,6 +29,12 @@ handling. A simplification pass would improve readability and maintainability. N
 urgent — the code is correct — but the complexity ceiling will rise as more stream
 types are added.
 
+## Server side and client side config
+
+The server should have its config separated from the client config and the client config 
+should only contain fields that are irrelevant to the server. The server might also
+want to sync specific config settings to the client.
+
 ## Module coordination design pass (next arc)
 
 The current coordination patterns — `ModuleReadySent` events, one-frame `StreamReady`

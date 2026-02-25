@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use network::{
-    Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection,
-    StreamReader, StreamRegistry, StreamSender,
+    ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
+    StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use tiles::{TileKind, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
@@ -243,6 +243,7 @@ impl Plugin for AtmosphericsPlugin {
                 .run_if(not(resource_exists::<Server>))
                 .after(NetworkSet::Receive),
         );
+        app.init_resource::<PendingAtmosSyncs>();
         app.add_systems(
             Update,
             send_gas_grid_on_connect.run_if(resource_exists::<Server>),
@@ -295,57 +296,64 @@ fn handle_atmos_stream(
     }
 }
 
+/// Clients that joined before the [`GasGrid`] resource was available (e.g. on a
+/// listen-server where `PlayerEvent::Joined` fires before `OnEnter(InGame)`).
+/// Drained once the resource exists.
+#[derive(Resource, Default)]
+struct PendingAtmosSyncs(Vec<ClientId>);
+
 /// Server-side system: sends a full gas grid snapshot + [`StreamReady`] to each joining client.
 /// Listens to the [`PlayerEvent::Joined`] lifecycle event so `AtmosphericsPlugin` is decoupled from
 /// internal network events.
+///
+/// If the [`GasGrid`] resource does not exist yet (listen-server startup), the
+/// client ID is queued in [`PendingAtmosSyncs`] and retried each frame.
 fn send_gas_grid_on_connect(
     mut events: MessageReader<PlayerEvent>,
     atmos_sender: Option<Res<StreamSender<AtmosStreamMessage>>>,
     gas_grid: Option<Res<GasGrid>>,
     mut module_ready: MessageWriter<ModuleReadySent>,
+    mut pending: ResMut<PendingAtmosSyncs>,
 ) {
+    // Collect newly joined clients.
     for event in events.read() {
         let PlayerEvent::Joined { id: from, .. } = event else {
             continue;
         };
-        let sender = match atmos_sender.as_deref() {
-            Some(s) => s,
-            None => {
-                error!(
-                    "No AtmosStreamMessage sender available for ClientId({})",
-                    from.0
-                );
-                continue;
-            }
-        };
+        pending.0.push(*from);
+    }
 
-        let grid = match gas_grid.as_deref() {
-            Some(g) => g,
-            None => {
-                error!("No GasGrid resource available for ClientId({})", from.0);
-                continue;
-            }
-        };
+    // Nothing to do if no clients are waiting.
+    if pending.0.is_empty() {
+        return;
+    }
 
+    let Some(sender) = atmos_sender.as_deref() else {
+        error!("No AtmosStreamMessage sender available; {} client(s) waiting", pending.0.len());
+        return;
+    };
+
+    let Some(grid) = gas_grid.as_deref() else {
+        // Resource not yet inserted (listen-server: setup_world hasn't run).
+        // Keep clients queued; we'll retry next frame.
+        return;
+    };
+
+    let clients = std::mem::take(&mut pending.0);
+    for from in clients {
         let msg = AtmosStreamMessage::GasGridData {
             width: grid.width(),
             height: grid.height(),
             gas_moles: grid.moles_vec(),
         };
 
-        if let Err(e) = sender.send_to(*from, &msg) {
-            error!(
-                "Failed to send GasGridData to ClientId({}): {}",
-                from.0, e
-            );
+        if let Err(e) = sender.send_to(from, &msg) {
+            error!("Failed to send GasGridData to ClientId({}): {}", from.0, e);
             continue;
         }
 
-        if let Err(e) = sender.send_stream_ready_to(*from) {
-            error!(
-                "Failed to send StreamReady to ClientId({}): {}",
-                from.0, e
-            );
+        if let Err(e) = sender.send_stream_ready_to(from) {
+            error!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
             continue;
         }
 
@@ -355,6 +363,6 @@ fn send_gas_grid_on_connect(
             grid.height(),
             from.0
         );
-        module_ready.write(ModuleReadySent { client: *from });
+        module_ready.write(ModuleReadySent { client: from });
     }
 }

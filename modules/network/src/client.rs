@@ -194,7 +194,7 @@ async fn run_client_inner(
                                                         let _ = frame_tx
                                                             .send(ClientEvent::StreamReady { tag });
                                                     } else {
-                                                        log::info!("StreamFrame received on tag={} ({} bytes)", tag, bytes.len());
+                                                        log::debug!("StreamFrame received on tag={} ({} bytes)", tag, bytes.len());
                                                         let _ = frame_tx.send(
                                                             ClientEvent::StreamFrame {
                                                                 tag,

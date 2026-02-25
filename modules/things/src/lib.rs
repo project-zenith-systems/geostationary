@@ -129,6 +129,12 @@ pub fn spawn_thing(
         kind,
         position,
     });
+    // Register in NetIdIndex so that a listen-server's client-side
+    // handle_entity_lifecycle sees this entity as already spawned and
+    // skips the duplicate EntitySpawned from the catch-up burst.
+    commands.queue(move |world: &mut World| {
+        world.resource_mut::<NetIdIndex>().0.insert(net_id, entity);
+    });
     (entity, net_id)
 }
 
@@ -265,18 +271,31 @@ fn handle_entity_lifecycle(
                 owner,
                 name,
             } => {
-                if net_id_index.0.contains_key(&net_id) {
-                    warn!(
-                        "EntitySpawned for NetId({}) already exists, skipping",
+                let controlled = owner.is_some() && owner == client.local_id;
+
+                // On a listen-server the entity was already spawned server-side
+                // and pre-registered in NetIdIndex. Skip the spawn but still
+                // apply client-only components to the existing entity.
+                if let Some(&existing) = net_id_index.0.get(&net_id) {
+                    debug!(
+                        "EntitySpawned for NetId({}) already exists, applying client components",
                         net_id.0
                     );
+                    if let Some(n) = name.as_deref().filter(|n| !n.is_empty()) {
+                        commands.entity(existing).insert(DisplayName(n.to_string()));
+                    }
+                    if controlled {
+                        commands.entity(existing).insert(PlayerControlled);
+                    }
+                    if let Some(owner_id) = owner {
+                        commands.entity(existing).insert(ControlledByClient(owner_id));
+                    }
                     continue;
                 }
 
                 let pos = Vec3::from_array(position);
                 info!("Spawning entity NetId({}) at {pos}", net_id.0);
 
-                let controlled = owner.is_some() && owner == client.local_id;
                 let entity = commands.spawn(net_id).id();
                 commands.trigger(SpawnThing {
                     entity,

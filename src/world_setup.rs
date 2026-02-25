@@ -87,9 +87,16 @@ impl Plugin for WorldSetupPlugin {
                 });
         }
 
+        // Run setup_world as soon as Server exists and Tilemap hasn't been created yet.
+        // This decouples world creation from the InGame state transition, which is
+        // necessary on a listen-server: the client sync barrier requires tiles/atmos
+        // StreamReady sentinels, but those need the Tilemap/GasGrid resources that
+        // setup_world creates. Running here breaks the deadlock.
         app.add_systems(
-            OnEnter(AppState::InGame),
-            setup_world.run_if(resource_exists::<Server>),
+            Update,
+            setup_world.run_if(
+                resource_exists::<Server>.and(not(resource_exists::<Tilemap>)),
+            ),
         );
         app.add_systems(OnExit(AppState::InGame), cleanup_world);
     }

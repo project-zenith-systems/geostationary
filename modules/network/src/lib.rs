@@ -635,7 +635,7 @@ fn drain_client_events(
     // This guarantees game systems had a full frame to process the stream data
     // before any downstream system sees the ready signal.
     for tag in registry.take_deferred_ready() {
-        log::info!("Emitting deferred StreamReady for tag={}", tag);
+        log::debug!("Emitting deferred StreamReady for tag={}", tag);
         writer.write(ClientEvent::StreamReady { tag });
     }
 

@@ -362,32 +362,8 @@ async fn run_server_inner(
                                 }
                             }
 
-                            // Send InitialStateDone.
-                            // Sent immediately since no module streams carry initial data yet.
-                            // TODO: defer until all module streams have sent StreamReady once
-                            //       domain stream handlers are implemented.
-                            match encode(&ServerMessage::InitialStateDone) {
-                                Ok(bytes) => {
-                                    if let Err(e) =
-                                        framed_write.send(Bytes::from(bytes)).await
-                                    {
-                                        log::error!(
-                                            "Failed to send InitialStateDone to client {}: {}",
-                                            client_id.0, e
-                                        );
-                                        cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "Failed to encode InitialStateDone for client {}: {}",
-                                        client_id.0, e
-                                    );
-                                    cleanup_client_stream_writers(&client_cancel, &mut stream_write_handles, &per_stream_senders, client_id).await;
-                                    return;
-                                }
-                            }
+                            // InitialStateDone is sent by the Bevy-side track_module_ready
+                            // system once all module streams have emitted ModuleReadySent.
 
                             // Register control-stream write channel.
                             let (write_tx, mut write_rx) =
