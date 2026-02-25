@@ -224,13 +224,13 @@ semantics.
 
 ## Test room redesign
 
-Redesign the test room to demonstrate decompression: a pressurised chamber
+Redesign the test room to demonstrate decompression: a pressurized chamber
 adjacent to a sealed vacuum chamber.
 
 **`modules/tiles/src/lib.rs`:**
 
 - `Tilemap::test_room()` expanded to 16×10 with left chamber (cols 1–8,
-  pressurised), right chamber (cols 11–14, vacuum), and separating wall
+  pressurized), right chamber (cols 11–14, vacuum), and separating wall
   (cols 9–10)
 
 **`modules/atmospherics/src/lib.rs`:**
@@ -290,7 +290,7 @@ so the decompression scenario is visually representative.
 - Substep count — enough iterations for stable, visible gas redistribution
 
 Values are determined by running the full scenario (remove wall between
-pressurised and vacuum chambers) and adjusting until gas flows visibly and
+pressurized and vacuum chambers) and adjusting until gas flows visibly and
 entities are pushed through the breach. No code changes beyond constant
 values.
 

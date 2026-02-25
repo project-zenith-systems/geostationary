@@ -13,11 +13,11 @@
    world position (projected to screen space) with a "Remove Wall" option
 2. Selecting "Remove Wall" sends a request to the server; the server validates
    the target cell and applies the mutation
-3. All connected clients see the wall mesh disappear, replaced by a floor, and
+ 3. All connected clients see the wall mesh disappear, replaced by a floor, and
    the wall collider is removed
-4. The test room has a pressurised chamber adjacent to a vacuum chamber,
+ 4. The test room has a pressurized chamber adjacent to a vacuum chamber,
    separated by a wall; removing that wall causes dramatic decompression
-5. The server's gas simulation detects the newly passable cell; gas flows
+ 5. The server's gas simulation detects the newly passable cell; gas flows
    toward vacuum through the breach
 6. The atmos debug overlay (F3) on all clients reflects the changing gas state
    in real time — pressure colours shift as gas redistributes
@@ -135,7 +135,7 @@ gated on `resource_exists::<Client>`.
 - **Client-side prediction for tile mutations.** Client waits for server
   confirmation before rendering the change. Latency is acceptable for a
   12×10 test room.
-- **Delta compression or bandwidth optimisation.** Full gas grid snapshots
+- **Delta compression or bandwidth optimization.** Full gas grid snapshots
   are ~480 bytes. The arc excludes bandwidth work.
 - **Gas mixtures, temperature, or advanced atmos.** Single-gas moles only.
 - **Item interactions.** Plan 3 adds pick up / drop / container actions to
@@ -385,7 +385,7 @@ The test room is redesigned to demonstrate decompression:
 9 W W W W W W W W W W  W  W  W  W  W  W
 ```
 
-- **Left chamber** (cols 1–8): pressurised with standard atmosphere. Player
+- **Left chamber** (cols 1–8): pressurized with standard atmosphere. Player
   and ball spawn here.
 - **Right chamber** (cols 11–14): vacuum (0.0 moles). Floor tiles exist but
   `initialize_gas_grid` is updated to accept an optional vacuum region
