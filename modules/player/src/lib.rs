@@ -25,6 +25,7 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Nameplate>();
         app.add_observer(spawn_nameplate);
+        app.add_observer(despawn_nameplate);
         app.add_systems(Update, (read_player_input, update_nameplate_positions));
     }
 }
@@ -78,6 +79,23 @@ fn spawn_nameplate(
         Nameplate,
         NameplateTarget(entity),
     ));
+}
+
+/// Observer that runs when a [`DisplayName`] component is removed from an entity.
+///
+/// Despawns every [`Nameplate`] UI node whose [`NameplateTarget`] points at the entity
+/// that lost its name, preventing stale overlay nodes from accumulating.
+fn despawn_nameplate(
+    trigger: On<Remove, DisplayName>,
+    nameplates: Query<(Entity, &NameplateTarget), With<Nameplate>>,
+    mut commands: Commands,
+) {
+    let removed = trigger.event_target();
+    for (nameplate_entity, target) in nameplates.iter() {
+        if target.0 == removed {
+            commands.entity(nameplate_entity).despawn();
+        }
+    }
 }
 
 /// Projects each [`Nameplate`]'s tracked entity from world space to screen
@@ -139,5 +157,37 @@ mod tests {
             nameplate_target.0, target,
             "Nameplate should target the entity that received DisplayName"
         );
+    }
+
+    /// Verifies that [`despawn_nameplate`] removes the [`Nameplate`] UI entity when
+    /// [`DisplayName`] is removed from the target entity.
+    #[test]
+    fn despawn_nameplate_removes_ui_entity() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_observer(spawn_nameplate);
+        app.add_observer(despawn_nameplate);
+
+        let target = app.world_mut().spawn(DisplayName("Hero".to_string())).id();
+        app.update();
+
+        // One nameplate should exist after spawning.
+        let count = app
+            .world_mut()
+            .query_filtered::<Entity, With<Nameplate>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(count, 1, "Nameplate should exist before removal");
+
+        // Remove DisplayName — observer should schedule despawn.
+        app.world_mut().entity_mut(target).remove::<DisplayName>();
+        app.update();
+
+        let count = app
+            .world_mut()
+            .query_filtered::<Entity, With<Nameplate>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(count, 0, "Nameplate should be despawned after DisplayName removal");
     }
 }
