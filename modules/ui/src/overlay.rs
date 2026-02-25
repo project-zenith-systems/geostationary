@@ -42,17 +42,18 @@ pub struct OverlayTarget {
 
 /// System that projects each [`WorldSpaceOverlay`] node to viewport space.
 ///
-/// Run this in `Update`, after `TransformPropagate`, so that entity
-/// [`GlobalTransform`]s are up to date before projection.
+/// Registered in `PostUpdate`, after [`bevy::transform::TransformSystems::Propagate`],
+/// so that entity [`GlobalTransform`]s are fully propagated before projection.
 ///
 /// The system:
-/// 1. If the overlay has an [`OverlayTarget`], resolves the entity's
+/// 1. Fetches the active [`Camera3d`] once. Hides all overlay nodes and returns
+///    early if no camera is present (e.g. headless server or camera despawned).
+/// 2. If the overlay has an [`OverlayTarget`], resolves the entity's
 ///    [`GlobalTransform`] (+ offset) and writes it into
 ///    [`WorldSpaceOverlay::world_pos`].
-/// 2. Projects `world_pos` through the active [`Camera3d`].
-/// 3. Centers the [`Node`] on the projected point via `left`/`top`.
-/// 4. Hides the node when the target is behind the camera, the entity is
-///    missing, or no 3D camera is present.
+/// 3. Projects `world_pos` through the active [`Camera3d`].
+/// 4. Centers the [`Node`] on the projected point via `left`/`top`.
+/// 5. Hides the node when the target is behind the camera or the entity is missing.
 pub fn update_world_space_overlays(
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     target_query: Query<&GlobalTransform>,
@@ -64,6 +65,9 @@ pub fn update_world_space_overlays(
         Option<&OverlayTarget>,
     )>,
 ) {
+    // Fetch the camera once before iterating overlays.
+    let camera_result = camera_query.single();
+
     for (mut node, mut visibility, computed, mut overlay, maybe_target) in
         overlay_query.iter_mut()
     {
@@ -77,7 +81,7 @@ pub fn update_world_space_overlays(
         }
 
         // Need an active 3D camera to project through.
-        let Ok((camera, camera_gt)) = camera_query.single() else {
+        let Ok((camera, camera_gt)) = camera_result else {
             *visibility = Visibility::Hidden;
             continue;
         };

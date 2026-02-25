@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::transform::TransformSystems;
 
 pub mod button;
 pub mod overlay;
@@ -20,7 +21,11 @@ impl Plugin for UiPlugin {
         app.init_resource::<UiTheme>();
         app.add_systems(Startup, spawn_ui_camera);
         app.add_systems(PreUpdate, button::change_button_colors);
-        app.add_systems(Update, update_world_space_overlays);
+        app.add_systems(
+            PostUpdate,
+            update_world_space_overlays
+                .after(TransformSystems::Propagate),
+        );
 
         for register in &self.messages {
             register(app);
