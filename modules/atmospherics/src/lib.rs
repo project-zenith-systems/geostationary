@@ -1,6 +1,11 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use network::{
+    ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
+    StreamDirection, StreamReader, StreamRegistry, StreamSender,
+};
 use tiles::{TileKind, Tilemap};
+use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
 pub use gas_grid::{GasCell, GasGrid};
@@ -13,6 +18,20 @@ pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
 /// Toggle with F5.
 #[derive(Resource, Default)]
 pub struct AtmosSimPaused(pub bool);
+
+/// Stream tag for the server→client atmospherics stream (stream 2).
+pub const ATMOS_STREAM_TAG: u8 = 2;
+
+/// Wire format for stream 2 (server→client atmospherics stream).
+#[derive(Debug, Clone, SchemaRead, SchemaWrite)]
+pub enum AtmosStreamMessage {
+    /// Full gas grid snapshot sent once on connect.
+    GasGridData {
+        width: u32,
+        height: u32,
+        gas_moles: Vec<f32>,
+    },
+}
 
 /// Creates and initializes a GasGrid from a Tilemap.
 /// All floor cells are filled with the given standard atmospheric pressure.
@@ -215,7 +234,135 @@ impl Plugin for AtmosphericsPlugin {
                 debug_overlay::despawn_overlay_quads,
                 debug_overlay::update_overlay_colors,
             )
-                .chain(),
+                .chain()
+                .run_if(not(resource_exists::<Headless>)),
         );
+        app.add_systems(
+            PreUpdate,
+            handle_atmos_stream
+                .run_if(not(resource_exists::<Server>))
+                .after(NetworkSet::Receive),
+        );
+        app.init_resource::<PendingAtmosSyncs>();
+        app.add_systems(
+            Update,
+            send_gas_grid_on_connect.run_if(resource_exists::<Server>),
+        );
+
+        // Register stream 2 (server→client atmospherics stream). Requires NetworkPlugin to be added first.
+        let mut registry = app
+            .world_mut()
+            .get_resource_mut::<StreamRegistry>()
+            .expect(
+                "AtmosphericsPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)",
+            );
+        let (sender, reader): (
+            StreamSender<AtmosStreamMessage>,
+            StreamReader<AtmosStreamMessage>,
+        ) = registry.register(StreamDef {
+            tag: ATMOS_STREAM_TAG,
+            name: "atmospherics",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
+    }
+}
+
+/// Client-side system: handles incoming gas grid snapshots from the server on stream 2.
+/// Drains [`StreamReader<AtmosStreamMessage>`], reconstructs a [`GasGrid`] via
+/// [`GasGrid::from_moles_vec`], and inserts it as a resource.
+fn handle_atmos_stream(
+    mut commands: Commands,
+    mut reader: ResMut<StreamReader<AtmosStreamMessage>>,
+) {
+    for msg in reader.drain() {
+        match msg {
+            AtmosStreamMessage::GasGridData {
+                width,
+                height,
+                gas_moles,
+            } => match GasGrid::from_moles_vec(width, height, gas_moles) {
+                Ok(gas_grid) => {
+                    info!(
+                        "Received gas grid {}×{} from server",
+                        width, height
+                    );
+                    commands.insert_resource(gas_grid);
+                }
+                Err(e) => error!("Invalid gas grid data on stream {ATMOS_STREAM_TAG}: {e}"),
+            },
+        }
+    }
+}
+
+/// Clients that joined before the [`GasGrid`] resource was available (e.g. on a
+/// listen-server where `PlayerEvent::Joined` fires before `OnEnter(InGame)`).
+/// Drained once the resource exists.
+#[derive(Resource, Default)]
+struct PendingAtmosSyncs(Vec<ClientId>);
+
+/// Server-side system: sends a full gas grid snapshot + [`StreamReady`] to each joining client.
+/// Listens to the [`PlayerEvent::Joined`] lifecycle event so `AtmosphericsPlugin` is decoupled from
+/// internal network events.
+///
+/// If the [`GasGrid`] resource does not exist yet (listen-server startup), the
+/// client ID is queued in [`PendingAtmosSyncs`] and retried each frame.
+fn send_gas_grid_on_connect(
+    mut events: MessageReader<PlayerEvent>,
+    atmos_sender: Option<Res<StreamSender<AtmosStreamMessage>>>,
+    gas_grid: Option<Res<GasGrid>>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
+    mut pending: ResMut<PendingAtmosSyncs>,
+) {
+    // Collect newly joined clients.
+    for event in events.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
+        pending.0.push(*from);
+    }
+
+    // Nothing to do if no clients are waiting.
+    if pending.0.is_empty() {
+        return;
+    }
+
+    let Some(sender) = atmos_sender.as_deref() else {
+        error!("No AtmosStreamMessage sender available; {} client(s) waiting", pending.0.len());
+        return;
+    };
+
+    let Some(grid) = gas_grid.as_deref() else {
+        // Resource not yet inserted (listen-server: setup_world hasn't run).
+        // Keep clients queued; we'll retry next frame.
+        return;
+    };
+
+    let clients = std::mem::take(&mut pending.0);
+    for from in clients {
+        let msg = AtmosStreamMessage::GasGridData {
+            width: grid.width(),
+            height: grid.height(),
+            gas_moles: grid.moles_vec(),
+        };
+
+        if let Err(e) = sender.send_to(from, &msg) {
+            error!("Failed to send GasGridData to ClientId({}): {}", from.0, e);
+            continue;
+        }
+
+        if let Err(e) = sender.send_stream_ready_to(from) {
+            error!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
+            continue;
+        }
+
+        info!(
+            "Sent gas grid snapshot {}×{} + StreamReady to ClientId({})",
+            grid.width(),
+            grid.height(),
+            from.0
+        );
+        module_ready.write(ModuleReadySent { client: from });
     }
 }

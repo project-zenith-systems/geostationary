@@ -1,12 +1,51 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use physics::{Collider, GravityScale, LockedAxes, RigidBody};
+use network::{
+    Client, ClientId, ControlledByClient, EntityState, ModuleReadySent, NetId, NetworkSet,
+    PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender,
+    NETWORK_UPDATE_INTERVAL,
+};
+use physics::{Collider, LinearVelocity, RigidBody};
+use serde::{Deserialize, Serialize};
+use wincode::{SchemaRead, SchemaWrite};
+
+/// System set for the things module's server-side lifecycle systems.
+/// Other modules can use this for explicit ordering relative to things systems.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ThingsSet {
+    /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages and [`StreamReady`] to a joining client.
+    HandleClientJoined,
+}
 
 /// Marker component for non-grid-bound world objects.
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
+pub struct Thing {
+    /// Kind index used to look up the registered [`ThingRegistry`] template.
+    /// Kind 0 = creature, kind 1 = ball, etc.
+    pub kind: u16,
+}
+
+/// Tracks the last position and velocity that was broadcast for this entity.
+/// `broadcast_state` compares current values against these to skip unchanged
+/// entities — Bevy's `Changed<Transform>` cannot be used because the physics
+/// engine writes to `Transform` every frame even for resting bodies.
+#[derive(Component, Default)]
+struct LastBroadcast {
+    position: Vec3,
+    velocity: Vec3,
+}
+
+/// Marker component for the entity controlled by the local player.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
-pub struct Thing;
+pub struct PlayerControlled;
+
+/// Display name for an entity, shown as a billboard nameplate in world space.
+#[derive(Component, Debug, Clone, Default, Reflect)]
+#[reflect(Component)]
+pub struct DisplayName(pub String);
 
 /// Current input direction for an entity. Written by input systems (player module)
 /// or from received network messages (server). Read by creatures module
@@ -44,6 +83,95 @@ impl ThingRegistry {
     }
 }
 
+/// Maps NetId to Entity for O(1) lookup during state-update processing.
+#[derive(Resource, Default)]
+pub struct NetIdIndex(pub HashMap<NetId, Entity>);
+
+/// Stream 3 wire format: server→client messages for the things module.
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub enum ThingsStreamMessage {
+    /// A replicated entity was spawned.
+    EntitySpawned {
+        net_id: NetId,
+        kind: u16,
+        position: [f32; 3],
+        velocity: [f32; 3],
+        /// If set, the receiving client with this ID should take control of this entity.
+        owner: Option<ClientId>,
+        /// Optional display name for the entity (e.g. player name).
+        name: Option<String>,
+    },
+    /// A replicated entity was despawned.
+    EntityDespawned { net_id: NetId },
+    /// Authoritative spatial state update for all replicated things entities.
+    StateUpdate { entities: Vec<EntityState> },
+}
+
+/// Timer for throttling state broadcasts from the server.
+#[derive(Resource)]
+pub struct StateBroadcastTimer(pub Timer);
+
+impl Default for StateBroadcastTimer {
+    fn default() -> Self {
+        Self(Timer::from_seconds(
+            NETWORK_UPDATE_INTERVAL,
+            TimerMode::Repeating,
+        ))
+    }
+}
+
+/// Spawns a thing entity with a server-assigned [`NetId`] and triggers [`SpawnThing`]
+/// so that the registered template for the given `kind` adds type-specific components.
+///
+/// Calls [`Server::next_net_id`] internally — callers must not pre-allocate the id.
+///
+/// Returns the spawned [`Entity`] and its assigned [`NetId`].
+pub fn spawn_thing(
+    commands: &mut Commands,
+    server: &mut Server,
+    kind: u16,
+    position: Vec3,
+) -> (Entity, NetId) {
+    let net_id = server.next_net_id();
+    let entity = commands.spawn(net_id).id();
+    commands.trigger(SpawnThing {
+        entity,
+        kind,
+        position,
+    });
+    // Register in NetIdIndex so that a listen-server's client-side
+    // handle_entity_lifecycle sees this entity as already spawned and
+    // skips the duplicate EntitySpawned from the catch-up burst.
+    commands.queue(move |world: &mut World| {
+        world.resource_mut::<NetIdIndex>().0.insert(net_id, entity);
+    });
+    (entity, net_id)
+}
+
+/// Spawns a player-controlled thing entity with a server-assigned [`NetId`],
+/// [`ControlledByClient`], [`InputDirection`], and [`DisplayName`], then triggers
+/// [`SpawnThing`] so that the registered template (kind 0 = creature) adds physics
+/// and type-specific components.
+///
+/// Returns the spawned [`Entity`] and its assigned [`NetId`].
+///
+/// Called by the `souls` module when binding a soul to a newly connected client.
+pub fn spawn_player_creature(
+    commands: &mut Commands,
+    server: &mut Server,
+    owner: ClientId,
+    position: Vec3,
+    display_name: &str,
+) -> (Entity, NetId) {
+    let (creature, net_id) = spawn_thing(commands, server, 0, position);
+    commands.entity(creature).insert((
+        ControlledByClient(owner),
+        InputDirection::default(),
+        DisplayName(display_name.to_string()),
+    ));
+    (creature, net_id)
+}
+
 /// Plugin that registers the thing spawning system and shared entity primitives.
 ///
 /// Must be added before any plugin that calls [`ThingRegistry::register`]
@@ -54,9 +182,40 @@ pub struct ThingsPlugin;
 impl Plugin for ThingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Thing>();
+        app.register_type::<PlayerControlled>();
         app.register_type::<InputDirection>();
+        app.register_type::<DisplayName>();
         app.init_resource::<ThingRegistry>();
+        app.init_resource::<NetIdIndex>();
+        app.init_resource::<StateBroadcastTimer>();
         app.add_observer(on_spawn_thing);
+
+        // Register stream 3 (server→client) with StreamRegistry.
+        let (sender, reader) = app
+            .world_mut()
+            .get_resource_mut::<StreamRegistry>()
+            .expect("ThingsPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)")
+            .register::<ThingsStreamMessage>(StreamDef {
+                tag: 3,
+                name: "things",
+                direction: StreamDirection::ServerToClient,
+            });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
+
+        app.add_systems(
+            PreUpdate,
+            (
+                handle_entity_lifecycle
+                    .run_if(resource_exists::<Client>),
+                handle_client_joined
+                    .run_if(resource_exists::<Server>)
+                    .in_set(ThingsSet::HandleClientJoined),
+            )
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send),
+        );
+        app.add_systems(Update, broadcast_state.run_if(resource_exists::<Server>));
     }
 }
 
@@ -64,24 +223,32 @@ fn on_spawn_thing(
     on: On<SpawnThing>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     registry: Res<ThingRegistry>,
 ) {
     let event = on.event();
 
-    commands.entity(event.entity).insert((
-        Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.8, 0.5, 0.2),
-            ..default()
-        })),
+    let mut entity = commands.entity(event.entity);
+    entity.insert((
         Transform::from_translation(event.position),
         RigidBody::Dynamic,
+        LinearVelocity::default(),
         Collider::capsule(0.3, 1.0),
-        LockedAxes::ROTATION_LOCKED.lock_translation_y(),
-        GravityScale(0.0),
-        Thing,
+        Thing { kind: event.kind },
+        LastBroadcast::default(),
     ));
+
+    // Insert visual components only when the renderer (PbrPlugin) is available.
+    // In headless server mode, Assets<StandardMaterial> is not registered.
+    if let Some(ref mut materials) = materials {
+        entity.insert((
+            Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.8, 0.5, 0.2),
+                ..default()
+            })),
+        ));
+    }
 
     if let Some(builder) = registry.templates.get(&event.kind) {
         builder(event.entity, event, &mut commands);
@@ -89,3 +256,216 @@ fn on_spawn_thing(
         warn!("No template registered for thing kind {}", event.kind);
     }
 }
+
+/// Handles client-side entity lifecycle and state updates from stream 3.
+///
+/// Processes all [`ThingsStreamMessage`] frames:
+/// - [`ThingsStreamMessage::EntitySpawned`]: spawns replica entity via [`SpawnThing`],
+///   inserts [`DisplayName`], and tracks it in [`NetIdIndex`].
+/// - [`ThingsStreamMessage::EntityDespawned`]: despawns the entity and removes it from
+///   the index. [`DespawnOnExit`] provides additional state-transition cleanup.
+/// - [`ThingsStreamMessage::StateUpdate`]: applies authoritative position updates.
+fn handle_entity_lifecycle(
+    mut commands: Commands,
+    mut reader: ResMut<StreamReader<ThingsStreamMessage>>,
+    mut net_id_index: ResMut<NetIdIndex>,
+    client: Res<Client>,
+    server: Option<Res<Server>>,
+    mut entities: Query<&mut Transform, With<Thing>>,
+) {
+    let is_listen_server = server.is_some();
+    for msg in reader.drain() {
+        match msg {
+            ThingsStreamMessage::EntitySpawned {
+                net_id,
+                kind,
+                position,
+                velocity: _,
+                owner,
+                name,
+            } => {
+                let controlled = owner.is_some() && owner == client.local_id;
+
+                // On a listen-server the entity was already spawned server-side
+                // and pre-registered in NetIdIndex. Skip the spawn but still
+                // apply client-only components to the existing entity.
+                if let Some(&existing) = net_id_index.0.get(&net_id) {
+                    debug!(
+                        "EntitySpawned for NetId({}) already exists, applying client components",
+                        net_id.0
+                    );
+                    if let Some(n) = name.as_deref().filter(|n| !n.is_empty()) {
+                        commands.entity(existing).insert(DisplayName(n.to_string()));
+                    }
+                    if controlled {
+                        commands.entity(existing).insert(PlayerControlled);
+                    }
+                    if let Some(owner_id) = owner {
+                        commands.entity(existing).insert(ControlledByClient(owner_id));
+                    }
+                    continue;
+                }
+
+                let pos = Vec3::from_array(position);
+                info!("Spawning entity NetId({}) at {pos}", net_id.0);
+
+                let entity = commands.spawn(net_id).id();
+                commands.trigger(SpawnThing {
+                    entity,
+                    kind,
+                    position: pos,
+                });
+
+                if let Some(n) = name.as_deref().filter(|n| !n.is_empty()) {
+                    commands.entity(entity).insert(DisplayName(n.to_string()));
+                }
+
+                if controlled {
+                    commands.entity(entity).insert(PlayerControlled);
+                }
+
+                if let Some(owner_id) = owner {
+                    commands.entity(entity).insert(ControlledByClient(owner_id));
+                }
+
+                net_id_index.0.insert(net_id, entity);
+            }
+            ThingsStreamMessage::EntityDespawned { net_id } => {
+                info!("Despawning entity NetId({})", net_id.0);
+                if let Some(entity) = net_id_index.0.remove(&net_id) {
+                    commands.entity(entity).despawn();
+                }
+            }
+            ThingsStreamMessage::StateUpdate { entities: states } => {
+                // On a listen-server the transforms are already authoritative;
+                // re-applying them would trigger Changed<Transform> and re-dirty
+                // every entity each frame.
+                if is_listen_server {
+                    continue;
+                }
+                for state in &states {
+                    if let Some(&entity) = net_id_index.0.get(&state.net_id) {
+                        if let Ok(mut transform) = entities.get_mut(entity) {
+                            transform.translation = Vec3::from_array(state.position);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Handles server-side catch-up on client join for stream 3.
+///
+/// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages for all currently
+/// tracked entities to the joining client, then sends the [`StreamReady`] sentinel for stream 3
+/// so the client can count toward its initial-sync barrier.
+///
+/// Creature spawning and the EntitySpawned broadcast for the new player entity are handled
+/// by the `souls` module's `bind_soul` system.
+fn handle_client_joined(
+    mut messages: MessageReader<PlayerEvent>,
+    stream_sender: Res<StreamSender<ThingsStreamMessage>>,
+    entities: Query<(
+        &NetId,
+        Option<&ControlledByClient>,
+        &Transform,
+        &LinearVelocity,
+        Option<&DisplayName>,
+        &Thing,
+    )>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
+) {
+    for event in messages.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
+
+        // Catch-up: send EntitySpawned on stream 3 for every existing Thing entity.
+        for (net_id, opt_controlled_by, transform, velocity, opt_name, thing) in entities.iter() {
+            let owner = opt_controlled_by
+                .map(|c| c.0)
+                .filter(|&owner_id| owner_id == *from);
+            if let Err(e) = stream_sender.send_to(
+                *from,
+                &ThingsStreamMessage::EntitySpawned {
+                    net_id: *net_id,
+                    kind: thing.kind,
+                    position: transform.translation.into(),
+                    velocity: [velocity.x, velocity.y, velocity.z],
+                    owner,
+                    name: opt_name.map(|n| n.0.clone()),
+                },
+            ) {
+                error!(
+                    "Failed to send EntitySpawned catch-up to ClientId({}): {e}",
+                    from.0
+                );
+            }
+        }
+
+        // Signal that the initial burst for stream 3 is complete.
+        // The new player entity's EntitySpawned is broadcast by the souls module after this.
+        if let Err(e) = stream_sender.send_stream_ready_to(*from) {
+            error!(
+                "Failed to send StreamReady for things stream to ClientId({}): {e}",
+                from.0
+            );
+        } else {
+            module_ready.write(ModuleReadySent { client: *from });
+        }
+    }
+}
+
+/// Broadcasts authoritative position updates on stream 3 for entities whose
+/// state has changed since the last broadcast.
+///
+/// Throttled to [`NETWORK_UPDATE_INTERVAL`] to reduce bandwidth.
+/// Compares current position/velocity against [`LastBroadcast`] to skip
+/// unchanged entities.
+const POSITION_EPSILON_SQ: f32 = 1e-6;
+const VELOCITY_EPSILON_SQ: f32 = 1e-6;
+
+fn broadcast_state(
+    time: Res<Time>,
+    mut timer: ResMut<StateBroadcastTimer>,
+    stream_sender: Res<StreamSender<ThingsStreamMessage>>,
+    mut entities: Query<(&NetId, &Transform, Option<&LinearVelocity>, &mut LastBroadcast)>,
+) {
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
+
+    let states: Vec<EntityState> = entities
+        .iter_mut()
+        .filter_map(|(net_id, transform, velocity, mut last)| {
+            let pos = transform.translation;
+            let vel = velocity.map(|lv| lv.0).unwrap_or(Vec3::ZERO);
+
+            let pos_changed = (pos - last.position).length_squared() > POSITION_EPSILON_SQ;
+            let vel_changed = (vel - last.velocity).length_squared() > VELOCITY_EPSILON_SQ;
+
+            if !pos_changed && !vel_changed {
+                return None;
+            }
+
+            last.position = pos;
+            last.velocity = vel;
+
+            Some(EntityState {
+                net_id: *net_id,
+                position: pos.into(),
+                velocity: [vel.x, vel.y, vel.z],
+            })
+        })
+        .collect();
+
+    if !states.is_empty() {
+        if let Err(e) =
+            stream_sender.broadcast(&ThingsStreamMessage::StateUpdate { entities: states })
+        {
+            error!("Failed to broadcast entity state on things stream: {e}");
+        }
+    }
+}
+

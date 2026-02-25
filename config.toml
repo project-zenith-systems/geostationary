@@ -5,6 +5,9 @@ title = "Geostationary"
 port = 7777
 
 [debug]
+# Log level, ie. trace, debug, info, warn, error
+log_level = "info"
+
 # Enable physics debug rendering (collider wireframes)
 physics_debug = false
 

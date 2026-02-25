@@ -350,7 +350,9 @@ name = "atmospherics"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "network",
  "tiles",
+ "wincode",
 ]
 
 [[package]]
@@ -2827,6 +2829,7 @@ dependencies = [
  "physics",
  "player",
  "serde",
+ "souls",
  "things",
  "tiles",
  "ui",
@@ -5447,6 +5450,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "souls"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "network",
+ "things",
+]
+
+[[package]]
 name = "spade"
 version = "2.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5603,7 +5615,10 @@ name = "things"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "network",
  "physics",
+ "serde",
+ "wincode",
 ]
 
 [[package]]
@@ -5660,7 +5675,9 @@ name = "tiles"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "network",
  "physics",
+ "wincode",
 ]
 
 [[package]]

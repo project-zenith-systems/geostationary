@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub window: WindowConfig,
     pub debug: DebugConfig,
     pub atmospherics: AtmosphericsConfig,
+    pub souls: SoulsConfig,
 }
 
 impl Default for AppConfig {
@@ -23,9 +24,13 @@ impl Default for AppConfig {
             },
             debug: DebugConfig {
                 physics_debug: false,
+                log_level: "info".to_string(),
             },
             atmospherics: AtmosphericsConfig {
                 standard_pressure: 101.325,
+            },
+            souls: SoulsConfig {
+                player_name: "Player".to_string(),
             },
         }
     }
@@ -44,11 +49,18 @@ pub struct WindowConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DebugConfig {
     pub physics_debug: bool,
+    pub log_level: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AtmosphericsConfig {
     pub standard_pressure: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SoulsConfig {
+    /// Display name shown above the player's creature.
+    pub player_name: String,
 }
 
 pub fn load_config() -> AppConfig {
@@ -68,7 +80,12 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
         .set_default("network.port", defaults.network.port)?
         .set_default("window.title", defaults.window.title)?
         .set_default("debug.physics_debug", defaults.debug.physics_debug)?
-        .set_default("atmospherics.standard_pressure", defaults.atmospherics.standard_pressure as f64)?
+        .set_default("debug.log_level", defaults.debug.log_level)?
+        .set_default(
+            "atmospherics.standard_pressure",
+            defaults.atmospherics.standard_pressure as f64,
+        )?
+        .set_default("souls.player_name", defaults.souls.player_name)?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
         .add_source(Environment::with_prefix("GEOSTATIONARY").separator("__"));
@@ -87,5 +104,7 @@ mod tests {
         assert_eq!(config.window.title, "Geostationary");
         assert_eq!(config.debug.physics_debug, false);
         assert_eq!(config.atmospherics.standard_pressure, 101.325);
+        assert_eq!(config.souls.player_name, "Player");
+        assert_eq!(config.debug.log_level, "info");
     }
 }

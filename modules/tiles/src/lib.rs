@@ -1,7 +1,12 @@
 use bevy::prelude::*;
+use network::{
+    ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
+    StreamDirection, StreamReader, StreamRegistry, StreamSender,
+};
 use physics::{Collider, RigidBody};
+use wincode::{SchemaRead, SchemaWrite};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, SchemaRead, SchemaWrite)]
 #[reflect(Debug, PartialEq)]
 pub enum TileKind {
     Floor,
@@ -115,6 +120,82 @@ impl Tilemap {
     }
 }
 
+/// Wire format for stream 1 (server→client tiles stream).
+#[derive(Debug, Clone, SchemaRead, SchemaWrite)]
+pub enum TilesStreamMessage {
+    /// Full tilemap snapshot sent once on connect.
+    TilemapData {
+        width: u32,
+        height: u32,
+        tiles: Vec<TileKind>,
+    },
+}
+
+/// Stream tag for the server→client tiles stream (stream 1).
+pub const TILES_STREAM_TAG: u8 = 1;
+
+/// Decode a [`TilesStreamMessage`] from raw stream-frame bytes.
+pub fn decode_tiles_message(bytes: &[u8]) -> Result<TilesStreamMessage, String> {
+    wincode::deserialize(bytes).map_err(|e| e.to_string())
+}
+
+impl From<&Tilemap> for TilesStreamMessage {
+    fn from(tilemap: &Tilemap) -> Self {
+        TilesStreamMessage::TilemapData {
+            width: tilemap.width,
+            height: tilemap.height,
+            tiles: tilemap.tiles.clone(),
+        }
+    }
+}
+
+impl TryFrom<TilesStreamMessage> for Tilemap {
+    type Error = String;
+
+    fn try_from(msg: TilesStreamMessage) -> Result<Self, Self::Error> {
+        match msg {
+            TilesStreamMessage::TilemapData {
+                width,
+                height,
+                tiles,
+            } => {
+                let expected = width
+                    .checked_mul(height)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| format!("Tilemap dimensions {width}×{height} overflow"))?;
+                if tiles.len() != expected {
+                    return Err(format!(
+                        "tile data length mismatch: expected {expected}, got {}",
+                        tiles.len()
+                    ));
+                }
+                Ok(Tilemap {
+                    width,
+                    height,
+                    tiles,
+                })
+            }
+        }
+    }
+}
+
+impl Tilemap {
+    /// Serialize the tilemap to bytes using the `TilesStreamMessage::TilemapData` wire format.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        wincode::serialize(&TilesStreamMessage::from(self)).map_err(|e| {
+            format!(
+                "Failed to serialize Tilemap ({}×{}): {e}",
+                self.width, self.height
+            )
+        })
+    }
+
+    /// Deserialize a tilemap from bytes produced by [`Tilemap::to_bytes`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        decode_tiles_message(bytes).and_then(Tilemap::try_from)
+    }
+}
+
 pub struct TilesPlugin;
 
 impl Plugin for TilesPlugin {
@@ -122,8 +203,44 @@ impl Plugin for TilesPlugin {
         app.register_type::<TileKind>();
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
-        app.init_resource::<TileMeshes>();
-        app.add_systems(Update, spawn_tile_meshes);
+
+        let headless = app.world().contains_resource::<Headless>();
+        if !headless {
+            // Tile mesh spawning is visual-only; skip in headless server mode.
+            app.init_resource::<TileMeshes>();
+            app.add_systems(Update, spawn_tile_meshes);
+        }
+
+        app.add_systems(
+            PreUpdate,
+            handle_tiles_stream
+                .run_if(not(resource_exists::<Server>))
+                .after(NetworkSet::Receive),
+        );
+        // Runs in Update (not PreUpdate) so that StateTransition has already
+        // processed OnEnter(InGame) → setup_world → Tilemap inserted.
+        // ClientJoined messages written in PreUpdate are still readable here
+        // thanks to double-buffered message semantics.
+        app.init_resource::<PendingTilesSyncs>();
+        app.add_systems(
+            Update,
+            send_tilemap_on_connect.run_if(resource_exists::<Server>),
+        );
+
+        // Register stream 1 (server→client tiles stream). Requires NetworkPlugin to be added first.
+        let mut registry = app.world_mut().get_resource_mut::<StreamRegistry>().expect(
+            "TilesPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)",
+        );
+        let (sender, reader): (
+            StreamSender<TilesStreamMessage>,
+            StreamReader<TilesStreamMessage>,
+        ) = registry.register(StreamDef {
+            tag: TILES_STREAM_TAG,
+            name: "tiles",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
     }
 }
 
@@ -217,7 +334,94 @@ fn spawn_tile_meshes(
             }
         }
     }
+}
 
+/// Bevy system that handles incoming tilemap snapshots from the server on stream 1.
+/// Drains [`StreamReader<TilesStreamMessage>`], explicitly matches on each variant,
+/// validates dimensions via [`TryFrom`], and inserts the [`Tilemap`] resource.
+fn handle_tiles_stream(
+    mut commands: Commands,
+    mut reader: ResMut<StreamReader<TilesStreamMessage>>,
+) {
+    for msg in reader.drain() {
+        match msg {
+            variant @ TilesStreamMessage::TilemapData { .. } => match Tilemap::try_from(variant) {
+                Ok(tilemap) => {
+                    info!(
+                        "Received tilemap {}×{} from server",
+                        tilemap.width, tilemap.height
+                    );
+                    commands.insert_resource(tilemap);
+                }
+                Err(e) => error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}"),
+            },
+        }
+    }
+}
+
+/// Clients that joined before the [`Tilemap`] resource was available (e.g. on a
+/// listen-server where `PlayerEvent::Joined` fires before `OnEnter(InGame)`).
+/// Drained once the resource exists.
+#[derive(Resource, Default)]
+struct PendingTilesSyncs(Vec<ClientId>);
+
+/// Server-side system: sends a full tilemap snapshot + [`StreamReady`] to each joining client.
+/// Listens to [`PlayerEvent::Joined`] so `TilesPlugin` is decoupled from
+/// internal network events ([`ServerEvent`]).
+///
+/// If the [`Tilemap`] resource does not exist yet (listen-server startup), the
+/// client ID is queued in [`PendingTilesSyncs`] and retried each frame.
+fn send_tilemap_on_connect(
+    mut events: MessageReader<PlayerEvent>,
+    tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
+    tilemap: Option<Res<Tilemap>>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
+    mut pending: ResMut<PendingTilesSyncs>,
+) {
+    // Collect newly joined clients.
+    for event in events.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
+        pending.0.push(*from);
+    }
+
+    // Nothing to do if no clients are waiting.
+    if pending.0.is_empty() {
+        return;
+    }
+
+    let Some(ts) = tiles_sender.as_deref() else {
+        error!("No TilesStreamMessage sender available; {} client(s) waiting", pending.0.len());
+        return;
+    };
+
+    let Some(map) = tilemap.as_deref() else {
+        // Resource not yet inserted (listen-server: setup_world hasn't run).
+        // Keep clients queued; we'll retry next frame.
+        return;
+    };
+
+    let clients = std::mem::take(&mut pending.0);
+    for from in clients {
+        if let Err(e) = ts.send_to(from, &TilesStreamMessage::from(map)) {
+            error!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
+            continue;
+        }
+
+        if let Err(e) = ts.send_stream_ready_to(from) {
+            error!("Failed to send StreamReady to ClientId({}): {}", from.0, e);
+            continue;
+        }
+
+        info!(
+            "Sent tilemap snapshot {}×{} + StreamReady to ClientId({})",
+            map.width(),
+            map.height(),
+            from.0
+        );
+        module_ready.write(ModuleReadySent { client: from });
+    }
 }
 
 #[cfg(test)]
@@ -326,5 +530,55 @@ mod tests {
         assert_eq!(tiles[1], (IVec2::new(1, 0), TileKind::Floor));
         assert_eq!(tiles[2], (IVec2::new(0, 1), TileKind::Floor));
         assert_eq!(tiles[3], (IVec2::new(1, 1), TileKind::Wall));
+    }
+
+    #[test]
+    fn test_tilemap_to_from_bytes_roundtrip() {
+        let original = Tilemap::test_room();
+        let bytes = original.to_bytes().expect("to_bytes should succeed");
+        let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
+
+        assert_eq!(restored.width(), original.width());
+        assert_eq!(restored.height(), original.height());
+        for (pos, kind) in original.iter() {
+            assert_eq!(restored.get(pos), Some(kind));
+        }
+    }
+
+    #[test]
+    fn test_tilemap_to_from_bytes_small() {
+        let mut tilemap = Tilemap::new(3, 2, TileKind::Floor);
+        tilemap.set(IVec2::new(0, 0), TileKind::Wall);
+        tilemap.set(IVec2::new(2, 1), TileKind::Wall);
+
+        let bytes = tilemap.to_bytes().expect("to_bytes should succeed");
+        let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
+
+        assert_eq!(restored.width(), 3);
+        assert_eq!(restored.height(), 2);
+        assert_eq!(restored.get(IVec2::new(0, 0)), Some(TileKind::Wall));
+        assert_eq!(restored.get(IVec2::new(1, 0)), Some(TileKind::Floor));
+        assert_eq!(restored.get(IVec2::new(2, 1)), Some(TileKind::Wall));
+    }
+
+    #[test]
+    fn test_from_bytes_invalid() {
+        let result = Tilemap::from_bytes(&[0xFF, 0x00]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_from_dimension_overflow() {
+        let msg = TilesStreamMessage::TilemapData {
+            width: u32::MAX,
+            height: 2,
+            tiles: vec![TileKind::Floor; 4],
+        };
+        let result = Tilemap::try_from(msg);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("overflow"),
+            "error should mention overflow"
+        );
     }
 }

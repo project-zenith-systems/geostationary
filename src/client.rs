@@ -1,13 +1,7 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use network::{
-    Client, ClientEvent, ClientMessage, ControlledByClient, NETWORK_UPDATE_INTERVAL,
-    NetClientSender, NetId, NetworkSet, ServerMessage,
-};
-use player::PlayerControlled;
-use things::{InputDirection, SpawnThing, Thing};
+use network::{Client, ClientEvent, NetworkSet, NetId, ServerMessage};
+use things::NetIdIndex;
 
 use crate::app_state::AppState;
 
@@ -15,9 +9,13 @@ pub struct ClientPlugin;
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<InputSendTimer>();
-        app.init_resource::<LastSentDirection>();
-        app.init_resource::<NetIdIndex>();
+        app.add_observer(on_net_id_added);
+        app.init_resource::<PendingSync>();
+        app.add_systems(OnExit(AppState::InGame), clear_net_id_index);
+        app.add_systems(
+            OnEnter(AppState::InGame),
+            setup_client_scene.run_if(resource_exists::<Client>),
+        );
         app.add_systems(
             PreUpdate,
             handle_client_events
@@ -25,170 +23,144 @@ impl Plugin for ClientPlugin {
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
         );
-        app.add_systems(Update, send_client_input.run_if(resource_exists::<Client>));
     }
 }
 
-/// Maps NetId to Entity for O(1) lookup during StateUpdate processing.
+/// Tracks the initial-sync barrier for the client.
+///
+/// Initial sync is complete when:
+/// - [`PendingSync::initial_state_done`] is `true` (server sent [`ServerMessage::InitialStateDone`])
+/// - [`PendingSync::streams_ready`] equals [`PendingSync::expected_streams`]
+///   (all module streams sent their [`network::StreamReady`] sentinel)
 #[derive(Resource, Default)]
-struct NetIdIndex(HashMap<NetId, Entity>);
+struct PendingSync {
+    /// Number of server→client module streams to expect, set from [`ServerMessage::Welcome`].
+    expected_streams: u8,
+    /// Number of [`ClientEvent::StreamReady`] sentinels received so far.
+    streams_ready: u8,
+    /// Whether [`ServerMessage::InitialStateDone`] has been received.
+    initial_state_done: bool,
+}
 
-/// Timer for throttling client input sends.
-#[derive(Resource)]
-struct InputSendTimer(Timer);
+impl PendingSync {
+    /// Returns `true` when all stream sentinels and the `InitialStateDone` message have arrived.
+    fn is_complete(&self) -> bool {
+        self.initial_state_done && self.streams_ready >= self.expected_streams
+    }
 
-impl Default for InputSendTimer {
-    fn default() -> Self {
-        Self(Timer::from_seconds(
-            NETWORK_UPDATE_INTERVAL,
-            TimerMode::Repeating,
-        ))
+    fn reset(&mut self) {
+        *self = Self::default();
     }
 }
 
-/// Tracks the last input direction sent to avoid redundant messages.
-#[derive(Resource, Default)]
-struct LastSentDirection(Vec3);
+/// System that sets up client-only scene elements when entering [`AppState::InGame`].
+///
+/// Spawns directional lighting for clients (and listen-servers, which also hold a [`Client`]
+/// resource).  Dedicated headless servers have no [`Client`] resource and skip this system.
+fn setup_client_scene(mut commands: Commands) {
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 10000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::new(4.0, 0.0, 4.0), Vec3::Y),
+        DespawnOnExit(AppState::InGame),
+    ));
+}
+
+/// Inserts [`DespawnOnExit`] on every replicated entity when it receives a [`NetId`].
+///
+/// The `things` module owns lifecycle management but cannot reference [`AppState`],
+/// so state-scoped cleanup is wired here instead.
+fn on_net_id_added(trigger: On<Add, NetId>, mut commands: Commands) {
+    commands
+        .entity(trigger.event_target())
+        .insert(DespawnOnExit(AppState::InGame));
+}
+
+/// Clears the [`NetIdIndex`] when leaving [`AppState::InGame`].
+///
+/// Entities are already despawned via [`DespawnOnExit`]; this removes the now-stale
+/// mappings so a subsequent connection starts with a clean index.
+fn clear_net_id_index(mut net_id_index: ResMut<NetIdIndex>) {
+    net_id_index.0.clear();
+}
 
 fn handle_client_events(
-    mut commands: Commands,
     mut messages: MessageReader<ClientEvent>,
     mut next_state: ResMut<NextState<AppState>>,
-    mut entities: Query<(Entity, &NetId, &mut Transform), With<Thing>>,
+    state: Res<State<AppState>>,
     mut client: ResMut<Client>,
-    mut net_id_index: ResMut<NetIdIndex>,
+    mut sync: ResMut<PendingSync>,
 ) {
     for event in messages.read() {
         match event {
             ClientEvent::Connected => {
                 info!("Connected to server");
-                next_state.set(AppState::InGame);
+                // Reset sync state and wait for Welcome + module StreamReady sentinels
+                // + InitialStateDone before entering InGame.
+                sync.reset();
             }
             ClientEvent::Disconnected { reason } => {
                 info!("Disconnected: {reason}");
-                net_id_index.0.clear();
                 next_state.set(AppState::MainMenu);
             }
             ClientEvent::Error(msg) => {
                 error!("Network error: {msg}");
-                net_id_index.0.clear();
                 next_state.set(AppState::MainMenu);
             }
-            ClientEvent::ServerMessageReceived(message) => {
-                handle_server_message(
-                    message,
-                    &mut commands,
-                    &mut entities,
-                    &mut client,
-                    &mut net_id_index,
-                );
+            ClientEvent::StreamFrame { tag: _, data: _ } => {
+                // Intentionally unhandled here; stream frames are processed in the respective module systems.
             }
-        }
-    }
-}
-
-fn handle_server_message(
-    message: &ServerMessage,
-    commands: &mut Commands,
-    entities: &mut Query<(Entity, &NetId, &mut Transform), With<Thing>>,
-    client: &mut ResMut<Client>,
-    net_id_index: &mut ResMut<NetIdIndex>,
-) {
-    match message {
-        ServerMessage::Welcome { client_id } => {
-            info!("Received Welcome, local ClientId assigned: {}", client_id.0);
-            client.local_id = Some(*client_id);
-        }
-        ServerMessage::EntitySpawned {
-            net_id,
-            kind,
-            position,
-            velocity: _,
-            owner,
-        } => {
-            // Skip if entity already exists (e.g. duplicate message)
-            if net_id_index.0.contains_key(net_id) {
-                debug!(
-                    "EntitySpawned for NetId({}) but already exists, skipping",
-                    net_id.0
-                );
-                return;
-            }
-
-            let pos = Vec3::from_array(*position);
-            info!("Spawning replica entity NetId({}) at {pos}", net_id.0);
-
-            let controlled = *owner == client.local_id && owner.is_some();
-            let entity = commands
-                .spawn((*net_id, DespawnOnExit(AppState::InGame)))
-                .id();
-            commands.trigger(SpawnThing {
-                entity,
-                kind: *kind,
-                position: pos,
-            });
-
-            if controlled {
-                commands.entity(entity).insert(PlayerControlled);
-            }
-
-            if let Some(owner_id) = owner {
-                commands
-                    .entity(entity)
-                    .insert(ControlledByClient(*owner_id));
-            }
-
-            net_id_index.0.insert(*net_id, entity);
-        }
-        ServerMessage::EntityDespawned { net_id } => {
-            info!("Despawning replica entity NetId({})", net_id.0);
-            if let Some(entity) = net_id_index.0.remove(net_id) {
-                commands.entity(entity).despawn();
-            }
-        }
-        ServerMessage::StateUpdate { entities: states } => {
-            for state in states.iter() {
-                if let Some(&entity) = net_id_index.0.get(&state.net_id)
-                    && let Ok((_, _, mut transform)) = entities.get_mut(entity)
-                {
-                    transform.translation = Vec3::from_array(state.position);
+            ClientEvent::StreamReady { tag } => {
+                sync.streams_ready += 1;
+                if sync.expected_streams > 0 && sync.streams_ready > sync.expected_streams {
+                    warn!(
+                        "Received more StreamReady sentinels than expected \
+                         (tag={}, got {}, expected {}); server/client stream count mismatch",
+                        tag, sync.streams_ready, sync.expected_streams
+                    );
                 }
+                debug!(
+                    "Stream {} ready ({}/{})",
+                    tag, sync.streams_ready, sync.expected_streams
+                );
+                try_enter_in_game(&sync, &state, &mut next_state);
             }
+            ClientEvent::ServerMessageReceived(message) => match message {
+                ServerMessage::Welcome {
+                    client_id,
+                    expected_streams,
+                } => {
+                    info!(
+                        "Received Welcome, local ClientId assigned: {}, expecting {} module stream(s)",
+                        client_id.0, expected_streams
+                    );
+                    client.local_id = Some(*client_id);
+                    sync.expected_streams = *expected_streams;
+                    try_enter_in_game(&sync, &state, &mut next_state);
+                }
+                ServerMessage::InitialStateDone => {
+                    info!("Server initial state done");
+                    sync.initial_state_done = true;
+                    try_enter_in_game(&sync, &state, &mut next_state);
+                }
+            },
         }
     }
 }
 
-/// System that sends client input direction to the server.
-/// Reads InputDirection component (written by player module) and sends
-/// via NetClientSender. Throttled to NETWORK_UPDATE_RATE to reduce traffic.
-fn send_client_input(
-    time: Res<Time>,
-    mut timer: ResMut<InputSendTimer>,
-    client_sender: Option<Res<NetClientSender>>,
-    mut last_sent: ResMut<LastSentDirection>,
-    query: Query<&InputDirection, With<PlayerControlled>>,
+/// Transitions to [`AppState::InGame`] if the initial-sync barrier is complete and the app
+/// is not already in that state.  Guards against redundant state changes that would trigger
+/// a spurious [`OnExit`]/[`OnEnter`] cycle.
+fn try_enter_in_game(
+    sync: &PendingSync,
+    state: &State<AppState>,
+    next_state: &mut NextState<AppState>,
 ) {
-    let Some(sender) = client_sender else {
-        return;
-    };
-
-    if !timer.0.tick(time.delta()).just_finished() {
-        return;
-    }
-
-    let Ok(input) = query.single() else {
-        return;
-    };
-
-    let direction = input.0;
-    if direction == last_sent.0 {
-        return;
-    }
-
-    last_sent.0 = direction;
-    if let Err(e) = sender.send(&ClientMessage::Input {
-        direction: direction.into(),
-    }) {
-        error!("Failed to send client input: {e}");
+    if sync.is_complete() && *state.get() != AppState::InGame {
+        info!("Initial sync complete, entering InGame");
+        next_state.set(AppState::InGame);
     }
 }

@@ -15,13 +15,14 @@ members = [
     "modules/creatures",
     "modules/camera",
     "modules/atmospherics",
+    "modules/souls",
 ]
 
 [profile.dev]
-opt-level = 1
+opt-level = 0
 
 [profile.dev.package."*"]
-opt-level = 3
+opt-level = 1
 
 [profile.release]
 codegen-units = 1
@@ -29,7 +30,7 @@ lto = "thin"
 
 [profile.wasm-release]
 inherits = "release"
-# Optimize with size in mind (also try "z", sometimes it is better).
+# Use "s" to optimize with size in mind (also try "z", sometimes it is better).
 opt-level = "s"
 strip = "debuginfo"
 
@@ -37,6 +38,7 @@ strip = "debuginfo"
 bevy = { version = "0.18" }
 config = { version = "0.15", features = ["ron", "toml"] }
 serde = { version = "1", features = ["derive"] }
+wincode = { version = "0.4", features = ["derive"] }
 
 [dependencies]
 bevy = { workspace = true }
@@ -52,3 +54,4 @@ player = { path = "modules/player" }
 creatures = { path = "modules/creatures" }
 camera = { path = "modules/camera" }
 atmospherics = { path = "modules/atmospherics" }
+souls = { path = "modules/souls" }
