@@ -131,6 +131,46 @@ impl GasGrid {
             .map(|idx| self.cells[idx].moles * PRESSURE_CONSTANT)
     }
 
+    /// Computes the 2D pressure gradient at the given position using central differences.
+    ///
+    /// For each axis the gradient is `(pressure_positive − pressure_negative) / 2.0`.
+    /// If a neighbouring cell is out of bounds or impassable, the center cell's pressure
+    /// is used in its place, contributing zero gradient for that direction.
+    ///
+    /// Returns the gradient as a `Vec2` in (x, z) tile-grid space.  Callers that need a
+    /// world-space force vector should map x→X and y→Z (the horizontal plane).
+    pub fn pressure_gradient_at(&self, pos: IVec2) -> Vec2 {
+        let center = self.pressure_at(pos).unwrap_or(0.0);
+
+        let p_x_pos = self
+            .passable_pressure_at(IVec2::new(pos.x + 1, pos.y))
+            .unwrap_or(center);
+        let p_x_neg = self
+            .passable_pressure_at(IVec2::new(pos.x - 1, pos.y))
+            .unwrap_or(center);
+        let p_y_pos = self
+            .passable_pressure_at(IVec2::new(pos.x, pos.y + 1))
+            .unwrap_or(center);
+        let p_y_neg = self
+            .passable_pressure_at(IVec2::new(pos.x, pos.y - 1))
+            .unwrap_or(center);
+
+        Vec2::new(
+            (p_x_pos - p_x_neg) / 2.0,
+            (p_y_pos - p_y_neg) / 2.0,
+        )
+    }
+
+    /// Returns the pressure at `pos` only if the cell is in-bounds and passable; otherwise `None`.
+    fn passable_pressure_at(&self, pos: IVec2) -> Option<f32> {
+        let idx = self.coord_to_index(pos)?;
+        if self.passable[idx] {
+            Some(self.cells[idx].moles * PRESSURE_CONSTANT)
+        } else {
+            None
+        }
+    }
+
     /// Sets the moles at the given position.
     /// Returns true if successful, false if the position is out of bounds.
     /// Clamps negative moles to 0.0 since negative gas quantities are physically invalid.
@@ -688,5 +728,63 @@ mod tests {
         let result = GasGrid::from_moles_vec(u32::MAX, 2, vec![]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("overflow"));
+    }
+
+    #[test]
+    fn test_pressure_gradient_at_uniform() {
+        // Uniform pressure → zero gradient everywhere.
+        let mut grid = GasGrid::new(3, 3);
+        let tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        grid.sync_walls(&tilemap);
+        for y in 0..3 {
+            for x in 0..3 {
+                grid.set_moles(IVec2::new(x, y), 5.0);
+            }
+        }
+        let g = grid.pressure_gradient_at(IVec2::new(1, 1));
+        assert!((g.x).abs() < 1e-6, "expected zero x-gradient, got {}", g.x);
+        assert!((g.y).abs() < 1e-6, "expected zero y-gradient, got {}", g.y);
+    }
+
+    #[test]
+    fn test_pressure_gradient_at_x_direction() {
+        // High pressure on right (x+1), vacuum on left (x-1): gradient should point +x.
+        let mut grid = GasGrid::new(3, 1);
+        let tilemap = Tilemap::new(3, 1, TileKind::Floor);
+        grid.sync_walls(&tilemap);
+        grid.set_moles(IVec2::new(0, 0), 0.0);
+        grid.set_moles(IVec2::new(1, 0), 5.0);
+        grid.set_moles(IVec2::new(2, 0), 10.0);
+
+        let g = grid.pressure_gradient_at(IVec2::new(1, 0));
+        // (p_x_pos - p_x_neg) / 2.0 = (10.0 - 0.0) / 2.0 = 5.0
+        assert!(
+            (g.x - 5.0).abs() < 1e-6,
+            "expected x-gradient = 5.0, got {}",
+            g.x
+        );
+    }
+
+    #[test]
+    fn test_pressure_gradient_at_wall_neighbour() {
+        // Wall on one side: the centre pressure is used in place of the impassable neighbour,
+        // contributing zero gradient for that direction.
+        let mut grid = GasGrid::new(3, 1);
+        let mut tilemap = Tilemap::new(3, 1, TileKind::Floor);
+        tilemap.set(IVec2::new(0, 0), TileKind::Wall);
+        grid.sync_walls(&tilemap);
+        // centre pressure
+        grid.set_moles(IVec2::new(1, 0), 4.0);
+        // right neighbour
+        grid.set_moles(IVec2::new(2, 0), 8.0);
+
+        let g = grid.pressure_gradient_at(IVec2::new(1, 0));
+        // Left is wall → use centre (4.0). Right = 8.0.
+        // gradient.x = (8.0 - 4.0) / 2.0 = 2.0
+        assert!(
+            (g.x - 2.0).abs() < 1e-6,
+            "expected x-gradient = 2.0 with wall on left, got {}",
+            g.x
+        );
     }
 }

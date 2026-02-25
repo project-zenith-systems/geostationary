@@ -4,6 +4,7 @@ use network::{
     ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
+use physics::{ConstantForce, RigidBody};
 use tiles::{TileKind, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -209,6 +210,52 @@ fn diffusion_step_system(
     gas_grid.step(time.delta_secs());
 }
 
+/// Scale factor applied to the pressure gradient to produce a force in Newtons.
+/// A value of `50.0` makes a 1-mole/cell gradient exert 50 N on a body.
+/// Adjust during integration testing to produce convincing entity movement.
+const PRESSURE_FORCE_SCALE: f32 = 50.0;
+
+/// Server-side system: applies pressure-gradient forces to nearby `RigidBody::Dynamic` entities.
+///
+/// For each dynamic body with a `Transform`, reads the gas pressure at the entity's grid cell and
+/// its four cardinal neighbours, computes the net force vector from the central-difference pressure
+/// gradient, scales it by `PRESSURE_FORCE_SCALE`, and writes it to the entity's `ConstantForce`
+/// component (inserting the component if the entity doesn't yet have one).
+///
+/// Runs in `FixedUpdate` after `diffusion_step_system`.  Forces are overwritten every tick, so
+/// there is no accumulation even if `ConstantForce` persists across frames.
+fn apply_pressure_forces(
+    mut commands: Commands,
+    gas_grid: Option<Res<GasGrid>>,
+    mut query: Query<(Entity, &RigidBody, &Transform, Option<&mut ConstantForce>)>,
+) {
+    let Some(grid) = gas_grid else {
+        return;
+    };
+
+    for (entity, rigid_body, transform, maybe_force) in &mut query {
+        if *rigid_body != RigidBody::Dynamic {
+            continue;
+        }
+
+        // Map world-space translation to tile-grid coordinates.
+        let tile_pos = IVec2::new(
+            transform.translation.x.round() as i32,
+            transform.translation.z.round() as i32,
+        );
+
+        // gradient is in (x, z) tile-grid space.
+        let gradient = grid.pressure_gradient_at(tile_pos);
+        let force_vec = Vec3::new(gradient.x, 0.0, gradient.y) * PRESSURE_FORCE_SCALE;
+
+        if let Some(mut cf) = maybe_force {
+            cf.0 = force_vec;
+        } else {
+            commands.entity(entity).insert(ConstantForce(force_vec));
+        }
+    }
+}
+
 /// Plugin that manages atmospheric simulation in the game.
 /// Registers the GasGrid as a Bevy resource and provides the infrastructure
 /// for gas diffusion across the tilemap.
@@ -221,7 +268,15 @@ impl Plugin for AtmosphericsPlugin {
         app.init_resource::<AtmosSimPaused>();
         app.add_systems(
             FixedUpdate,
-            (wall_sync_system, diffusion_step_system).chain(),
+            (wall_sync_system, diffusion_step_system, apply_pressure_forces)
+                .chain()
+                .run_if(resource_exists::<Server>),
+        );
+        app.add_systems(
+            FixedUpdate,
+            (wall_sync_system, diffusion_step_system)
+                .chain()
+                .run_if(not(resource_exists::<Server>)),
         );
         app.add_systems(
             Update,
