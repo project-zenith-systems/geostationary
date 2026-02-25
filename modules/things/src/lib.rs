@@ -27,6 +27,16 @@ pub struct Thing {
     pub kind: u16,
 }
 
+/// Tracks the last position and velocity that was broadcast for this entity.
+/// `broadcast_state` compares current values against these to skip unchanged
+/// entities — Bevy's `Changed<Transform>` cannot be used because the physics
+/// engine writes to `Transform` every frame even for resting bodies.
+#[derive(Component, Default)]
+struct LastBroadcast {
+    position: Vec3,
+    velocity: Vec3,
+}
+
 /// Marker component for the entity controlled by the local player.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
@@ -225,6 +235,7 @@ fn on_spawn_thing(
         LinearVelocity::default(),
         Collider::capsule(0.3, 1.0),
         Thing { kind: event.kind },
+        LastBroadcast::default(),
     ));
 
     // Insert visual components only when the renderer (PbrPlugin) is available.
@@ -259,8 +270,10 @@ fn handle_entity_lifecycle(
     mut reader: ResMut<StreamReader<ThingsStreamMessage>>,
     mut net_id_index: ResMut<NetIdIndex>,
     client: Res<Client>,
+    server: Option<Res<Server>>,
     mut entities: Query<&mut Transform, With<Thing>>,
 ) {
+    let is_listen_server = server.is_some();
     for msg in reader.drain() {
         match msg {
             ThingsStreamMessage::EntitySpawned {
@@ -324,6 +337,12 @@ fn handle_entity_lifecycle(
                 }
             }
             ThingsStreamMessage::StateUpdate { entities: states } => {
+                // On a listen-server the transforms are already authoritative;
+                // re-applying them would trigger Changed<Transform> and re-dirty
+                // every entity each frame.
+                if is_listen_server {
+                    continue;
+                }
                 for state in &states {
                     if let Some(&entity) = net_id_index.0.get(&state.net_id) {
                         if let Ok(mut transform) = entities.get_mut(entity) {
@@ -398,27 +417,48 @@ fn handle_client_joined(
     }
 }
 
-/// Broadcasts authoritative position updates for all tracked entities on stream 3.
+/// Broadcasts authoritative position updates on stream 3 for entities whose
+/// state has changed since the last broadcast.
 ///
 /// Throttled to [`NETWORK_UPDATE_INTERVAL`] to reduce bandwidth.
+/// Compares current position/velocity against [`LastBroadcast`] to skip
+/// unchanged entities.
+const POSITION_EPSILON_SQ: f32 = 1e-6;
+const VELOCITY_EPSILON_SQ: f32 = 1e-6;
+
 fn broadcast_state(
     time: Res<Time>,
     mut timer: ResMut<StateBroadcastTimer>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
-    entities: Query<(&NetId, &Transform, &LinearVelocity)>,
+    mut entities: Query<(&NetId, &Transform, Option<&LinearVelocity>, &mut LastBroadcast)>,
 ) {
     if !timer.0.tick(time.delta()).just_finished() {
         return;
     }
 
-    let states = entities
-        .iter()
-        .map(|(net_id, transform, velocity)| EntityState {
-            net_id: *net_id,
-            position: transform.translation.into(),
-            velocity: [velocity.x, velocity.y, velocity.z],
+    let states: Vec<EntityState> = entities
+        .iter_mut()
+        .filter_map(|(net_id, transform, velocity, mut last)| {
+            let pos = transform.translation;
+            let vel = velocity.map(|lv| lv.0).unwrap_or(Vec3::ZERO);
+
+            let pos_changed = (pos - last.position).length_squared() > POSITION_EPSILON_SQ;
+            let vel_changed = (vel - last.velocity).length_squared() > VELOCITY_EPSILON_SQ;
+
+            if !pos_changed && !vel_changed {
+                return None;
+            }
+
+            last.position = pos;
+            last.velocity = vel;
+
+            Some(EntityState {
+                net_id: *net_id,
+                position: pos.into(),
+                velocity: [vel.x, vel.y, vel.z],
+            })
         })
-        .collect::<Vec<_>>();
+        .collect();
 
     if !states.is_empty() {
         if let Err(e) =

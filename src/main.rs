@@ -1,5 +1,5 @@
 use atmospherics::AtmosphericsPlugin;
-use bevy::log::LogPlugin;
+use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::{Headless, NetCommand, NetworkPlugin};
@@ -15,9 +15,27 @@ mod main_menu;
 mod server;
 mod world_setup;
 
+fn parse_log_level(s: &str) -> Level {
+    match s.to_lowercase().as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "warn" | "warning" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::INFO,
+    }
+}
+
+fn log_plugin(level: Level) -> LogPlugin {
+    LogPlugin {
+        level,
+        ..default()
+    }
+}
+
 fn main() {
     let headless = std::env::args().any(|a| a == "--server");
     let app_config = config::load_config();
+    let log_level = parse_log_level(&app_config.debug.log_level);
 
     let mut app = App::new();
     app.insert_resource(app_config.clone());
@@ -26,7 +44,7 @@ fn main() {
         // Dedicated headless server: minimal plugin set for physics + networking, no window/rendering.
         // Plugin set derived from the headless Avian3D spike (see physics/src/lib.rs tests).
         app.add_plugins(MinimalPlugins)
-            .add_plugins(LogPlugin::default())
+            .add_plugins(log_plugin(log_level))
             .add_plugins(bevy::transform::TransformPlugin)
             .add_plugins(bevy::asset::AssetPlugin::default())
             .add_plugins(bevy::mesh::MeshPlugin)
@@ -44,13 +62,17 @@ fn main() {
             .insert_state(app_state::AppState::InGame)
             .add_systems(Startup, host_on_startup);
     } else {
-        app.add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: app_config.window.title.clone(),
-                ..default()
-            }),
-            ..default()
-        }))
+        app.add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: app_config.window.title.clone(),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(log_plugin(log_level)),
+        )
         .add_plugins(UiPlugin::new().with_event::<MenuEvent>())
         .add_plugins(MainMenuPlugin)
         .add_plugins(NetworkPlugin)

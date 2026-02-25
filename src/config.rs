@@ -24,6 +24,7 @@ impl Default for AppConfig {
             },
             debug: DebugConfig {
                 physics_debug: false,
+                log_level: "info".to_string(),
             },
             atmospherics: AtmosphericsConfig {
                 standard_pressure: 101.325,
@@ -48,6 +49,7 @@ pub struct WindowConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DebugConfig {
     pub physics_debug: bool,
+    pub log_level: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,6 +80,7 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
         .set_default("network.port", defaults.network.port)?
         .set_default("window.title", defaults.window.title)?
         .set_default("debug.physics_debug", defaults.debug.physics_debug)?
+        .set_default("debug.log_level", defaults.debug.log_level)?
         .set_default(
             "atmospherics.standard_pressure",
             defaults.atmospherics.standard_pressure as f64,
@@ -102,5 +105,6 @@ mod tests {
         assert_eq!(config.debug.physics_debug, false);
         assert_eq!(config.atmospherics.standard_pressure, 101.325);
         assert_eq!(config.souls.player_name, "Player");
+        assert_eq!(config.debug.log_level, "info");
     }
 }

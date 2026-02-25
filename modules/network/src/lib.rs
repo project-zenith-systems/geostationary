@@ -461,7 +461,6 @@ impl StreamRegistry {
     /// corresponding [`StreamReader`] can decode it.
     pub(crate) fn route_stream_frame(&self, tag: u8, data: Bytes) {
         if let Some(buf) = self.per_stream_bufs.get(&tag) {
-            log::debug!("route_stream_frame: tag={} ({} bytes)", tag, data.len());
             buf.lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push_back(data);

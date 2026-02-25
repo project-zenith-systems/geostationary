@@ -110,8 +110,8 @@ fn handle_client_events(
                 error!("Network error: {msg}");
                 next_state.set(AppState::MainMenu);
             }
-            ClientEvent::StreamFrame { tag, data: _ } => {
-                debug!("Stream frame received on tag={}", tag);
+            ClientEvent::StreamFrame { tag: _, data: _ } => {
+                // Intentionally unhandled here; stream frames are processed in the respective module systems.
             }
             ClientEvent::StreamReady { tag } => {
                 sync.streams_ready += 1;
