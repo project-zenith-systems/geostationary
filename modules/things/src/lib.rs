@@ -207,23 +207,31 @@ fn on_spawn_thing(
     on: On<SpawnThing>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     registry: Res<ThingRegistry>,
 ) {
     let event = on.event();
 
-    commands.entity(event.entity).insert((
-        Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.8, 0.5, 0.2),
-            ..default()
-        })),
+    let mut entity = commands.entity(event.entity);
+    entity.insert((
         Transform::from_translation(event.position),
         RigidBody::Dynamic,
         LinearVelocity::default(),
         Collider::capsule(0.3, 1.0),
         Thing { kind: event.kind },
     ));
+
+    // Insert visual components only when the renderer (PbrPlugin) is available.
+    // In headless server mode, Assets<StandardMaterial> is not registered.
+    if let Some(ref mut materials) = materials {
+        entity.insert((
+            Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.8, 0.5, 0.2),
+                ..default()
+            })),
+        ));
+    }
 
     if let Some(builder) = registry.templates.get(&event.kind) {
         builder(event.entity, event, &mut commands);

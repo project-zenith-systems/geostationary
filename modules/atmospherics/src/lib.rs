@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use network::{
-    ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader,
-    StreamRegistry, StreamSender,
+    Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection,
+    StreamReader, StreamRegistry, StreamSender,
 };
 use tiles::{TileKind, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
@@ -234,7 +234,8 @@ impl Plugin for AtmosphericsPlugin {
                 debug_overlay::despawn_overlay_quads,
                 debug_overlay::update_overlay_colors,
             )
-                .chain(),
+                .chain()
+                .run_if(not(resource_exists::<Headless>)),
         );
         app.add_systems(
             PreUpdate,

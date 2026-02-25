@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use network::{
-    ClientId, ClientMessage, ModuleReadySent, NetCommand, NetServerSender, NetworkSet, PlayerEvent,
-    Server, ServerEvent, ServerMessage, StreamRegistry,
+    ClientId, ClientMessage, Headless, ModuleReadySent, NetCommand, NetServerSender, NetworkSet,
+    PlayerEvent, Server, ServerEvent, ServerMessage, StreamRegistry,
 };
 use souls::ClientInputReceived;
 
@@ -51,17 +51,21 @@ fn handle_server_events(
     mut input: MessageWriter<ClientInputReceived>,
     mut sync_state: ResMut<ClientInitSyncState>,
     config: Res<AppConfig>,
+    headless: Option<Res<Headless>>,
 ) {
     for event in messages.read() {
         match event {
             ServerEvent::HostingStarted { port } => {
                 info!("Hosting started on port {port}");
-                let addr: SocketAddr = ([127, 0, 0, 1], *port).into();
-                info!("Connecting to self at {addr}");
-                net_commands.write(NetCommand::Connect {
-                    addr,
-                    name: config.souls.player_name.clone(),
-                });
+                if headless.is_none() {
+                    // Listen-server: connect to self so the local player joins its own game.
+                    let addr: SocketAddr = ([127, 0, 0, 1], *port).into();
+                    info!("Connecting to self at {addr}");
+                    net_commands.write(NetCommand::Connect {
+                        addr,
+                        name: config.souls.player_name.clone(),
+                    });
+                }
             }
             ServerEvent::HostingStopped => {
                 // Server resource removal handled by NetworkPlugin

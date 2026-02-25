@@ -48,6 +48,14 @@ pub enum NetCommand {
     Disconnect,
 }
 
+/// Marker resource inserted when the application starts in dedicated-server (headless) mode.
+///
+/// Plugins can check for this resource (e.g. `resource_exists::<Headless>`) to skip
+/// visual-only systems such as mesh spawning, debug overlays, and input handling.
+/// Headless servers use `MinimalPlugins` and omit all rendering and windowing plugins.
+#[derive(Resource, Default)]
+pub struct Headless;
+
 /// Resource to track the state of the server.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Server {
