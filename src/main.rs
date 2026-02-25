@@ -49,6 +49,7 @@ fn main() {
             .add_plugins(bevy::asset::AssetPlugin::default())
             .add_plugins(bevy::mesh::MeshPlugin)
             .add_plugins(bevy::scene::ScenePlugin)
+            .add_plugins(bevy::state::app::StatesPlugin)
             .insert_resource(Headless)
             .add_plugins(NetworkPlugin)
             .add_plugins(PhysicsPlugin)
