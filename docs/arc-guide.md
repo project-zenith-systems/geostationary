@@ -98,3 +98,27 @@ Arc (strategic sequence)
 - It's fine to revise the arc after a plan ships. If plan 2's post-mortem
   reveals that plan 3 needs a different scope, update the arc document.
   The arc is a living document, not a contract.
+
+## Closing an arc
+
+When the last plan in the arc ships and its post-mortem is written, review
+all plan post-mortems in the arc together. Each post-mortem's "what to do
+differently" and "hurdles / lessons" sections accumulate insights that are
+plan-specific in context but often general in application. Before writing
+the arc retrospective, evaluate each learning point for integration into
+the project's standing documentation:
+
+- **Plan guide** (`docs/plan-guide.md`) — new structural requirements
+  (e.g., "layer participation tables should include a schedule column")
+- **Testing strategy** (`docs/testing-strategy.md`) — new test patterns or
+  anti-patterns discovered during the arc
+- **Architecture doc** (`docs/architecture.md`) — conventions or layer rules
+  that emerged from implementation rather than design
+- **This guide** (`docs/arc-guide.md`) — sequencing or scoping lessons that
+  apply to future arcs
+
+Promote durable lessons; discard one-off observations. A lesson is durable
+if it would have prevented a mistake in two or more plans, or if ignoring it
+risks the same class of bug in future work. The arc retrospective should
+note which lessons were promoted and where, so the next arc can verify they
+were followed.

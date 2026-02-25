@@ -397,4 +397,179 @@ Gate `setup_world` with `.run_if(resource_exists::<Server>)`.
 
 ## Post-mortem
 
-_To be filled in after the plan ships._
+### Outcome
+
+The plan shipped everything it promised. A headless `--server` binary hosts
+the world; clients connect, send a name, and receive the tilemap, gas grid,
+and all existing entities over independent QUIC streams. Souls bind clients
+to server-spawned creatures, nameplates render via world-to-viewport UI
+overlay, and the bouncing ball replicates to all clients. Disconnecting
+unbinds the soul and leaves the creature standing inert. All eight "what done
+looks like" checkboxes are satisfied. Three spikes preceded implementation
+and each one caught or confirmed a critical assumption before code was
+committed.
+
+### What shipped beyond the plan
+
+| Addition | Why |
+|----------|-----|
+| `StreamReader<T>` typed resource (client-side counterpart to `StreamSender<T>`) | Plan specified `StreamSender<T>` but didn't describe how modules read their stream. `StreamReader<T>` with per-tag `Arc<Mutex<VecDeque<Bytes>>>` buffer gives each module a typed drain API symmetric with the sender. |
+| `ModuleReadySent` event for `InitialStateDone` dispatch | Plan said "server sends `InitialStateDone` after all module streams have written initial data" but didn't specify the coordination mechanism. Event-driven counting is correct across multi-frame initial sends — no scheduling order assumed. |
+| `PlayerEvent::Joined` / `PlayerEvent::Left` domain lifecycle enum | Plan had `ClientJoined` / `ClientDisconnected` as separate messages. Merging into a single enum owned by the network module gives domain modules one subscription point and avoids two separate event readers. |
+| `ThingsSet::HandleClientJoined` system set | Required so `souls::bind_soul` runs after `things::handle_client_joined` sends the stream-3 catch-up burst. Not in the plan but discovered during implementation — without it, the new creature's `EntitySpawned` could arrive before the joining client's `StreamReady`. |
+| One-frame `StreamReady` deferral in `StreamRegistry` | `StreamReady` was emitted in the same drain batch as `StreamFrame` data, so downstream systems saw "ready" before game systems processed the data. Deferral ensures one full frame of processing before the ready signal propagates. |
+| Input deduplication in `souls::send_input` | Client only sends `Input` when direction changes, reducing wire traffic from 30 Hz to 0 Hz when stationary. Not in the plan but trivial and high-value. |
+| `Headless` marker resource | Plan said "replace `DefaultPlugins` with `MinimalPlugins`" but didn't specify how plugins detect headless mode. A single marker resource is cleaner than scattering `resource_exists::<Server>` + `not(resource_exists::<Client>)` checks everywhere. |
+| `NetIdIndex` moved to `things` module | Was in `src/client.rs`. Moving it to `things` (which owns entity lifecycle) keeps the index next to the code that populates it. |
+| `on_net_id_added` observer for `DespawnOnExit(AppState::InGame)` | `things` module can't reference `AppState` (wrong layer). Client-side observer in `src/client.rs` bridges the gap by tagging every replicated entity for state-scoped cleanup. |
+| `TODO.md` for `SystemSet` adoption | `ThingsSet` pattern identified as worth extending to tiles, atmos, and souls. Captured for future work. |
+
+### Deviations from plan
+
+- **Nameplate approach changed.** The spike (#122) tried Text2d as a 3D
+  child entity with a `face_camera` system. It worked, but the plan was
+  updated pre-implementation to use world-to-viewport UI overlay instead,
+  after discovering that Text2d under Camera3d requires manual billboard
+  rotation and produces inconsistent sizing at different distances. The
+  shipped UI overlay approach (top-level `Node` with absolute positioning)
+  is simpler and scales correctly.
+
+- **`Soul.bound_to` is `Option<Entity>`, not `Entity`.** The plan specified
+  a non-optional field ("every soul always has all three fields"). The
+  implementation made it optional for forward compatibility with ghost mode
+  and soul transfer. Minor — `bind_soul` always sets it on creation.
+
+- **`ClientJoined`/`ClientLeft` became `PlayerEvent` enum.** The plan
+  described `ClientJoined { id }` as a standalone message. Implementation
+  merged it with `ClientLeft` into `PlayerEvent { Joined { id, name }, Left
+  { id } }` to avoid two separate event reader resources in every consuming
+  module.
+
+- **`send_tilemap_on_connect` schedule changed.** Plan implied `PreUpdate`.
+  Implementation moved it to `Update` (after `StateTransition`) because the
+  `Tilemap` resource isn't available until `OnEnter(InGame)` fires — which
+  happens during `StateTransition`. Running in `PreUpdate` meant querying
+  a resource that didn't exist yet on the first frame.
+
+- **Headless mode: runtime flag, not cargo feature.** An earlier attempt
+  (commits `2a120d3`–`aade4a8`) used a `client` cargo feature to gate
+  rendering code at compile time. This was abandoned: `#[cfg]` attributes
+  scattered across modules were invasive, broke IDE analysis for the
+  non-default feature set, and made it impossible to run both server and
+  client from the same binary. The shipped `--server` flag uses runtime
+  checks (`resource_exists::<Headless>`) and conditional plugin
+  registration, keeping one binary for all modes.
+
+- **No PR #128 or #131.** Issue numbers were allocated but the work was
+  folded into adjacent PRs. No content was lost.
+
+### Hurdles
+
+1. **`StreamReady` false positive from wincode unit-struct decoding.**
+   `decode::<StreamReady>()` silently succeeded on *all* frames because
+   wincode ignores trailing bytes when decoding unit structs. Tilemap data
+   was classified as `StreamReady` and dropped. Fix: pre-compute the
+   canonical `StreamReady` encoding at startup and use exact byte comparison
+   instead of trial deserialization. **Lesson:** Never use "try decode" as a
+   type discriminator when the codec is lenient with trailing data.
+
+2. **`StreamReady` and `StreamFrame` emitted in the same drain batch.**
+   The client saw `StreamReady` before game systems had a chance to process
+   the preceding `StreamFrame` data, causing the initial sync barrier to
+   complete before the tilemap was actually inserted. Fix: buffer
+   `StreamReady` in `StreamRegistry` and emit it on the *next* frame's drain
+   call. **Lesson:** When a sentinel means "all prior data is processed,"
+   it must arrive in a separate processing frame from the data itself.
+
+3. **`send_tilemap_on_connect` ran before `Tilemap` resource existed.**
+   The system was in `PreUpdate`, but the `Tilemap` is inserted by
+   `setup_world` which runs in `OnEnter(InGame)` during `StateTransition`
+   (between `PreUpdate` and `Update`). Fix: move the system to `Update`.
+   **Lesson:** Systems that depend on resources created by state-entry
+   systems cannot run in `PreUpdate` on the entry frame.
+
+4. **Cargo-feature headless mode was invasive and fragile.** The first
+   headless attempt (`2a120d3`) scattered `#[cfg(feature = "client")]`
+   across modules, requiring separate `Cargo.toml` profiles, breaking IDE
+   completions for the non-default configuration, and preventing a single
+   binary from acting as both server and client. Three follow-up commits
+   tried to clean it up (`4629917`, `9929b9c`, `aade4a8`) before the
+   approach was abandoned entirely in favor of the runtime `--server` flag.
+   **Lesson:** Prefer runtime conditional plugin registration over
+   compile-time feature gating for mode switches that don't affect the
+   dependency tree significantly.
+
+5. **Cross-module system ordering for stream catch-up bursts.** When a
+   client joins, `things::handle_client_joined` sends catch-up
+   `EntitySpawned` messages, and `souls::bind_soul` spawns the new
+   creature. Without explicit ordering, the soul's creature could be
+   broadcast before the catch-up `StreamReady` was sent to the joining
+   client. Fix: introduce `ThingsSet::HandleClientJoined` and run
+   `bind_soul` `.after()` it. **Lesson:** When two modules write to the
+   same stream in response to the same event, their ordering must be
+   declared explicitly.
+
+### What went well
+
+- **Spikes paid off.** All three spikes (multi-stream, billboard text,
+  headless physics) answered their questions before implementation started.
+  The billboard spike changed the nameplate design *before* any nameplate
+  code was written. The headless spike documented the exact minimal plugin
+  set, which shipped unchanged. Zero time wasted on dead-end approaches
+  during implementation.
+
+- **Previous post-mortem recommendations were followed.** The networked
+  multiplayer post-mortem said: "draw the data flow before designing the
+  protocol," "list systems not files in the layer table," and "spike
+  ambiguous semantics." This plan followed all three — the strategy section
+  leads with the stream table and data flow, the layer table lists systems,
+  and three spikes preceded implementation.
+
+- **Bottom-up task sequencing worked again.** Each PR built cleanly on the
+  previous: protocol → streams → tiles → things → atmos → souls → world
+  setup → orchestration → headless. No PR had to be reworked due to a
+  missing dependency.
+
+- **Module isolation held.** Each module owns its stream, its wire format,
+  its serialization, and its handler. Adding atmospherics (PR #126) required
+  zero changes to tiles or things. The network module knows about streams
+  and framing, not about tiles, gas, or souls.
+
+- **The multi-stream architecture validated.** Independent QUIC streams
+  per module eliminated head-of-line blocking, kept modules decoupled,
+  and made the initial sync barrier straightforward to reason about.
+  Adding a new replicating module means registering one stream — no changes
+  to existing modules.
+
+- **Entity-centric replication from the networked-multiplayer rewrite
+  proved durable.** `NetId`, `EntitySpawned`, `StateUpdate`, and `SpawnThing`
+  — all introduced during the previous plan's mid-flight rewrite — carried
+  this plan without modification. The things module just registered its
+  own stream and moved existing logic into stream handlers.
+
+### What to do differently next time
+
+- **Spike codec edge cases.** The `StreamReady` false positive (wincode
+  decoding unit structs from any byte sequence) cost two fix commits and
+  a debugging session. A 10-minute spike — "what happens when I decode
+  `StreamReady` from arbitrary bytes?" — would have caught it instantly.
+  Future plans should spike not just "does the library work?" but "how
+  does it fail?"
+
+- **Design the scheduling constraint before the system.** Three of five
+  hurdles were system-ordering bugs. The plan described *what* each system
+  does but not *when* it runs relative to state transitions and other
+  modules. Future layer participation tables should include a "schedule /
+  run condition" column.
+
+- **Prototype runtime mode switching early.** The cargo-feature detour
+  wasted four commits. A 30-minute spike building `MinimalPlugins` +
+  conditional plugin registration from `main()` would have validated the
+  runtime approach before any module code was touched.
+
+- **Reserve a post-mortem section for "coordination patterns."** This plan
+  invented `ModuleReadySent`, `StreamReady` deferral, and
+  `ThingsSet::HandleClientJoined` — all coordination mechanisms not in the
+  original design. A dedicated section for "how modules coordinate" would
+  have forced these patterns to be designed up front rather than discovered
+  during implementation.
