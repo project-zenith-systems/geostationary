@@ -19,8 +19,18 @@ pub(crate) async fn run_client(
     client_msg_rx: mpsc::Receiver<ClientMessage>,
     cancel_token: CancellationToken,
     name: String,
+    client_stream_rxs: Vec<(u8, mpsc::Receiver<Bytes>)>,
 ) {
-    if let Err(e) = run_client_inner(addr, &event_tx, client_msg_rx, cancel_token, name).await {
+    if let Err(e) = run_client_inner(
+        addr,
+        &event_tx,
+        client_msg_rx,
+        cancel_token,
+        name,
+        client_stream_rxs,
+    )
+    .await
+    {
         let reason = format!("Client error: {e}");
         if let Err(err) = event_tx.send(ClientEvent::Error(reason.clone())) {
             log::error!("Failed to send ClientEvent::Error: {}", err);
@@ -37,6 +47,7 @@ async fn run_client_inner(
     mut client_msg_rx: mpsc::Receiver<ClientMessage>,
     cancel_token: CancellationToken,
     name: String,
+    client_stream_rxs: Vec<(u8, mpsc::Receiver<Bytes>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client_config = config::build_client_config()?;
 
@@ -120,6 +131,92 @@ async fn run_client_inner(
 
     // Create per-client cancellation token to coordinate shutdown.
     let client_cancel = CancellationToken::new();
+
+    // Open client→server unidirectional streams for each registered ClientToServer stream.
+    // For each stream: write 1-byte routing tag, then spawn a write loop that reads from
+    // the stream's channel and writes LengthDelimitedCodec-framed messages to the QUIC stream.
+    let mut client_stream_write_tasks: JoinSet<()> = JoinSet::new();
+    for (tag, mut rx) in client_stream_rxs {
+        let open_result = tokio::select! {
+            result = connection.open_uni() => result,
+            _ = cancel_token.cancelled() => {
+                log::info!("Client disconnect requested before opening client→server stream tag={}", tag);
+                connection.close(0u32.into(), b"disconnect requested");
+                if let Err(err) = event_tx.send(ClientEvent::Disconnected {
+                    reason: "Disconnect requested".into(),
+                }) {
+                    log::error!("Failed to send Disconnected event: {}", err);
+                }
+                return Ok(());
+            }
+            _ = connection.closed() => {
+                log::info!("Connection closed before opening client→server stream tag={}", tag);
+                if let Err(err) = event_tx.send(ClientEvent::Disconnected {
+                    reason: "Connection closed by remote".into(),
+                }) {
+                    log::error!("Failed to send Disconnected event: {}", err);
+                }
+                return Ok(());
+            }
+        };
+
+        let mut send = match open_result {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!(
+                    "Failed to open client→server uni stream tag={}: {}",
+                    tag, e
+                );
+                // Skip this stream but continue with others.
+                continue;
+            }
+        };
+
+        // Write routing tag byte so the server can identify this stream.
+        if let Err(e) = send.write_all(&[tag]).await {
+            log::error!(
+                "Failed to write tag byte for client→server stream tag={}: {}",
+                tag, e
+            );
+            continue;
+        }
+
+        let mut framed_write = FramedWrite::new(send, LengthDelimitedCodec::new());
+        let cancel_global = cancel_token.clone();
+        let cancel_client = client_cancel.clone();
+        client_stream_write_tasks.spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel_global.cancelled() => {
+                        log::debug!("Client→server stream tag={} write task cancelled (disconnect requested)", tag);
+                        break;
+                    }
+                    _ = cancel_client.cancelled() => {
+                        log::debug!("Client→server stream tag={} write task cancelled (client shutdown)", tag);
+                        break;
+                    }
+                    bytes = rx.recv() => {
+                        match bytes {
+                            Some(b) => {
+                                if let Err(e) = framed_write.send(b).await {
+                                    log::error!(
+                                        "Client→server stream tag={} write error: {}",
+                                        tag, e
+                                    );
+                                    break;
+                                }
+                            }
+                            None => {
+                                log::debug!("Client→server stream tag={} channel closed", tag);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        log::info!("Opened client→server uni stream tag={}", tag);
+    }
 
     // Uni-stream accept loop: runs concurrently with the control-stream loops.
     // For each server→client unidirectional stream: read the tag byte, then
@@ -358,6 +455,8 @@ async fn run_client_inner(
     if let Err(e) = write_result {
         log::error!("Write task panicked: {}", e);
     }
+    // Wait for all client→server stream write tasks to finish cleanly.
+    client_stream_write_tasks.shutdown().await;
 
     log::info!("Disconnected from {addr}");
     if let Err(err) = event_tx.send(ClientEvent::Disconnected {

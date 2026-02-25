@@ -409,6 +409,115 @@ async fn run_server_inner(
                                 );
                             }
 
+                            // Spawn accept_uni loop for client→server unidirectional streams.
+                            // For each accepted stream: read the tag byte, then route framed
+                            // messages to ServerEvent::ClientStreamFrame for the drain system
+                            // to route to per-tag StreamReader buffers.
+                            let event_tx_uni = event_tx.clone();
+                            let cancel_token_uni = cancel_token_clone.clone();
+                            let client_cancel_uni = client_cancel.clone();
+                            let connection_uni = connection.clone();
+                            let mut uni_read_handles: JoinSet<()> = JoinSet::new();
+                            let uni_accept_handle = tokio::spawn(async move {
+                                loop {
+                                    tokio::select! {
+                                        _ = cancel_token_uni.cancelled() => {
+                                            log::debug!("Server accept_uni loop cancelled (server shutdown) for client {}", client_id.0);
+                                            break;
+                                        }
+                                        _ = client_cancel_uni.cancelled() => {
+                                            log::debug!("Server accept_uni loop cancelled (client shutdown) for client {}", client_id.0);
+                                            break;
+                                        }
+                                        result = connection_uni.accept_uni() => {
+                                            match result {
+                                                Ok(mut recv) => {
+                                                    // Read 1-byte routing tag.
+                                                    let mut tag_buf = [0u8; 1];
+                                                    if let Err(e) = recv.read_exact(&mut tag_buf).await {
+                                                        log::error!(
+                                                            "Server: failed to read stream tag byte from client {}: {}",
+                                                            client_id.0, e
+                                                        );
+                                                        continue;
+                                                    }
+                                                    let tag = tag_buf[0];
+                                                    if tag == 0 {
+                                                        log::warn!(
+                                                            "Server: ignoring client→server uni stream with reserved tag=0 from client {}",
+                                                            client_id.0
+                                                        );
+                                                        continue;
+                                                    }
+                                                    log::info!(
+                                                        "Server: accepted client→server uni stream tag={} from client {}",
+                                                        tag, client_id.0
+                                                    );
+
+                                                    // Spawn an independent read loop for this stream.
+                                                    let frame_tx = event_tx_uni.clone();
+                                                    let cancel_global = cancel_token_uni.clone();
+                                                    let cancel_client = client_cancel_uni.clone();
+                                                    uni_read_handles.spawn(async move {
+                                                        let mut framed =
+                                                            FramedRead::new(recv, LengthDelimitedCodec::new());
+                                                        loop {
+                                                            tokio::select! {
+                                                                _ = cancel_global.cancelled() => {
+                                                                    log::debug!("Server: client→server stream tag={} reader cancelled (server shutdown)", tag);
+                                                                    break;
+                                                                }
+                                                                _ = cancel_client.cancelled() => {
+                                                                    log::debug!("Server: client→server stream tag={} reader cancelled (client shutdown)", tag);
+                                                                    break;
+                                                                }
+                                                                frame = framed.next() => {
+                                                                    match frame {
+                                                                        Some(Ok(bytes)) => {
+                                                                            log::debug!(
+                                                                                "Server: client→server stream tag={} frame ({} bytes) from client {}",
+                                                                                tag, bytes.len(), client_id.0
+                                                                            );
+                                                                            let _ = frame_tx.send(
+                                                                                ServerEvent::ClientStreamFrame {
+                                                                                    from: client_id,
+                                                                                    tag,
+                                                                                    data: bytes.freeze(),
+                                                                                },
+                                                                            );
+                                                                        }
+                                                                        Some(Err(e)) => {
+                                                                            log::error!(
+                                                                                "Server: client→server stream tag={} read error from client {}: {}",
+                                                                                tag, client_id.0, e
+                                                                            );
+                                                                            break;
+                                                                        }
+                                                                        None => {
+                                                                            // Stream closed naturally.
+                                                                            break;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                                Err(e) => {
+                                                    log::debug!(
+                                                        "Server: accept_uni from client {} ended: {}",
+                                                        client_id.0, e
+                                                    );
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Await all per-stream reader tasks before returning.
+                                uni_read_handles.shutdown().await;
+                            });
+
                             let event_tx_read = event_tx.clone();
                             let cancel_token_read = cancel_token_clone.clone();
                             let cancel_token_write = cancel_token_clone.clone();
@@ -513,8 +622,11 @@ async fn run_server_inner(
                             if let Err(e) = write_result {
                                 log::error!("Write task for client {} panicked: {}", client_id.0, e);
                             }
-                            // Wait for all per-stream write tasks.
+                            // Wait for all per-stream write tasks and the accept_uni loop.
                             stream_write_handles.shutdown().await;
+                            if let Err(e) = uni_accept_handle.await {
+                                log::error!("accept_uni task for client {} panicked: {}", client_id.0, e);
+                            }
 
                             // Cleanup: remove control-stream sender.
                             {
@@ -780,6 +892,104 @@ mod tests {
         // Explicitly close the connection so the server's connection.closed()
         // future resolves, unblocking server_task.
         connection.close(0u32.into(), b"done");
+
+        server_task.await.expect("server task completed");
+    }
+
+    /// Spike: Quinn client→server multi-stream
+    ///
+    /// Proves that a client can open multiple unidirectional streams to the server,
+    /// each prefixed with a routing tag byte and independently framed with
+    /// `LengthDelimitedCodec`, and that the server correctly routes frames from
+    /// each stream.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn test_quinn_client_to_server_multi_stream_spike() {
+        let server_config = config::build_server_config().expect("server config");
+        let client_config = config::build_client_config().expect("client config");
+
+        /// Client→server stream tags.
+        const TAG_INPUT: u8 = 4;
+        const TAG_CHAT: u8 = 5;
+
+        let server_addr: std::net::SocketAddr = ([127, 0, 0, 1], 0).into();
+        let server_endpoint =
+            quinn::Endpoint::server(server_config, server_addr).expect("server endpoint");
+        let bound_addr = server_endpoint.local_addr().expect("bound addr");
+
+        // Server: accept one connection then accept 2 client→server unidirectional streams.
+        // The server closes the connection after verifying all data, so the client can
+        // await connection.closed() for clean synchronization.
+        let server_task = tokio::spawn(async move {
+            let incoming = server_endpoint
+                .accept()
+                .await
+                .expect("server: incoming connection");
+            let connection = incoming.await.expect("server: connection established");
+
+            let mut received: std::collections::HashMap<u8, Bytes> =
+                std::collections::HashMap::new();
+
+            // Accept both client→server streams (may arrive in any order).
+            for _ in 0..2 {
+                let mut recv = connection.accept_uni().await.expect("server: accept_uni");
+
+                // Read 1-byte routing tag.
+                let mut tag_buf = [0u8; 1];
+                recv.read_exact(&mut tag_buf)
+                    .await
+                    .expect("server: read tag byte");
+                let tag = tag_buf[0];
+
+                let mut framed = FramedRead::new(recv, LengthDelimitedCodec::new());
+                let frame = framed
+                    .next()
+                    .await
+                    .expect("server: frame present")
+                    .expect("server: frame ok");
+                received.insert(tag, frame.freeze());
+            }
+
+            assert_eq!(received.len(), 2, "should receive frames on both streams");
+            assert_eq!(
+                &received[&TAG_INPUT][..],
+                b"input-data",
+                "input stream payload mismatch"
+            );
+            assert_eq!(
+                &received[&TAG_CHAT][..],
+                b"chat-data",
+                "chat stream payload mismatch"
+            );
+
+            // Server closes the connection to signal completion to the client.
+            connection.close(0u32.into(), b"server done");
+        });
+
+        // Client: connect and open 2 client→server unidirectional streams.
+        let mut client_endpoint =
+            quinn::Endpoint::client(([0, 0, 0, 0], 0u16).into()).expect("client endpoint");
+        client_endpoint.set_default_client_config(client_config);
+        let connection = client_endpoint
+            .connect(bound_addr, "localhost")
+            .expect("client: connect call")
+            .await
+            .expect("client: connection established");
+
+        for (tag, data) in [(TAG_INPUT, b"input-data" as &[u8]), (TAG_CHAT, b"chat-data")] {
+            let mut send = connection.open_uni().await.expect("client: open_uni");
+            send.write_all(&[tag])
+                .await
+                .expect("client: write tag byte");
+            let mut framed = FramedWrite::new(send, LengthDelimitedCodec::new());
+            framed
+                .send(Bytes::from_static(data))
+                .await
+                .expect("client: send frame");
+        }
+
+        // Wait for the server to close the connection after verifying data.
+        connection.closed().await;
 
         server_task.await.expect("server task completed");
     }
