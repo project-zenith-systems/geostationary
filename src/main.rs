@@ -1,6 +1,7 @@
 use atmospherics::AtmosphericsPlugin;
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
+use input::InputPlugin;
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::{Headless, NetCommand, NetworkPlugin};
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};
@@ -95,6 +96,9 @@ fn main() {
             .add_plugins(world_setup::WorldSetupPlugin)
             .add_plugins(client::ClientPlugin)
             .add_plugins(server::ServerPlugin)
+            .add_plugins(InputPlugin::<app_state::AppState>::in_state(
+                app_state::AppState::InGame,
+            ))
             .init_state::<app_state::AppState>();
     }
 
