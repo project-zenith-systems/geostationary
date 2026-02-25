@@ -93,6 +93,19 @@ async fn run_server_inner(
     // Per-stream, per-client write channels for registered module streams.
     let per_stream_senders: PerStreamSenders = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
+    // Pre-register all configured server→client stream tags with empty client maps.
+    // This allows stream broadcasts before the first client joins to be harmless no-ops
+    // instead of surfacing as "no registered stream" errors.
+    {
+        let mut ps = per_stream_senders.lock().await;
+        for def in stream_defs
+            .iter()
+            .filter(|d| d.direction == StreamDirection::ServerToClient)
+        {
+            ps.entry(def.tag).or_default();
+        }
+    }
+
     // Number of server→client module streams (determines expected_streams in Welcome).
     let server_to_client_count_usize = stream_defs
         .iter()
