@@ -19,8 +19,11 @@ pub fn setup_world(
     mut server: ResMut<Server>,
 ) {
     let tilemap = Tilemap::test_room();
-    let gas_grid =
-        atmospherics::initialize_gas_grid(&tilemap, config.atmospherics.standard_pressure);
+    let gas_grid = atmospherics::initialize_gas_grid(
+        &tilemap,
+        config.atmospherics.standard_pressure,
+        Some((IVec2::new(11, 1), IVec2::new(14, 8))),
+    );
 
     // Insert resources
     commands.insert_resource(tilemap);
@@ -118,7 +121,7 @@ mod tests {
         let tilemap = Tilemap::test_room();
 
         // Initialize GasGrid using the atmospherics module function
-        let gas_grid = atmospherics::initialize_gas_grid(&tilemap, TEST_STANDARD_PRESSURE);
+        let gas_grid = atmospherics::initialize_gas_grid(&tilemap, TEST_STANDARD_PRESSURE, None);
 
         // Verify that floor cells have standard pressure
         let mut floor_cells_checked = 0;

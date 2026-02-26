@@ -82,26 +82,22 @@ impl Tilemap {
 
     /// Creates a 12x10 test room with perimeter walls and internal obstacles.
     pub fn test_room() -> Tilemap {
-        let mut tilemap = Tilemap::new(12, 10, TileKind::Floor);
+        let mut tilemap = Tilemap::new(16, 10, TileKind::Floor);
 
         // Perimeter walls
-        for x in 0..12 {
+        for x in 0..16 {
             tilemap.set(IVec2::new(x, 0), TileKind::Wall);
             tilemap.set(IVec2::new(x, 9), TileKind::Wall);
         }
         for y in 0..10 {
             tilemap.set(IVec2::new(0, y), TileKind::Wall);
-            tilemap.set(IVec2::new(11, y), TileKind::Wall);
+            tilemap.set(IVec2::new(15, y), TileKind::Wall);
         }
 
-        // Internal walls for collision testing
-        // Vertical wall segment
-        for y in 2..6 {
-            tilemap.set(IVec2::new(4, y), TileKind::Wall);
-        }
-        // Horizontal wall segment
-        for x in 7..10 {
-            tilemap.set(IVec2::new(x, 5), TileKind::Wall);
+        // Separating wall between left (pressurized, cols 1–8) and right (vacuum, cols 11–14) chambers
+        for y in 0..10 {
+            tilemap.set(IVec2::new(9, y), TileKind::Wall);
+            tilemap.set(IVec2::new(10, y), TileKind::Wall);
         }
 
         tilemap
@@ -762,26 +758,30 @@ mod tests {
     #[test]
     fn test_tilemap_test_room() {
         let room = Tilemap::test_room();
-        assert_eq!(room.width(), 12);
+        assert_eq!(room.width(), 16);
         assert_eq!(room.height(), 10);
 
         // Perimeter should be walls
-        for x in 0..12 {
+        for x in 0..16 {
             assert_eq!(room.get(IVec2::new(x, 0)), Some(TileKind::Wall));
             assert_eq!(room.get(IVec2::new(x, 9)), Some(TileKind::Wall));
         }
         for y in 0..10 {
             assert_eq!(room.get(IVec2::new(0, y)), Some(TileKind::Wall));
-            assert_eq!(room.get(IVec2::new(11, y)), Some(TileKind::Wall));
+            assert_eq!(room.get(IVec2::new(15, y)), Some(TileKind::Wall));
         }
 
-        // Interior should be floor (spot check)
-        assert_eq!(room.get(IVec2::new(5, 5)), Some(TileKind::Floor));
-        assert_eq!(room.get(IVec2::new(6, 3)), Some(TileKind::Floor));
+        // Left chamber (cols 1–8) should be floor
+        assert_eq!(room.get(IVec2::new(4, 5)), Some(TileKind::Floor));
+        assert_eq!(room.get(IVec2::new(8, 3)), Some(TileKind::Floor));
 
-        // Internal walls
-        assert_eq!(room.get(IVec2::new(4, 3)), Some(TileKind::Wall));
-        assert_eq!(room.get(IVec2::new(8, 5)), Some(TileKind::Wall));
+        // Separating wall (cols 9–10)
+        assert_eq!(room.get(IVec2::new(9, 5)), Some(TileKind::Wall));
+        assert_eq!(room.get(IVec2::new(10, 3)), Some(TileKind::Wall));
+
+        // Right chamber (cols 11–14) should be floor
+        assert_eq!(room.get(IVec2::new(11, 5)), Some(TileKind::Floor));
+        assert_eq!(room.get(IVec2::new(14, 3)), Some(TileKind::Floor));
     }
 
     #[test]

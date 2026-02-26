@@ -40,19 +40,29 @@ pub enum AtmosStreamMessage {
 }
 
 /// Creates and initializes a GasGrid from a Tilemap.
-/// All floor cells are filled with the given standard atmospheric pressure.
-pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid {
+/// All floor cells are filled with the given standard atmospheric pressure,
+/// except cells inside `vacuum_region` (inclusive bounding rect) which start at 0.0 moles.
+pub fn initialize_gas_grid(
+    tilemap: &Tilemap,
+    standard_pressure: f32,
+    vacuum_region: Option<(IVec2, IVec2)>,
+) -> GasGrid {
     let mut gas_grid = GasGrid::new(tilemap.width(), tilemap.height());
 
     // Sync walls from tilemap to mark impassable cells
     gas_grid.sync_walls(tilemap);
 
-    // Fill all floor cells with standard pressure
+    // Fill all floor cells with standard pressure, skipping those in the vacuum region
     for y in 0..tilemap.height() {
         for x in 0..tilemap.width() {
             let pos = IVec2::new(x as i32, y as i32);
             if tilemap.is_walkable(pos) {
-                gas_grid.set_moles(pos, standard_pressure);
+                let in_vacuum = vacuum_region.map_or(false, |(min, max)| {
+                    pos.x >= min.x && pos.x <= max.x && pos.y >= min.y && pos.y <= max.y
+                });
+                if !in_vacuum {
+                    gas_grid.set_moles(pos, standard_pressure);
+                }
             }
         }
     }
