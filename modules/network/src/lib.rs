@@ -315,6 +315,7 @@ type SharedClientStreamTx = Arc<Mutex<Option<mpsc::Sender<Bytes>>>>;
 /// [`Err(StreamSendError::Closed)`].
 pub struct StreamSender<T: Send + Sync + 'static> {
     tag: u8,
+    direction: StreamDirection,
     shared_tx: SharedStreamTx,
     client_tx: SharedClientStreamTx,
     _phantom: std::marker::PhantomData<T>,
@@ -373,7 +374,16 @@ impl<T: Send + Sync + 'static> StreamSender<T> {
 
     /// Send the [`StreamReady`] sentinel to a specific client.
     /// Call this after all initial-burst data has been sent on this stream.
+    ///
+    /// Only valid for streams registered with [`StreamDirection::ServerToClient`].
     pub fn send_stream_ready_to(&self, client: ClientId) -> Result<(), StreamSendError> {
+        if self.direction != StreamDirection::ServerToClient {
+            log::error!(
+                "StreamSender (tag {}): send_stream_ready_to called on a ClientToServer stream",
+                self.tag
+            );
+            return Err(StreamSendError::Closed);
+        }
         let bytes = proto_encode(&StreamReady).map_err(|e| {
             log::error!(
                 "StreamSender (tag {}): failed to encode StreamReady: {}",
@@ -394,7 +404,16 @@ where
     T: wincode::SchemaWrite<wincode::config::DefaultConfig, Src = T> + Send + Sync + 'static,
 {
     /// Encode `msg` and send it to a specific client on this stream.
+    ///
+    /// Only valid for streams registered with [`StreamDirection::ServerToClient`].
     pub fn send_to(&self, client: ClientId, msg: &T) -> Result<(), StreamSendError> {
+        if self.direction != StreamDirection::ServerToClient {
+            log::error!(
+                "StreamSender (tag {}): send_to called on a ClientToServer stream",
+                self.tag
+            );
+            return Err(StreamSendError::Closed);
+        }
         let bytes = protocol::encode(msg).map_err(|e| {
             log::error!("StreamSender (tag {}): encode failed: {}", self.tag, e);
             StreamSendError::Encode
@@ -406,7 +425,16 @@ where
     }
 
     /// Encode `msg` and broadcast it to all connected clients on this stream.
+    ///
+    /// Only valid for streams registered with [`StreamDirection::ServerToClient`].
     pub fn broadcast(&self, msg: &T) -> Result<(), StreamSendError> {
+        if self.direction != StreamDirection::ServerToClient {
+            log::error!(
+                "StreamSender (tag {}): broadcast called on a ClientToServer stream",
+                self.tag
+            );
+            return Err(StreamSendError::Closed);
+        }
         let bytes = protocol::encode(msg).map_err(|e| {
             log::error!("StreamSender (tag {}): encode failed: {}", self.tag, e);
             StreamSendError::Encode
@@ -421,6 +449,13 @@ where
     /// Only valid for streams registered with [`StreamDirection::ClientToServer`].
     /// Returns [`Err(StreamSendError::Closed)`] if no client is currently connected.
     pub fn send(&self, msg: &T) -> Result<(), StreamSendError> {
+        if self.direction != StreamDirection::ClientToServer {
+            log::error!(
+                "StreamSender (tag {}): send called on a ServerToClient stream",
+                self.tag
+            );
+            return Err(StreamSendError::Closed);
+        }
         let bytes = protocol::encode(msg).map_err(|e| {
             log::error!("StreamSender (tag {}): encode failed: {}", self.tag, e);
             StreamSendError::Encode
@@ -495,6 +530,7 @@ impl StreamRegistry {
             def.tag
         );
         let tag = def.tag;
+        let def_direction = def.direction;
         log::info!(
             "StreamRegistry: registered stream '{}' (tag={}, direction={:?})",
             def.name,
@@ -525,6 +561,7 @@ impl StreamRegistry {
         self.entries.push(def);
         let sender = StreamSender {
             tag,
+            direction: def_direction,
             shared_tx: self.shared_tx.clone(),
             client_tx,
             _phantom: std::marker::PhantomData,
@@ -1255,5 +1292,49 @@ mod tests {
         let rxs = registry.prepare_client_connect();
         assert_eq!(rxs.len(), 1);
         assert_eq!(rxs[0].0, 4);
+    }
+
+    #[test]
+    fn test_stream_sender_direction_guard_server_methods_on_client_to_server() {
+        let mut registry = StreamRegistry::default();
+        let (sender, _): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
+            tag: 4,
+            name: "tile-input",
+            direction: StreamDirection::ClientToServer,
+        });
+
+        // Server-only methods should return Closed on a ClientToServer stream.
+        assert_eq!(
+            sender.send_stream_ready_to(ClientId(1)),
+            Err(StreamSendError::Closed),
+            "send_stream_ready_to on ClientToServer should return Closed"
+        );
+        assert_eq!(
+            sender.send_to(ClientId(1), &ServerMessage::InitialStateDone),
+            Err(StreamSendError::Closed),
+            "send_to on ClientToServer should return Closed"
+        );
+        assert_eq!(
+            sender.broadcast(&ServerMessage::InitialStateDone),
+            Err(StreamSendError::Closed),
+            "broadcast on ClientToServer should return Closed"
+        );
+    }
+
+    #[test]
+    fn test_stream_sender_direction_guard_send_on_server_to_client() {
+        let mut registry = StreamRegistry::default();
+        let (sender, _): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
+            tag: 1,
+            name: "tiles",
+            direction: StreamDirection::ServerToClient,
+        });
+
+        // Client-only method should return Closed on a ServerToClient stream.
+        assert_eq!(
+            sender.send(&ServerMessage::InitialStateDone),
+            Err(StreamSendError::Closed),
+            "send on ServerToClient should return Closed"
+        );
     }
 }

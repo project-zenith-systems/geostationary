@@ -167,8 +167,15 @@ async fn run_client_inner(
                     "Failed to open client→server uni stream tag={}: {}",
                     tag, e
                 );
-                // Skip this stream but continue with others.
-                continue;
+                connection.close(0u32.into(), b"stream setup failed");
+                client_cancel.cancel();
+                client_stream_write_tasks.shutdown().await;
+                if let Err(err) = event_tx.send(ClientEvent::Disconnected {
+                    reason: format!("Failed to open client→server stream tag={tag}: {e}"),
+                }) {
+                    log::error!("Failed to send Disconnected event: {}", err);
+                }
+                return Ok(());
             }
         };
 
@@ -178,7 +185,15 @@ async fn run_client_inner(
                 "Failed to write tag byte for client→server stream tag={}: {}",
                 tag, e
             );
-            continue;
+            connection.close(0u32.into(), b"stream setup failed");
+            client_cancel.cancel();
+            client_stream_write_tasks.shutdown().await;
+            if let Err(err) = event_tx.send(ClientEvent::Disconnected {
+                reason: format!("Failed to write tag byte for client→server stream tag={tag}: {e}"),
+            }) {
+                log::error!("Failed to send Disconnected event: {}", err);
+            }
+            return Ok(());
         }
 
         let mut framed_write = FramedWrite::new(send, LengthDelimitedCodec::new());
