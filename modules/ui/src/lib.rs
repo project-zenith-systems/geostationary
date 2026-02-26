@@ -1,9 +1,12 @@
 use bevy::prelude::*;
+use bevy::transform::TransformSystems;
 
 pub mod button;
+pub mod overlay;
 pub mod theme;
 
 pub use button::build_button;
+pub use overlay::{OverlayTarget, WorldSpaceOverlay, update_world_space_overlays};
 pub use theme::UiTheme;
 
 #[derive(Default)]
@@ -13,9 +16,16 @@ pub struct UiPlugin {
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
+        app.register_type::<WorldSpaceOverlay>();
+        app.register_type::<OverlayTarget>();
         app.init_resource::<UiTheme>();
         app.add_systems(Startup, spawn_ui_camera);
         app.add_systems(PreUpdate, button::change_button_colors);
+        app.add_systems(
+            PostUpdate,
+            update_world_space_overlays
+                .after(TransformSystems::Propagate),
+        );
 
         for register in &self.messages {
             register(app);
