@@ -247,6 +247,11 @@ impl Plugin for TilesPlugin {
         app.add_message::<TileToggleRequest>();
         app.add_message::<TileMutated>();
 
+        // Register messages that raycast_tiles / execute_tile_toggle read/write
+        // so the resources exist even when InputPlugin is not added (e.g. headless tests).
+        app.add_message::<PointerAction>();
+        app.add_message::<WorldHit>();
+
         let headless = app.world().contains_resource::<Headless>();
         if !headless {
             // Tile mesh spawning and visual mutation are visual-only; skip in headless server mode.
@@ -290,7 +295,9 @@ impl Plugin for TilesPlugin {
         );
         app.add_systems(
             Update,
-            handle_tile_toggle.run_if(resource_exists::<Server>),
+            handle_tile_toggle
+                .run_if(resource_exists::<Server>)
+                .after(send_tilemap_on_connect),
         );
 
         // Register streams. Requires NetworkPlugin to be added first.
@@ -443,8 +450,11 @@ fn handle_tiles_stream(
                 let pos = IVec2::new(position[0], position[1]);
                 if let Some(ref mut tm) = tilemap {
                     tm.set(pos, kind);
+                    // Only emit the mutation event once the Tilemap resource exists.
+                    // This avoids spawning partial tile entities before the initial snapshot,
+                    // which would cause the full-map mesh spawn to no-op.
+                    mutation_events.write(TileMutated { position: pos, kind });
                 }
-                mutation_events.write(TileMutated { position: pos, kind });
             }
         }
     }
@@ -523,7 +533,7 @@ fn send_tilemap_on_connect(
 /// Runs in `Update`, gated on absence of [`Headless`].
 fn raycast_tiles(
     mut pointer_events: MessageReader<PointerAction>,
-    camera_query: Query<(&Camera, &GlobalTransform)>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     tile_query: Query<(Entity, &Tile)>,
     tilemap: Option<Res<Tilemap>>,
     mut hit_events: MessageWriter<WorldHit>,
