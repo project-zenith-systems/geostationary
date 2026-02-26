@@ -55,6 +55,10 @@ pub struct GasGrid {
     height: u32,
     cells: Vec<GasCell>,
     passable: Vec<bool>,
+    /// Tracks the moles values from the last broadcast snapshot or delta.
+    /// Used by the server to compute incremental deltas for replication.
+    #[reflect(ignore)]
+    pub last_broadcast_moles: Vec<f32>,
     // Scratch buffers reused across substeps to avoid per-frame heap allocations
     #[reflect(ignore)]
     scratch_flows: Vec<ProposedFlow>,
@@ -76,6 +80,7 @@ impl GasGrid {
             height,
             cells: vec![GasCell::default(); size],
             passable: vec![true; size],
+            last_broadcast_moles: vec![0.0; size],
             scratch_flows: Vec::new(),
             scratch_outgoing: vec![0.0; size],
             scratch_source_scale: vec![1.0; size],
@@ -105,19 +110,24 @@ impl GasGrid {
 
     /// Updates the passability mask based on the current tilemap.
     /// Floor tiles are passable (allow gas flow), walls are not.
-    /// When a cell becomes passable, its moles remain at their current value.
-    /// When a cell becomes impassable, its moles are preserved for conservation.
+    /// When a cell transitions to impassable (wall), its moles are zeroed —
+    /// walls always hold 0.0 moles.
     pub fn sync_walls(&mut self, tilemap: &Tilemap) {
         for y in 0..self.height {
             for x in 0..self.width {
                 let pos = IVec2::new(x as i32, y as i32);
                 if let Some(idx) = self.coord_to_index(pos) {
-                    if let Some(tile_kind) = tilemap.get(pos) {
-                        self.passable[idx] = matches!(tile_kind, TileKind::Floor);
+                    let new_passable = if let Some(tile_kind) = tilemap.get(pos) {
+                        matches!(tile_kind, TileKind::Floor)
                     } else {
                         // Out of tilemap bounds -> treat as impassable
-                        self.passable[idx] = false;
+                        false
+                    };
+                    if !new_passable && self.passable[idx] {
+                        // Transitioning floor → wall: zero moles
+                        self.cells[idx].moles = 0.0;
                     }
+                    self.passable[idx] = new_passable;
                 }
             }
         }
@@ -196,11 +206,60 @@ impl GasGrid {
         self.cells.iter().map(|cell| cell.moles).collect()
     }
 
-    /// Reconstructs a [`GasGrid`] from dimensions and a flat moles slice produced by
-    /// [`GasGrid::moles_vec`].
+    /// Returns the passability mask as a flat `Vec<bool>` in row-major order.
+    /// Used to serialize the gas grid for network transmission.
+    pub fn passable_vec(&self) -> Vec<bool> {
+        self.passable.clone()
+    }
+
+    /// Computes incremental changes since the last broadcast.
+    /// Returns `(cell_index, new_moles)` pairs for every cell whose moles differ
+    /// from [`last_broadcast_moles`] by more than `epsilon`.
     ///
-    /// Returns an error if the length of `gas_moles` does not match `width * height`.
-    pub fn from_moles_vec(width: u32, height: u32, gas_moles: Vec<f32>) -> Result<Self, String> {
+    /// Cell indices are encoded as `u16`; cells whose flat index exceeds
+    /// [`u16::MAX`] are silently skipped.
+    pub fn compute_delta_changes(&self, epsilon: f32) -> Vec<(u16, f32)> {
+        self.cells
+            .iter()
+            .zip(self.last_broadcast_moles.iter())
+            .enumerate()
+            .filter(|(idx, (cell, last))| {
+                *idx <= u16::MAX as usize && (cell.moles - *last).abs() > epsilon
+            })
+            .map(|(idx, (cell, _))| (idx as u16, cell.moles))
+            .collect()
+    }
+
+    /// Updates [`last_broadcast_moles`] to match the current cell moles.
+    /// Call after sending a full snapshot or delta to reset the change baseline.
+    pub fn update_last_broadcast_moles(&mut self) {
+        for (last, cell) in self.last_broadcast_moles.iter_mut().zip(self.cells.iter()) {
+            *last = cell.moles;
+        }
+    }
+
+    /// Applies delta changes received from the server.
+    /// Each entry is `(cell_index, new_moles_value)`.
+    /// Out-of-bounds indices are silently ignored.
+    pub fn apply_delta_changes(&mut self, changes: &[(u16, f32)]) {
+        for &(idx, moles) in changes {
+            if let Some(cell) = self.cells.get_mut(idx as usize) {
+                cell.moles = moles.max(0.0);
+            }
+        }
+    }
+
+    /// Reconstructs a [`GasGrid`] from dimensions, a flat moles slice produced by
+    /// [`GasGrid::moles_vec`], and a passability mask produced by [`GasGrid::passable_vec`].
+    ///
+    /// Returns an error if the length of `gas_moles` or `passable` does not match
+    /// `width * height`.
+    pub fn from_moles_vec(
+        width: u32,
+        height: u32,
+        gas_moles: Vec<f32>,
+        passable: Vec<bool>,
+    ) -> Result<Self, String> {
         let expected = width
             .checked_mul(height)
             .and_then(|n| usize::try_from(n).ok())
@@ -211,18 +270,26 @@ impl GasGrid {
                 gas_moles.len()
             ));
         }
+        if passable.len() != expected {
+            return Err(format!(
+                "passable length mismatch: expected {expected}, got {}",
+                passable.len()
+            ));
+        }
         let size = expected;
         let cells = gas_moles
-            .into_iter()
-            .map(|moles| GasCell {
+            .iter()
+            .map(|&moles| GasCell {
                 moles: moles.max(0.0),
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let last_broadcast_moles = cells.iter().map(|c| c.moles).collect();
         Ok(Self {
             width,
             height,
             cells,
-            passable: vec![true; size],
+            passable,
+            last_broadcast_moles,
             scratch_flows: Vec::new(),
             scratch_outgoing: vec![0.0; size],
             scratch_source_scale: vec![1.0; size],
@@ -475,7 +542,7 @@ mod tests {
         assert!(grid.passable[4]); // (1, 1)
         assert!(grid.passable[0]); // (0, 0)
 
-        // Change tiles to walls (floor -> wall transition: moles preserved)
+        // Change tiles to walls (floor -> wall transition: moles zeroed)
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         grid.sync_walls(&tilemap);
 
@@ -483,32 +550,31 @@ mod tests {
         assert!(!grid.passable[4]); // (1, 1) now impassable
         assert!(grid.passable[0]); // (0, 0) still passable
 
-        // Moles should be preserved even when impassable
-        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(5.0));
+        // Moles at (1,1) should be zeroed (walls always hold 0.0 moles)
+        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(0.0));
         assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(3.0));
 
-        // Total moles should still count the sealed cell
-        assert_eq!(grid.total_moles(), 8.0);
+        // (1,1) is now 0.0 moles
+        assert_eq!(grid.total_moles(), 3.0);
 
         // Change wall back to floor (wall -> floor transition)
         tilemap.set(IVec2::new(1, 1), TileKind::Floor);
         grid.sync_walls(&tilemap);
         assert!(grid.passable[4]); // (1, 1) passable again
-        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(5.0)); // moles still preserved
+        assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(0.0)); // was zeroed, stays 0
 
-        // Test wall removal with explicit vacuum creation
-        // Set a cell to wall, then remove it and set to 0.0 moles (simulating wall_toggle_input)
+        // Test wall removal: add a wall, then re-sync
         tilemap.set(IVec2::new(2, 2), TileKind::Wall);
         grid.sync_walls(&tilemap);
         assert!(!grid.passable[8]); // (2, 2) is wall, impassable
+        assert_eq!(grid.pressure_at(IVec2::new(2, 2)), Some(0.0)); // zeroed
 
-        // Remove wall and set to vacuum (what wall_toggle_input does)
+        // Remove wall
         tilemap.set(IVec2::new(2, 2), TileKind::Floor);
-        grid.set_moles(IVec2::new(2, 2), 0.0);
         grid.sync_walls(&tilemap);
 
         assert!(grid.passable[8]); // (2, 2) now passable
-        assert_eq!(grid.pressure_at(IVec2::new(2, 2)), Some(0.0)); // vacuum (0.0 moles)
+        assert_eq!(grid.pressure_at(IVec2::new(2, 2)), Some(0.0)); // vacuum (was already 0)
     }
 
     #[test]
@@ -696,7 +762,9 @@ mod tests {
         assert_eq!(moles[1], 2.5);
         assert_eq!(moles[5], 7.0);
 
-        let restored = GasGrid::from_moles_vec(3, 2, moles).expect("roundtrip should succeed");
+        let passable = grid.passable_vec();
+        let restored =
+            GasGrid::from_moles_vec(3, 2, moles, passable).expect("roundtrip should succeed");
         assert_eq!(restored.total_moles(), grid.total_moles());
         assert_eq!(
             restored.pressure_at(IVec2::new(0, 0)),
@@ -710,22 +778,29 @@ mod tests {
 
     #[test]
     fn test_from_moles_vec_length_mismatch() {
-        let result = GasGrid::from_moles_vec(3, 2, vec![1.0; 5]);
+        let result = GasGrid::from_moles_vec(3, 2, vec![1.0; 5], vec![true; 6]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("mismatch"));
+    }
+
+    #[test]
+    fn test_from_moles_vec_passable_length_mismatch() {
+        let result = GasGrid::from_moles_vec(3, 2, vec![1.0; 6], vec![true; 5]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("mismatch"));
     }
 
     #[test]
     fn test_from_moles_vec_negative_clamped() {
-        let grid =
-            GasGrid::from_moles_vec(2, 1, vec![-5.0, 3.0]).expect("construction should succeed");
+        let grid = GasGrid::from_moles_vec(2, 1, vec![-5.0, 3.0], vec![true; 2])
+            .expect("construction should succeed");
         assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(0.0));
         assert_eq!(grid.pressure_at(IVec2::new(1, 0)), Some(3.0));
     }
 
     #[test]
     fn test_from_moles_vec_overflow() {
-        let result = GasGrid::from_moles_vec(u32::MAX, 2, vec![]);
+        let result = GasGrid::from_moles_vec(u32::MAX, 2, vec![], vec![]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("overflow"));
     }
@@ -786,5 +861,65 @@ mod tests {
             "expected x-gradient = 2.0 with wall on left, got {}",
             g.x
         );
+    }
+
+    #[test]
+    fn test_compute_and_apply_delta_changes() {
+        let mut grid = GasGrid::new(3, 1);
+        grid.set_moles(IVec2::new(0, 0), 5.0);
+        grid.set_moles(IVec2::new(1, 0), 5.0);
+        grid.set_moles(IVec2::new(2, 0), 5.0);
+        grid.update_last_broadcast_moles();
+
+        // No changes yet
+        assert!(grid.compute_delta_changes(0.01).is_empty());
+
+        // Modify one cell
+        grid.set_moles(IVec2::new(1, 0), 7.5);
+
+        let delta = grid.compute_delta_changes(0.01);
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0], (1u16, 7.5));
+
+        // Update baseline and verify no delta after
+        grid.update_last_broadcast_moles();
+        assert!(grid.compute_delta_changes(0.01).is_empty());
+    }
+
+    #[test]
+    fn test_apply_delta_changes() {
+        let mut grid = GasGrid::new(3, 1);
+        grid.set_moles(IVec2::new(0, 0), 1.0);
+        grid.set_moles(IVec2::new(1, 0), 2.0);
+        grid.set_moles(IVec2::new(2, 0), 3.0);
+
+        grid.apply_delta_changes(&[(1u16, 9.0), (2u16, 0.5)]);
+
+        assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(1.0));
+        assert_eq!(grid.pressure_at(IVec2::new(1, 0)), Some(9.0));
+        assert_eq!(grid.pressure_at(IVec2::new(2, 0)), Some(0.5));
+
+        // Out-of-bounds index silently ignored
+        grid.apply_delta_changes(&[(100u16, 999.0)]);
+        assert_eq!(grid.total_moles(), 10.5);
+    }
+
+    #[test]
+    fn test_sync_walls_zeros_moles_on_wall() {
+        let mut grid = GasGrid::new(3, 1);
+        let mut tilemap = Tilemap::new(3, 1, TileKind::Floor);
+        grid.set_moles(IVec2::new(0, 0), 10.0);
+        grid.set_moles(IVec2::new(1, 0), 10.0);
+        grid.set_moles(IVec2::new(2, 0), 10.0);
+        grid.sync_walls(&tilemap);
+
+        // Seal the middle cell
+        tilemap.set(IVec2::new(1, 0), TileKind::Wall);
+        grid.sync_walls(&tilemap);
+
+        // Moles at (1,0) must be zeroed; neighbours untouched
+        assert_eq!(grid.pressure_at(IVec2::new(1, 0)), Some(0.0));
+        assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(10.0));
+        assert_eq!(grid.pressure_at(IVec2::new(2, 0)), Some(10.0));
     }
 }
