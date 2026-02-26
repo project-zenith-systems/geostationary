@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use network::Headless;
-use tiles::TileKind;
 
 /// Normalised pointer event fired on mouse button press.
 #[derive(Message, Debug, Clone, Copy)]
@@ -10,11 +9,19 @@ pub struct PointerAction {
     pub screen_pos: Vec2,
 }
 
-/// Shared hit-test result type.
-#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorldHit {
-    Tile { position: IVec2, kind: TileKind },
-    Thing { entity: Entity, kind: u16 },
+/// Generic hit-test result emitted by raycasting systems in domain modules
+/// (`raycast_tiles`, `raycast_things`, …).
+///
+/// Carries the hit entity and its 3D world position so downstream systems
+/// (e.g. the `interactions` module) can inspect the entity's components to
+/// determine what kind of thing was hit without any tile- or thing-specific
+/// types at this layer.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct WorldHit {
+    /// The entity that was hit (a tile entity, a thing entity, etc.).
+    pub entity: Entity,
+    /// The 3D world-space position of the hit point.
+    pub world_pos: Vec3,
 }
 
 /// System that emits [`PointerAction`] events for each mouse button just pressed.
@@ -91,7 +98,7 @@ mod tests {
         app.world_mut()
             .spawn((
                 Window {
-                    resolution: WindowResolution::new(800.0, 600.0),
+                    resolution: WindowResolution::new(800, 600),
                     ..default()
                 },
                 PrimaryWindow,

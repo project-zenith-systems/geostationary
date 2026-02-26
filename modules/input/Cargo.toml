@@ -5,5 +5,4 @@ edition = "2024"
 
 [dependencies]
 bevy = { workspace = true }
-tiles = { path = "../tiles" }
 network = { path = "../network" }

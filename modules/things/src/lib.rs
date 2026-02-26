@@ -490,7 +490,7 @@ fn broadcast_state(
 }
 
 /// Listens for right-click [`PointerAction`] events, raycasts against entity colliders
-/// via [`SpatialQuery`], and emits [`WorldHit::Thing`] for the nearest hit.
+/// via [`SpatialQuery`], and emits [`WorldHit`] for the nearest hit thing entity.
 fn raycast_things(
     mut pointer_action_reader: MessageReader<PointerAction>,
     spatial_query: SpatialQuery,
@@ -518,10 +518,11 @@ fn raycast_things(
             true,
             &SpatialQueryFilter::default(),
         ) {
-            if let Ok(thing) = things.get(hit.entity) {
-                hit_writer.write(WorldHit::Thing {
+            if things.get(hit.entity).is_ok() {
+                let world_pos = ray.origin + *ray.direction * hit.distance;
+                hit_writer.write(WorldHit {
                     entity: hit.entity,
-                    kind: thing.kind,
+                    world_pos,
                 });
             }
         }
