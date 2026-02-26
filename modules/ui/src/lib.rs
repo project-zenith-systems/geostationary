@@ -6,7 +6,7 @@ pub mod overlay;
 pub mod theme;
 
 pub use button::build_button;
-pub use overlay::{OverlayTarget, WorldSpaceOverlay, update_world_space_overlays};
+pub use overlay::{OverlayOffset, OverlayTarget, WorldSpaceOverlay, update_world_space_overlays};
 pub use theme::UiTheme;
 
 #[derive(Default)]
@@ -18,6 +18,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<WorldSpaceOverlay>();
         app.register_type::<OverlayTarget>();
+        app.register_type::<OverlayOffset>();
         app.init_resource::<UiTheme>();
         app.add_systems(Startup, spawn_ui_camera);
         app.add_systems(PreUpdate, button::change_button_colors);
