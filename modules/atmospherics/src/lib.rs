@@ -128,6 +128,12 @@ fn diffusion_step_system(
     gas_grid.step(time.delta_secs());
 }
 
+/// Resource that holds the configurable scale factor applied to the pressure gradient
+/// to produce a force in Newtons.  Inserted by the app from `config.toml`
+/// (`atmospherics.pressure_force_scale`).
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct PressureForceScale(pub f32);
+
 /// Scale factor applied to the pressure gradient to produce a force in Newtons.
 /// A value of `50.0` makes a 1-mole/cell gradient exert 50 N on a body.
 /// Adjust during integration testing to produce convincing entity movement.
@@ -145,11 +151,14 @@ const PRESSURE_FORCE_SCALE: f32 = 50.0;
 fn apply_pressure_forces(
     mut commands: Commands,
     gas_grid: Option<Res<GasGrid>>,
+    force_scale: Option<Res<PressureForceScale>>,
     mut query: Query<(Entity, &RigidBody, &Transform, Option<&mut ConstantForce>)>,
 ) {
     let Some(grid) = gas_grid else {
         return;
     };
+
+    let scale = force_scale.map(|r| r.0).unwrap_or(PRESSURE_FORCE_SCALE);
 
     for (entity, rigid_body, transform, maybe_force) in &mut query {
         if *rigid_body != RigidBody::Dynamic {
@@ -164,7 +173,7 @@ fn apply_pressure_forces(
 
         // gradient is in (x, z) tile-grid space.
         let gradient = grid.pressure_gradient_at(tile_pos);
-        let force_vec = Vec3::new(gradient.x, 0.0, gradient.y) * PRESSURE_FORCE_SCALE;
+        let force_vec = Vec3::new(gradient.x, 0.0, gradient.y) * scale;
 
         if let Some(mut cf) = maybe_force {
             cf.0 = force_vec;

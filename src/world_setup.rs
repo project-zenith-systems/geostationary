@@ -25,6 +25,9 @@ pub fn setup_world(
     // Insert resources
     commands.insert_resource(tilemap);
     commands.insert_resource(gas_grid);
+    commands.insert_resource(atmospherics::PressureForceScale(
+        config.atmospherics.pressure_force_scale,
+    ));
 
     // Player capsule spawn removed - now handled by server.rs and client.rs
 
@@ -39,6 +42,7 @@ pub fn setup_world(
 fn cleanup_world(mut commands: Commands) {
     commands.remove_resource::<Tilemap>();
     commands.remove_resource::<GasGrid>();
+    commands.remove_resource::<atmospherics::PressureForceScale>();
 }
 
 pub struct WorldSetupPlugin;
