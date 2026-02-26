@@ -80,7 +80,9 @@ impl Tilemap {
         self.get(pos).is_some_and(|kind| kind.is_walkable())
     }
 
-    /// Creates a 12x10 test room with perimeter walls and internal obstacles.
+    /// Creates a 16x10 test room for decompression scenarios, with perimeter walls
+    /// and a central double wall that separates a left (pressurized) chamber from
+    /// a right (vacuum) chamber.
     pub fn test_room() -> Tilemap {
         let mut tilemap = Tilemap::new(16, 10, TileKind::Floor);
 
