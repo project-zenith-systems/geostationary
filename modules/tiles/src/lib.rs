@@ -264,8 +264,7 @@ impl Plugin for TilesPlugin {
             );
             app.add_systems(
                 Update,
-                (raycast_tiles, execute_tile_toggle)
-                    .run_if(not(resource_exists::<Headless>)),
+                (raycast_tiles, execute_tile_toggle),
             );
         }
 
@@ -558,11 +557,12 @@ fn execute_tile_toggle(
     mut requests: MessageReader<TileToggleRequest>,
     sender: Option<Res<StreamSender<TileToggle>>>,
 ) {
+    let Some(ref s) = sender else {
+        // Drain the event queue even when disconnected so they don't accumulate.
+        for _ in requests.read() {}
+        return;
+    };
     for req in requests.read() {
-        let Some(ref s) = sender else {
-            warn!("execute_tile_toggle: no TileToggle stream sender available");
-            return;
-        };
         if let Err(e) = s.send(&TileToggle {
             position: [req.position.x, req.position.y],
             kind: req.kind,
