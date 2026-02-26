@@ -257,6 +257,10 @@ fn handle_atmos_updates(
     mut reader: ResMut<StreamReader<AtmosStreamMessage>>,
     gas_grid: Option<ResMut<GasGrid>>,
 ) {
+    // `pending` holds a newly-received full snapshot that hasn't been committed yet.
+    // Deltas that arrive in the same batch are applied to it directly so that no
+    // updates are dropped within a single drain cycle.
+    let mut pending: Option<GasGrid> = None;
     let mut gas_grid = gas_grid;
     for msg in reader.drain() {
         match msg {
@@ -268,21 +272,21 @@ fn handle_atmos_updates(
             } => match GasGrid::from_moles_vec(width, height, gas_moles, passable) {
                 Ok(new_grid) => {
                     info!("Received gas grid {}×{} from server", width, height);
-                    commands.insert_resource(new_grid);
-                    // After inserting, the resource won't be visible via the
-                    // already-fetched `gas_grid` option this frame; that is fine
-                    // because subsequent delta messages in the same batch are
-                    // applied on the next frame once the resource is committed.
-                    gas_grid = None;
+                    pending = Some(new_grid);
                 }
                 Err(e) => error!("Invalid gas grid data on stream {ATMOS_STREAM_TAG}: {e}"),
             },
             AtmosStreamMessage::GasGridDelta { changes } => {
-                if let Some(ref mut grid) = gas_grid {
+                if let Some(ref mut grid) = pending {
+                    grid.apply_delta_changes(&changes);
+                } else if let Some(ref mut grid) = gas_grid {
                     grid.apply_delta_changes(&changes);
                 }
             }
         }
+    }
+    if let Some(new_grid) = pending {
+        commands.insert_resource(new_grid);
     }
 }
 
@@ -420,10 +424,10 @@ fn broadcast_gas_grid(
             gas_moles: grid.moles_vec(),
             passable: grid.passable_vec().to_vec(),
         };
-        if let Err(e) = sender.broadcast(&msg) {
-            error!("Failed to broadcast GasGridData: {e}");
+        match sender.broadcast(&msg) {
+            Ok(()) => grid.update_last_broadcast_moles(),
+            Err(e) => error!("Failed to broadcast GasGridData: {e}"),
         }
-        grid.update_last_broadcast_moles();
         return;
     }
 
@@ -432,10 +436,10 @@ fn broadcast_gas_grid(
         let changes = grid.compute_delta_changes(DELTA_EPSILON);
         if !changes.is_empty() {
             let msg = AtmosStreamMessage::GasGridDelta { changes };
-            if let Err(e) = sender.broadcast(&msg) {
-                error!("Failed to broadcast GasGridDelta: {e}");
+            match sender.broadcast(&msg) {
+                Ok(()) => grid.update_last_broadcast_moles(),
+                Err(e) => error!("Failed to broadcast GasGridDelta: {e}"),
             }
-            grid.update_last_broadcast_moles();
         }
     }
 }
