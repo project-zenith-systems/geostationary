@@ -451,8 +451,10 @@ fn handle_tiles_stream(
                 if let Some(ref mut tm) = tilemap {
                     tm.set(pos, kind);
                     // Only emit the mutation event once the Tilemap resource exists.
-                    // This avoids spawning partial tile entities before the initial snapshot,
-                    // which would cause the full-map mesh spawn to no-op.
+                    // This prevents spawning partial tile entities before the initial
+                    // TilemapData snapshot arrives. If entities were spawned early,
+                    // spawn_tile_meshes would see a non-empty tile query and skip
+                    // the full initial map spawn, leaving most tiles missing.
                     mutation_events.write(TileMutated { position: pos, kind });
                 }
             }
