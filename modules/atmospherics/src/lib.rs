@@ -57,6 +57,7 @@ pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid
         }
     }
 
+    gas_grid.update_last_broadcast_moles();
     gas_grid
 }
 
@@ -334,7 +335,7 @@ fn send_gas_grid_on_connect(
             width: grid.width(),
             height: grid.height(),
             gas_moles: grid.moles_vec(),
-            passable: grid.passable_vec(),
+            passable: grid.passable_vec().to_vec(),
         };
 
         if let Err(e) = sender.send_to(from, &msg) {
@@ -417,7 +418,7 @@ fn broadcast_gas_grid(
             width: grid.width(),
             height: grid.height(),
             gas_moles: grid.moles_vec(),
-            passable: grid.passable_vec(),
+            passable: grid.passable_vec().to_vec(),
         };
         if let Err(e) = sender.broadcast(&msg) {
             error!("Failed to broadcast GasGridData: {e}");

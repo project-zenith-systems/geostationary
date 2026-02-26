@@ -206,26 +206,34 @@ impl GasGrid {
         self.cells.iter().map(|cell| cell.moles).collect()
     }
 
-    /// Returns the passability mask as a flat `Vec<bool>` in row-major order.
+    /// Returns the passability mask as a flat slice of `bool` in row-major order.
     /// Used to serialize the gas grid for network transmission.
-    pub fn passable_vec(&self) -> Vec<bool> {
-        self.passable.clone()
+    pub fn passable_vec(&self) -> &[bool] {
+        &self.passable
     }
 
     /// Computes incremental changes since the last broadcast.
     /// Returns `(cell_index, new_moles)` pairs for every cell whose moles differ
     /// from [`last_broadcast_moles`] by more than `epsilon`.
     ///
-    /// Cell indices are encoded as `u16`; cells whose flat index exceeds
-    /// [`u16::MAX`] are silently skipped.
+    /// # Panics
+    ///
+    /// Panics if the total cell count exceeds [`u16::MAX`], since cell indices are
+    /// encoded as `u16` in the delta wire format.
     pub fn compute_delta_changes(&self, epsilon: f32) -> Vec<(u16, f32)> {
+        assert!(
+            self.cells.len() <= u16::MAX as usize,
+            "GasGrid has {} cells, which exceeds the maximum addressable by u16 \
+             indices ({}). Reduce the grid size or update the protocol to use a \
+             larger index type.",
+            self.cells.len(),
+            u16::MAX
+        );
         self.cells
             .iter()
             .zip(self.last_broadcast_moles.iter())
             .enumerate()
-            .filter(|(idx, (cell, last))| {
-                *idx <= u16::MAX as usize && (cell.moles - *last).abs() > epsilon
-            })
+            .filter(|(_, (cell, last))| (cell.moles - *last).abs() > epsilon)
             .map(|(idx, (cell, _))| (idx as u16, cell.moles))
             .collect()
     }
@@ -762,7 +770,7 @@ mod tests {
         assert_eq!(moles[1], 2.5);
         assert_eq!(moles[5], 7.0);
 
-        let passable = grid.passable_vec();
+        let passable = grid.passable_vec().to_vec();
         let restored =
             GasGrid::from_moles_vec(3, 2, moles, passable).expect("roundtrip should succeed");
         assert_eq!(restored.total_moles(), grid.total_moles());
