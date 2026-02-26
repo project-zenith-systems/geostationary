@@ -225,6 +225,11 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
                 .before(NetworkSet::Send),
         );
         app.add_systems(Update, broadcast_state.run_if(resource_exists::<Server>));
+
+        // Register the messages raycast_things reads/writes so the resources
+        // exist even when InputPlugin is not added (e.g. headless server mode).
+        app.add_message::<PointerAction>();
+        app.add_message::<WorldHit>();
         app.add_systems(
             Update,
             raycast_things
@@ -489,7 +494,7 @@ fn broadcast_state(
 fn raycast_things(
     mut pointer_action_reader: MessageReader<PointerAction>,
     spatial_query: SpatialQuery,
-    camera: Query<(&Camera, &GlobalTransform)>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     things: Query<&Thing>,
     mut hit_writer: MessageWriter<WorldHit>,
 ) {
