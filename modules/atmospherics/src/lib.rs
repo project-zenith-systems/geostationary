@@ -1,11 +1,10 @@
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
 use network::{
     ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{ConstantForce, RigidBody};
-use tiles::{TileKind, Tilemap};
+use tiles::Tilemap;
 use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
@@ -26,11 +25,17 @@ pub const ATMOS_STREAM_TAG: u8 = 2;
 /// Wire format for stream 2 (server→client atmospherics stream).
 #[derive(Debug, Clone, SchemaRead, SchemaWrite)]
 pub enum AtmosStreamMessage {
-    /// Full gas grid snapshot sent once on connect.
+    /// Full gas grid snapshot sent on connect and every ~2 seconds.
     GasGridData {
         width: u32,
         height: u32,
         gas_moles: Vec<f32>,
+        passable: Vec<bool>,
+    },
+    /// Incremental update broadcast at ~10 Hz; contains only cells that changed
+    /// beyond the delta epsilon since the last snapshot or delta.
+    GasGridDelta {
+        changes: Vec<(u16, f32)>,
     },
 }
 
@@ -52,101 +57,14 @@ pub fn initialize_gas_grid(tilemap: &Tilemap, standard_pressure: f32) -> GasGrid
         }
     }
 
+    gas_grid.update_last_broadcast_moles();
     gas_grid
 }
 
-/// Epsilon threshold for detecting parallel rays in raycasting.
-/// Used to avoid division by near-zero values when the ray is nearly parallel to the ground plane.
-const RAY_PARALLEL_EPSILON: f32 = 0.001;
 /// Simulation time step (in seconds) applied when advancing the atmospherics simulation manually
 /// (e.g., via the F4 key). A value of 2.0 seconds makes gas movement visibly noticeable per step,
 /// while still keeping the number of manual steps reasonable during debugging.
 const MANUAL_STEP_DT: f32 = 2.0;
-
-/// Performs raycasting from the camera through the cursor to find the tile position.
-/// Returns the tile grid position (IVec2) if a tile is found within the raycast.
-fn raycast_tile_from_cursor(
-    camera_query: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    window_query: &Query<&Window, With<PrimaryWindow>>,
-) -> Option<IVec2> {
-    let (camera, camera_transform) = camera_query.single().ok()?;
-    let window = window_query.single().ok()?;
-    let cursor_position = window.cursor_position()?;
-
-    // Convert cursor position to a ray in world space
-    let ray = camera
-        .viewport_to_world(camera_transform, cursor_position)
-        .ok()?;
-
-    // Find intersection with the ground plane (y = 0)
-    // Ray equation: point = origin + t * direction
-    // For y = 0: origin.y + t * direction.y = 0
-    // Solve for t: t = -origin.y / direction.y
-    if ray.direction.y.abs() < RAY_PARALLEL_EPSILON {
-        // Ray is nearly parallel to ground plane
-        return None;
-    }
-
-    let t = -ray.origin.y / ray.direction.y;
-    if t < 0.0 {
-        // Intersection is behind the camera
-        return None;
-    }
-
-    let intersection = ray.origin + ray.direction * t;
-
-    // Convert world position to tile coordinates
-    // Tiles are centered at integer coordinates (e.g., tile at (0,0) is centered at world (0,0))
-    let tile_x = intersection.x.round() as i32;
-    let tile_z = intersection.z.round() as i32;
-
-    Some(IVec2::new(tile_x, tile_z))
-}
-
-/// System that toggles walls when the middle mouse button is clicked.
-/// Uses raycasting to determine which tile is under the cursor.
-/// When a wall is removed (Wall -> Floor), the gas cell is set to 0.0 moles (vacuum).
-/// When a wall is added (Floor -> Wall), the cell becomes impassable but preserves its moles.
-fn wall_toggle_input(
-    mouse_input: Res<ButtonInput<MouseButton>>,
-    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    window_query: Query<&Window, With<PrimaryWindow>>,
-    tilemap: Option<ResMut<Tilemap>>,
-    gas_grid: Option<ResMut<GasGrid>>,
-) {
-    if !mouse_input.just_pressed(MouseButton::Middle) {
-        return;
-    }
-
-    let (Some(mut tilemap), Some(mut gas_grid)) = (tilemap, gas_grid) else {
-        return;
-    };
-
-    let Some(tile_pos) = raycast_tile_from_cursor(&camera_query, &window_query) else {
-        return;
-    };
-
-    // Check if the tile is within bounds
-    let Some(current_tile) = tilemap.get(tile_pos) else {
-        return;
-    };
-
-    // Toggle the tile
-    let new_tile = match current_tile {
-        TileKind::Wall => {
-            // When removing a wall, set the cell to vacuum (0.0 moles)
-            gas_grid.set_moles(tile_pos, 0.0);
-            TileKind::Floor
-        }
-        TileKind::Floor => {
-            // When adding a wall, preserve the current moles (cell becomes impassable)
-            TileKind::Wall
-        }
-    };
-
-    tilemap.set(tile_pos, new_tile);
-    info!("Toggled tile at {:?} to {:?}", tile_pos, new_tile);
-}
 
 /// System that synchronizes the GasGrid passability mask with the Tilemap.
 /// Runs when the Tilemap has been modified (via change detection).
@@ -281,7 +199,6 @@ impl Plugin for AtmosphericsPlugin {
         app.add_systems(
             Update,
             (
-                wall_toggle_input,
                 manual_step_input,
                 pause_toggle_input,
                 debug_overlay::toggle_overlay,
@@ -294,14 +211,19 @@ impl Plugin for AtmosphericsPlugin {
         );
         app.add_systems(
             PreUpdate,
-            handle_atmos_stream
+            handle_atmos_updates
                 .run_if(not(resource_exists::<Server>))
                 .after(NetworkSet::Receive),
         );
         app.init_resource::<PendingAtmosSyncs>();
+        app.init_resource::<AtmosBroadcastTimers>();
         app.add_systems(
             Update,
-            send_gas_grid_on_connect.run_if(resource_exists::<Server>),
+            (
+                send_gas_grid_on_connect,
+                broadcast_gas_grid,
+            )
+                .run_if(resource_exists::<Server>),
         );
 
         // Register stream 2 (server→client atmospherics stream). Requires NetworkPlugin to be added first.
@@ -324,30 +246,47 @@ impl Plugin for AtmosphericsPlugin {
     }
 }
 
-/// Client-side system: handles incoming gas grid snapshots from the server on stream 2.
-/// Drains [`StreamReader<AtmosStreamMessage>`], reconstructs a [`GasGrid`] via
-/// [`GasGrid::from_moles_vec`], and inserts it as a resource.
-fn handle_atmos_stream(
+/// Client-side system: handles incoming gas grid messages from the server on stream 2.
+///
+/// - [`AtmosStreamMessage::GasGridData`]: reconstructs a full [`GasGrid`] via
+///   [`GasGrid::from_moles_vec`] and inserts/replaces the resource.
+/// - [`AtmosStreamMessage::GasGridDelta`]: applies incremental cell updates to the
+///   existing [`GasGrid`] resource; silently ignored when no grid is present yet.
+fn handle_atmos_updates(
     mut commands: Commands,
     mut reader: ResMut<StreamReader<AtmosStreamMessage>>,
+    gas_grid: Option<ResMut<GasGrid>>,
 ) {
+    // `pending` holds a newly-received full snapshot that hasn't been committed yet.
+    // Deltas that arrive in the same batch are applied to it directly so that no
+    // updates are dropped within a single drain cycle.
+    let mut pending: Option<GasGrid> = None;
+    let mut gas_grid = gas_grid;
     for msg in reader.drain() {
         match msg {
             AtmosStreamMessage::GasGridData {
                 width,
                 height,
                 gas_moles,
-            } => match GasGrid::from_moles_vec(width, height, gas_moles) {
-                Ok(gas_grid) => {
-                    info!(
-                        "Received gas grid {}×{} from server",
-                        width, height
-                    );
-                    commands.insert_resource(gas_grid);
+                passable,
+            } => match GasGrid::from_moles_vec(width, height, gas_moles, passable) {
+                Ok(new_grid) => {
+                    info!("Received gas grid {}×{} from server", width, height);
+                    pending = Some(new_grid);
                 }
                 Err(e) => error!("Invalid gas grid data on stream {ATMOS_STREAM_TAG}: {e}"),
             },
+            AtmosStreamMessage::GasGridDelta { changes } => {
+                if let Some(ref mut grid) = pending {
+                    grid.apply_delta_changes(&changes);
+                } else if let Some(ref mut grid) = gas_grid {
+                    grid.apply_delta_changes(&changes);
+                }
+            }
         }
+    }
+    if let Some(new_grid) = pending {
+        commands.insert_resource(new_grid);
     }
 }
 
@@ -400,6 +339,7 @@ fn send_gas_grid_on_connect(
             width: grid.width(),
             height: grid.height(),
             gas_moles: grid.moles_vec(),
+            passable: grid.passable_vec().to_vec(),
         };
 
         if let Err(e) = sender.send_to(from, &msg) {
@@ -419,5 +359,87 @@ fn send_gas_grid_on_connect(
             from.0
         );
         module_ready.write(ModuleReadySent { client: from });
+    }
+}
+
+/// Moles-change threshold for including a cell in a [`GasGridDelta`].
+/// Cells whose moles have changed by less than this amount since the last broadcast
+/// are omitted to reduce network traffic.
+const DELTA_EPSILON: f32 = 0.01;
+
+/// Interval between full [`GasGridData`] snapshot broadcasts (seconds).
+const FULL_SNAPSHOT_INTERVAL: f32 = 2.0;
+
+/// Interval between incremental [`GasGridDelta`] broadcasts (seconds).
+/// 0.1 s → ~10 Hz update rate.
+const DELTA_INTERVAL: f32 = 0.1;
+
+/// Timers that drive the periodic gas grid replication broadcasts.
+#[derive(Resource)]
+pub struct AtmosBroadcastTimers {
+    /// Fires every [`FULL_SNAPSHOT_INTERVAL`] seconds to trigger a full snapshot broadcast.
+    pub full_snapshot: Timer,
+    /// Fires every [`DELTA_INTERVAL`] seconds to trigger an incremental delta broadcast.
+    pub delta: Timer,
+}
+
+impl Default for AtmosBroadcastTimers {
+    fn default() -> Self {
+        Self {
+            full_snapshot: Timer::from_seconds(FULL_SNAPSHOT_INTERVAL, TimerMode::Repeating),
+            delta: Timer::from_seconds(DELTA_INTERVAL, TimerMode::Repeating),
+        }
+    }
+}
+
+/// Server-side system: broadcasts gas grid replication messages to all connected clients.
+///
+/// - Every [`DELTA_INTERVAL`] seconds (~10 Hz): computes a [`GasGridDelta`] of cells
+///   that have changed beyond [`DELTA_EPSILON`] since the last broadcast and sends it
+///   to all clients.  [`GasGrid::last_broadcast_moles`] is updated after each delta.
+/// - Every [`FULL_SNAPSHOT_INTERVAL`] seconds (~0.5 Hz): broadcasts a full
+///   [`GasGridData`] snapshot to resync clients.  [`GasGrid::last_broadcast_moles`] is
+///   updated after the snapshot so the following deltas are relative to it.
+fn broadcast_gas_grid(
+    time: Res<Time>,
+    mut timers: ResMut<AtmosBroadcastTimers>,
+    atmos_sender: Option<Res<StreamSender<AtmosStreamMessage>>>,
+    gas_grid: Option<ResMut<GasGrid>>,
+) {
+    timers.full_snapshot.tick(time.delta());
+    timers.delta.tick(time.delta());
+
+    let Some(sender) = atmos_sender.as_deref() else {
+        return;
+    };
+    let Some(mut grid) = gas_grid else {
+        return;
+    };
+
+    // Full snapshot broadcast takes priority; also resets the delta baseline.
+    if timers.full_snapshot.just_finished() {
+        let msg = AtmosStreamMessage::GasGridData {
+            width: grid.width(),
+            height: grid.height(),
+            gas_moles: grid.moles_vec(),
+            passable: grid.passable_vec().to_vec(),
+        };
+        match sender.broadcast(&msg) {
+            Ok(()) => grid.update_last_broadcast_moles(),
+            Err(e) => error!("Failed to broadcast GasGridData: {e}"),
+        }
+        return;
+    }
+
+    // Incremental delta broadcast.
+    if timers.delta.just_finished() {
+        let changes = grid.compute_delta_changes(DELTA_EPSILON);
+        if !changes.is_empty() {
+            let msg = AtmosStreamMessage::GasGridDelta { changes };
+            match sender.broadcast(&msg) {
+                Ok(()) => grid.update_last_broadcast_moles(),
+                Err(e) => error!("Failed to broadcast GasGridDelta: {e}"),
+            }
+        }
     }
 }
