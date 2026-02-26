@@ -5626,6 +5626,7 @@ name = "things"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "input",
  "network",
  "physics",
  "serde",
