@@ -7,5 +7,6 @@ edition = "2024"
 bevy = { workspace = true }
 physics = { path = "../physics" }
 network = { path = "../network" }
+input = { path = "../input" }
 serde = { workspace = true }
 wincode = { workspace = true }

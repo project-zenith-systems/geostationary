@@ -55,7 +55,9 @@ fn main() {
             .add_plugins(NetworkPlugin)
             .add_plugins(PhysicsPlugin)
             .add_plugins(TilesPlugin)
-            .add_plugins(ThingsPlugin)
+            .add_plugins(ThingsPlugin::<app_state::AppState>::in_state(
+                app_state::AppState::InGame,
+            ))
             .add_plugins(AtmosphericsPlugin)
             .add_plugins(creatures::CreaturesPlugin)
             .add_plugins(souls::SoulsPlugin)
@@ -85,7 +87,9 @@ fn main() {
         }
 
         app.add_plugins(TilesPlugin)
-            .add_plugins(ThingsPlugin)
+            .add_plugins(ThingsPlugin::<app_state::AppState>::in_state(
+                app_state::AppState::InGame,
+            ))
             .add_plugins(AtmosphericsPlugin)
             .add_plugins(creatures::CreaturesPlugin)
             .add_plugins(souls::SoulsPlugin)
