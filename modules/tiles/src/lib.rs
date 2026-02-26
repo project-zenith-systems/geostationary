@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use input::PointerAction;
+use input::{PointerAction, WorldHit};
 use network::{
     ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
@@ -138,6 +138,10 @@ pub enum TilesStreamMessage {
 }
 
 /// Client→server request to toggle a tile at the given position (stream 4).
+///
+/// **Temporary:** This dedicated stream will be superseded by a general-purpose
+/// interactions stream in a later plan iteration. Do not rely on stream 4 being
+/// tile-specific long-term.
 #[derive(Debug, Clone, SchemaRead, SchemaWrite)]
 pub struct TileToggle {
     pub position: [i32; 2],
@@ -159,15 +163,6 @@ pub struct TileToggleRequest {
 pub struct TileMutated {
     pub position: IVec2,
     pub kind: TileKind,
-}
-
-/// Shared hit-test result type emitted by raycasting systems.
-/// `Tile` is emitted by [`raycast_tiles`]; `Thing` is reserved for the
-/// things-module raycast (added in a later plan step).
-#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorldHit {
-    Tile { position: IVec2, kind: TileKind },
-    Thing { entity: Entity, kind: u16 },
 }
 
 /// Stream tag for the server→client tiles stream (stream 1).
@@ -249,7 +244,6 @@ impl Plugin for TilesPlugin {
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
 
-        app.add_message::<WorldHit>();
         app.add_message::<TileToggleRequest>();
         app.add_message::<TileMutated>();
 
@@ -258,9 +252,20 @@ impl Plugin for TilesPlugin {
             // Tile mesh spawning and visual mutation are visual-only; skip in headless server mode.
             app.init_resource::<TileMeshes>();
             app.add_systems(Update, spawn_tile_meshes);
+            // On a listen-server, TileMutated events are written by handle_tile_toggle
+            // (which runs in the same Update schedule).  Ordering after it ensures those
+            // events are visible in the same frame.
             app.add_systems(
                 Update,
-                apply_tile_mutation.after(handle_tile_toggle),
+                apply_tile_mutation
+                    .run_if(resource_exists::<Server>)
+                    .after(handle_tile_toggle),
+            );
+            // On a dedicated client, TileMutated events come from handle_tiles_stream
+            // (PreUpdate), so no intra-Update ordering is needed.
+            app.add_systems(
+                Update,
+                apply_tile_mutation.run_if(not(resource_exists::<Server>)),
             );
             app.add_systems(
                 Update,
@@ -349,6 +354,39 @@ impl FromWorld for TileMeshes {
     }
 }
 
+/// Spawns a single tile entity for the given grid position and kind.
+/// Used by both [`spawn_tile_meshes`] (initial load) and [`apply_tile_mutation`]
+/// (incremental updates) to guarantee identical visual and physics setup.
+fn spawn_tile_entity(commands: &mut Commands, position: IVec2, kind: TileKind, tile_meshes: &TileMeshes) {
+    let world_x = position.x as f32;
+    let world_z = position.y as f32;
+    match kind {
+        TileKind::Floor => {
+            // Collider is 0.1 tall (full dim), centered on transform.
+            // Offset y by -0.05 so the top surface sits at y=0.0.
+            commands.spawn((
+                Mesh3d(tile_meshes.floor_mesh.clone()),
+                MeshMaterial3d(tile_meshes.floor_material.clone()),
+                Transform::from_xyz(world_x, -0.05, world_z),
+                Tile { position },
+                RigidBody::Static,
+                Collider::cuboid(1.0, 0.1, 1.0),
+            ));
+        }
+        TileKind::Wall => {
+            commands.spawn((
+                Mesh3d(tile_meshes.wall_mesh.clone()),
+                MeshMaterial3d(tile_meshes.wall_material.clone()),
+                Transform::from_xyz(world_x, 0.5, world_z),
+                Tile { position },
+                RigidBody::Static,
+                // avian3d Collider::cuboid takes full dimensions, not half-extents
+                Collider::cuboid(1.0, 1.0, 1.0),
+            ));
+        }
+    }
+}
+
 fn spawn_tile_meshes(
     mut commands: Commands,
     tilemap: Option<Res<Tilemap>>,
@@ -372,34 +410,7 @@ fn spawn_tile_meshes(
 
     // Spawn tile entities for the full initial tilemap.
     for (pos, kind) in tilemap.iter() {
-        let world_x = pos.x as f32;
-        let world_z = pos.y as f32;
-
-        match kind {
-            TileKind::Floor => {
-                // Collider is 0.1 tall (full dim), centered on transform.
-                // Offset y by -0.05 so the top surface sits at y=0.0.
-                commands.spawn((
-                    Mesh3d(tile_meshes.floor_mesh.clone()),
-                    MeshMaterial3d(tile_meshes.floor_material.clone()),
-                    Transform::from_xyz(world_x, -0.05, world_z),
-                    Tile { position: pos },
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 0.1, 1.0),
-                ));
-            }
-            TileKind::Wall => {
-                commands.spawn((
-                    Mesh3d(tile_meshes.wall_mesh.clone()),
-                    MeshMaterial3d(tile_meshes.wall_material.clone()),
-                    Transform::from_xyz(world_x, 0.5, world_z),
-                    Tile { position: pos },
-                    RigidBody::Static,
-                    // avian3d Collider::cuboid takes full dimensions, not half-extents
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                ));
-            }
-        }
+        spawn_tile_entity(&mut commands, pos, kind, &tile_meshes);
     }
 }
 
@@ -506,12 +517,14 @@ fn send_tilemap_on_connect(
 
 /// System that listens for right-click [`PointerAction`] events, raycasts from the
 /// camera through the screen position to the ground plane (y = 0), and emits a
-/// [`WorldHit::Tile`] event if a valid tile exists at the resulting grid coordinate.
+/// [`WorldHit`] event carrying the hit tile entity and world position if a valid
+/// tile exists at the resulting grid coordinate.
 ///
 /// Runs in `Update`, gated on absence of [`Headless`].
 fn raycast_tiles(
     mut pointer_events: MessageReader<PointerAction>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
+    tile_query: Query<(Entity, &Tile)>,
     tilemap: Option<Res<Tilemap>>,
     mut hit_events: MessageWriter<WorldHit>,
 ) {
@@ -530,9 +543,11 @@ fn raycast_tiles(
         // Convert Dir3 to Vec3 for arithmetic.
         let dir = Vec3::from(ray.direction);
 
-        // Intersect with the y = 0 ground plane: origin.y + t * dir.y = 0
-        if dir.y.abs() < f32::EPSILON {
-            continue; // Ray is parallel to the ground plane.
+        // Intersect with the y = 0 ground plane: origin.y + t * dir.y = 0.
+        // Use a practical threshold rather than f32::EPSILON to avoid rejecting
+        // near-horizontal rays while still preventing division by near-zero.
+        if dir.y.abs() < 1e-4 {
+            continue; // Ray is effectively parallel to the ground plane.
         }
         let t = -ray.origin.y / dir.y;
         if t < 0.0 {
@@ -543,8 +558,10 @@ fn raycast_tiles(
         // Grid coordinates: world X → column, world Z → row.
         let grid_pos = IVec2::new(world_pos.x.round() as i32, world_pos.z.round() as i32);
 
-        if let Some(kind) = tilemap.get(grid_pos) {
-            hit_events.write(WorldHit::Tile { position: grid_pos, kind });
+        if tilemap.get(grid_pos).is_some() {
+            if let Some((entity, _)) = tile_query.iter().find(|(_, t)| t.position == grid_pos) {
+                hit_events.write(WorldHit { entity, world_pos });
+            }
         }
     }
 }
@@ -634,11 +651,11 @@ fn handle_tile_toggle(
 /// [`handle_tiles_stream`] and, on listen-servers, by [`handle_tile_toggle`]).
 ///
 /// Despawns the existing tile entity at the affected grid position and spawns a new
-/// one with the updated mesh, material, and collider.  This provides incremental
-/// rendering — only the changed tile is rebuilt, not the entire tilemap.
+/// one with the updated mesh, material, and collider via [`spawn_tile_entity`].
+/// This provides incremental rendering — only the changed tile is rebuilt.
 ///
-/// Runs in `Update`, gated on absence of [`Headless`].  Ordered after
-/// [`handle_tile_toggle`] to ensure events from the same frame are visible.
+/// On a listen-server, runs after [`handle_tile_toggle`] (same frame visibility).
+/// On a dedicated client, runs unconditionally (events arrive from PreUpdate).
 fn apply_tile_mutation(
     mut commands: Commands,
     mut events: MessageReader<TileMutated>,
@@ -657,31 +674,7 @@ fn apply_tile_mutation(
         }
 
         // Spawn a replacement tile entity with the new kind.
-        let world_x = position.x as f32;
-        let world_z = position.y as f32;
-
-        match kind {
-            TileKind::Floor => {
-                commands.spawn((
-                    Mesh3d(tile_meshes.floor_mesh.clone()),
-                    MeshMaterial3d(tile_meshes.floor_material.clone()),
-                    Transform::from_xyz(world_x, -0.05, world_z),
-                    Tile { position },
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 0.1, 1.0),
-                ));
-            }
-            TileKind::Wall => {
-                commands.spawn((
-                    Mesh3d(tile_meshes.wall_mesh.clone()),
-                    MeshMaterial3d(tile_meshes.wall_material.clone()),
-                    Transform::from_xyz(world_x, 0.5, world_z),
-                    Tile { position },
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                ));
-            }
-        }
+        spawn_tile_entity(&mut commands, position, kind, &tile_meshes);
     }
 }
 

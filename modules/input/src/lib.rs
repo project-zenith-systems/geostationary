@@ -9,6 +9,21 @@ pub struct PointerAction {
     pub screen_pos: Vec2,
 }
 
+/// Generic hit-test result emitted by raycasting systems in domain modules
+/// (`raycast_tiles`, `raycast_things`, …).
+///
+/// Carries the hit entity and its 3D world position so downstream systems
+/// (e.g. the `interactions` module) can inspect the entity's components to
+/// determine what kind of thing was hit without any tile- or thing-specific
+/// types at this layer.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct WorldHit {
+    /// The entity that was hit (a tile entity, a thing entity, etc.).
+    pub entity: Entity,
+    /// The 3D world-space position of the hit point.
+    pub world_pos: Vec3,
+}
+
 /// System that emits [`PointerAction`] events for each mouse button just pressed.
 ///
 /// Runs in `PreUpdate`, gated on the provided game state and absence of [`Headless`].
@@ -45,6 +60,7 @@ impl<S: States + Copy> InputPlugin<S> {
 impl<S: States + Copy> Plugin for InputPlugin<S> {
     fn build(&self, app: &mut App) {
         app.add_message::<PointerAction>();
+        app.add_message::<WorldHit>();
         let state = self.state;
         app.add_systems(
             PreUpdate,
