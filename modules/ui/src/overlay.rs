@@ -29,16 +29,21 @@ pub struct WorldSpaceOverlay {
 ///
 /// When present on the same entity as [`WorldSpaceOverlay`], the
 /// [`update_world_space_overlays`] system reads the linked entity's
-/// [`GlobalTransform`] and applies the additional [`Self::offset`] to produce
-/// the world position that gets projected.
+/// [`GlobalTransform`] to produce the world position that gets projected.
+/// Pair with [`OverlayOffset`] to shift the projected point above the origin.
 #[derive(Component, Debug, Clone, Copy, Reflect)]
 #[reflect(Component)]
-pub struct OverlayTarget {
-    /// The 3D entity whose world position this overlay should track.
-    pub entity: Entity,
-    /// World-space offset added to the entity's translation each frame.
-    pub offset: Vec3,
-}
+pub struct OverlayTarget(pub Entity);
+
+/// Optional world-space offset added to an [`OverlayTarget`]'s translation.
+///
+/// When present alongside [`WorldSpaceOverlay`] and [`OverlayTarget`], the
+/// [`update_world_space_overlays`] system adds this offset to the tracked
+/// entity's translation before projecting to viewport space.  Omit this
+/// component to project the entity's origin directly.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct OverlayOffset(pub Vec3);
 
 /// System that projects each [`WorldSpaceOverlay`] node to viewport space.
 ///
@@ -49,7 +54,7 @@ pub struct OverlayTarget {
 /// 1. Fetches the active [`Camera3d`] once. Hides all overlay nodes and returns
 ///    early if no camera is present (e.g. headless server or camera despawned).
 /// 2. If the overlay has an [`OverlayTarget`], resolves the entity's
-///    [`GlobalTransform`] (+ offset) and writes it into
+///    [`GlobalTransform`] (+ optional [`OverlayOffset`]) and writes it into
 ///    [`WorldSpaceOverlay::world_pos`].
 /// 3. Projects `world_pos` through the active [`Camera3d`].
 /// 4. Centers the [`Node`] on the projected point via `left`/`top`.
@@ -63,21 +68,23 @@ pub fn update_world_space_overlays(
         &ComputedNode,
         &mut WorldSpaceOverlay,
         Option<&OverlayTarget>,
+        Option<&OverlayOffset>,
     )>,
 ) {
     // Fetch the camera once before iterating overlays.
     let camera_result = camera_query.single();
 
-    for (mut node, mut visibility, computed, mut overlay, maybe_target) in
+    for (mut node, mut visibility, computed, mut overlay, maybe_target, maybe_offset) in
         overlay_query.iter_mut()
     {
         // Resolve world position from the linked entity when an OverlayTarget is present.
         if let Some(target) = maybe_target {
-            let Ok(gt) = target_query.get(target.entity) else {
+            let Ok(gt) = target_query.get(target.0) else {
                 *visibility = Visibility::Hidden;
                 continue;
             };
-            overlay.world_pos = gt.translation() + target.offset;
+            let offset = maybe_offset.map_or(Vec3::ZERO, |o| o.0);
+            overlay.world_pos = gt.translation() + offset;
         }
 
         // Need an active 3D camera to project through.
@@ -162,10 +169,8 @@ mod tests {
                     ..default()
                 },
                 WorldSpaceOverlay::default(),
-                OverlayTarget {
-                    entity: tracked_entity,
-                    offset,
-                },
+                OverlayTarget(tracked_entity),
+                OverlayOffset(offset),
                 Visibility::Inherited,
                 ComputedNode::default(),
             ))
@@ -208,10 +213,7 @@ mod tests {
                     ..default()
                 },
                 WorldSpaceOverlay::default(),
-                OverlayTarget {
-                    entity: dead_entity,
-                    offset: Vec3::ZERO,
-                },
+                OverlayTarget(dead_entity),
                 Visibility::Inherited,
                 ComputedNode::default(),
             ))

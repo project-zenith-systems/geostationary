@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use things::{DisplayName, InputDirection};
-use ui::{OverlayTarget, WorldSpaceOverlay};
+use ui::{OverlayOffset, OverlayTarget, WorldSpaceOverlay};
 
 pub use things::PlayerControlled;
 
@@ -52,8 +52,9 @@ fn read_player_input(
 /// Observer that runs when a [`DisplayName`] component is added to an entity.
 ///
 /// Spawns an absolutely-positioned UI [`Text`] node with a [`Nameplate`] marker,
-/// a [`WorldSpaceOverlay`] for projection, and an [`OverlayTarget`] linking the
-/// node back to the 3D entity.  The [`ui::update_world_space_overlays`] system
+/// a [`WorldSpaceOverlay`] for projection, an [`OverlayTarget`] linking the
+/// node back to the 3D entity, and an [`OverlayOffset`] placing the label
+/// above the entity's origin.  The [`ui::update_world_space_overlays`] system
 /// moves the node to the correct screen position each frame.
 fn spawn_nameplate(
     trigger: On<Add, DisplayName>,
@@ -74,10 +75,8 @@ fn spawn_nameplate(
             ..default()
         },
         WorldSpaceOverlay::default(),
-        OverlayTarget {
-            entity,
-            offset: Vec3::Y * NAMEPLATE_WORLD_OFFSET,
-        },
+        OverlayTarget(entity),
+        OverlayOffset(Vec3::Y * NAMEPLATE_WORLD_OFFSET),
         Nameplate,
     ));
 }
@@ -87,8 +86,8 @@ mod tests {
     use super::*;
 
     /// Verifies that [`spawn_nameplate`] creates a [`Nameplate`] UI entity with
-    /// [`WorldSpaceOverlay`] and [`OverlayTarget`] targeting the entity that
-    /// received a [`DisplayName`].
+    /// [`WorldSpaceOverlay`], [`OverlayTarget`], and [`OverlayOffset`] targeting
+    /// the entity that received a [`DisplayName`].
     #[test]
     fn spawn_nameplate_creates_ui_entity() {
         let mut app = App::new();
@@ -107,14 +106,14 @@ mod tests {
         assert_eq!(nameplates.len(), 1, "Exactly one nameplate expected");
         let (_, overlay_target) = nameplates[0];
         assert_eq!(
-            overlay_target.entity, target,
+            overlay_target.0, target,
             "OverlayTarget should point to the entity that received DisplayName"
         );
     }
 
-    /// Verifies that the nameplate's [`OverlayTarget`] uses the expected vertical offset.
+    /// Verifies that the nameplate's [`OverlayOffset`] uses the expected vertical offset.
     #[test]
-    fn nameplate_overlay_target_has_correct_offset() {
+    fn nameplate_overlay_offset_has_correct_value() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_observer(spawn_nameplate);
@@ -124,10 +123,10 @@ mod tests {
 
         let mut q = app
             .world_mut()
-            .query_filtered::<&OverlayTarget, With<Nameplate>>();
-        let target = q.single(app.world()).unwrap();
+            .query_filtered::<&OverlayOffset, With<Nameplate>>();
+        let offset = q.single(app.world()).unwrap();
         assert!(
-            (target.offset - Vec3::Y * NAMEPLATE_WORLD_OFFSET).length() < 0.001,
+            (offset.0 - Vec3::Y * NAMEPLATE_WORLD_OFFSET).length() < 0.001,
             "Offset should be Vec3::Y * NAMEPLATE_WORLD_OFFSET ({NAMEPLATE_WORLD_OFFSET})"
         );
     }
