@@ -1,20 +1,12 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use network::Headless;
-use tiles::TileKind;
 
 /// Normalised pointer event fired on mouse button press.
-#[derive(Event, Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct PointerAction {
     pub button: MouseButton,
     pub screen_pos: Vec2,
-}
-
-/// Shared hit-test result type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorldHit {
-    Tile { position: IVec2, kind: TileKind },
-    Thing { entity: Entity, kind: u16 },
 }
 
 /// System that emits [`PointerAction`] events for each mouse button just pressed.
@@ -23,7 +15,7 @@ pub enum WorldHit {
 fn emit_pointer_actions(
     mouse: Res<ButtonInput<MouseButton>>,
     window: Query<&Window, With<PrimaryWindow>>,
-    mut writer: EventWriter<PointerAction>,
+    mut writer: MessageWriter<PointerAction>,
 ) {
     let Ok(window) = window.single() else {
         warn!("emit_pointer_actions: no primary window found");
@@ -33,7 +25,7 @@ fn emit_pointer_actions(
         return;
     };
     for button in mouse.get_just_pressed() {
-        writer.send(PointerAction {
+        writer.write(PointerAction {
             button: *button,
             screen_pos,
         });
@@ -52,7 +44,7 @@ impl<S: States + Copy> InputPlugin<S> {
 
 impl<S: States + Copy> Plugin for InputPlugin<S> {
     fn build(&self, app: &mut App) {
-        app.add_event::<PointerAction>();
+        app.add_message::<PointerAction>();
         let state = self.state;
         app.add_systems(
             PreUpdate,
@@ -71,14 +63,14 @@ mod tests {
     #[derive(Resource, Default)]
     struct CapturedActions(Vec<PointerAction>);
 
-    fn capture(mut reader: EventReader<PointerAction>, mut captured: ResMut<CapturedActions>) {
+    fn capture(mut reader: MessageReader<PointerAction>, mut captured: ResMut<CapturedActions>) {
         captured.0.extend(reader.read().copied());
     }
 
     fn make_test_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_event::<PointerAction>();
+        app.add_message::<PointerAction>();
         app.insert_resource(ButtonInput::<MouseButton>::default());
         app.init_resource::<CapturedActions>();
         app.add_systems(Update, emit_pointer_actions);
@@ -90,7 +82,7 @@ mod tests {
         app.world_mut()
             .spawn((
                 Window {
-                    resolution: WindowResolution::new(800.0, 600.0),
+                    resolution: WindowResolution::new(800, 600),
                     ..default()
                 },
                 PrimaryWindow,

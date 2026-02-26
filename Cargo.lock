@@ -3342,7 +3342,6 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "network",
- "tiles",
 ]
 
 [[package]]
@@ -5687,6 +5686,7 @@ name = "tiles"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "input",
  "network",
  "physics",
  "wincode",
