@@ -28,6 +28,7 @@ impl Default for AppConfig {
             },
             atmospherics: AtmosphericsConfig {
                 standard_pressure: 101.325,
+                pressure_force_scale: 50.0,
             },
             souls: SoulsConfig {
                 player_name: "Player".to_string(),
@@ -55,6 +56,7 @@ pub struct DebugConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AtmosphericsConfig {
     pub standard_pressure: f32,
+    pub pressure_force_scale: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +87,10 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
             "atmospherics.standard_pressure",
             defaults.atmospherics.standard_pressure as f64,
         )?
+        .set_default(
+            "atmospherics.pressure_force_scale",
+            defaults.atmospherics.pressure_force_scale as f64,
+        )?
         .set_default("souls.player_name", defaults.souls.player_name)?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
@@ -104,6 +110,7 @@ mod tests {
         assert_eq!(config.window.title, "Geostationary");
         assert_eq!(config.debug.physics_debug, false);
         assert_eq!(config.atmospherics.standard_pressure, 101.325);
+        assert_eq!(config.atmospherics.pressure_force_scale, 50.0);
         assert_eq!(config.souls.player_name, "Player");
         assert_eq!(config.debug.log_level, "info");
     }
