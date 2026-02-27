@@ -9,7 +9,7 @@ use ui::{UiTheme, WorldSpaceOverlay, build_button};
 /// Carries the target tile position and the [`TileKind`] to toggle the tile to.
 /// Register this type with [`UiPlugin::with_event::<ContextMenuAction>()`] so
 /// that the button press is forwarded as a Bevy event.
-#[derive(Message, Clone, Debug)]
+#[derive(Message, Clone, Copy, Debug)]
 pub struct ContextMenuAction {
     /// Grid position of the tile to toggle.
     pub position: IVec2,
