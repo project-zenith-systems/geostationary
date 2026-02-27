@@ -2827,6 +2827,7 @@ dependencies = [
  "config",
  "creatures",
  "input",
+ "interactions",
  "network",
  "physics",
  "player",
@@ -3342,6 +3343,17 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "network",
+]
+
+[[package]]
+name = "interactions"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "input",
+ "network",
+ "tiles",
+ "ui",
 ]
 
 [[package]]

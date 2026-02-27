@@ -2,6 +2,7 @@ use atmospherics::AtmosphericsPlugin;
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use input::InputPlugin;
+use interactions::{ContextMenuAction, InteractionsPlugin};
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::{Headless, NetCommand, NetworkPlugin};
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};
@@ -77,7 +78,7 @@ fn main() {
                 })
                 .set(log_plugin(log_level)),
         )
-        .add_plugins(UiPlugin::new().with_event::<MenuEvent>())
+        .add_plugins(UiPlugin::new().with_event::<MenuEvent>().with_event::<ContextMenuAction>())
         .add_plugins(MainMenuPlugin)
         .add_plugins(NetworkPlugin)
         .add_plugins(PhysicsPlugin);
@@ -101,6 +102,9 @@ fn main() {
             .add_plugins(client::ClientPlugin)
             .add_plugins(server::ServerPlugin)
             .add_plugins(InputPlugin::<app_state::AppState>::in_state(
+                app_state::AppState::InGame,
+            ))
+            .add_plugins(InteractionsPlugin::<app_state::AppState>::in_state(
                 app_state::AppState::InGame,
             ))
             .init_state::<app_state::AppState>();
