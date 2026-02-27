@@ -8,7 +8,7 @@ use tiles::Tilemap;
 use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
-pub use gas_grid::{GasCell, GasGrid, DEFAULT_DIFFUSION_RATE, DEFAULT_PRESSURE_CONSTANT};
+pub use gas_grid::{GasCell, GasGrid, DEFAULT_DIFFUSION_RATE};
 
 mod debug_overlay;
 pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
@@ -43,17 +43,16 @@ pub enum AtmosStreamMessage {
 /// All floor cells are filled with the given standard atmospheric pressure,
 /// except cells inside `vacuum_region` (inclusive bounding rect) which start at 0.0 moles.
 ///
-/// `diffusion_rate` and `pressure_constant` are simulation tuning parameters stored on
-/// the grid and used during `step()` and pressure queries.
+/// `diffusion_rate` is a simulation tuning parameter stored on the grid and used
+/// during `step()`.
 pub fn initialize_gas_grid(
     tilemap: &Tilemap,
     standard_pressure: f32,
     vacuum_region: Option<(IVec2, IVec2)>,
     diffusion_rate: f32,
-    pressure_constant: f32,
 ) -> GasGrid {
     let mut gas_grid =
-        GasGrid::with_tuning(tilemap.width(), tilemap.height(), diffusion_rate, pressure_constant);
+        GasGrid::with_tuning(tilemap.width(), tilemap.height(), diffusion_rate);
 
     // Sync walls from tilemap to mark impassable cells
     gas_grid.sync_walls(tilemap);

@@ -24,7 +24,6 @@ pub fn setup_world(
         config.atmospherics.standard_pressure,
         Some((IVec2::new(11, 1), IVec2::new(14, 8))),
         config.atmospherics.diffusion_rate,
-        config.atmospherics.pressure_constant,
     );
 
     // Insert resources
@@ -128,7 +127,6 @@ mod tests {
             TEST_STANDARD_PRESSURE,
             None,
             atmospherics::DEFAULT_DIFFUSION_RATE,
-            atmospherics::DEFAULT_PRESSURE_CONSTANT,
         );
 
         // Verify that floor cells have standard pressure
@@ -189,7 +187,6 @@ mod tests {
             TEST_STANDARD_PRESSURE,
             Some((vacuum_min, vacuum_max)),
             atmospherics::DEFAULT_DIFFUSION_RATE,
-            atmospherics::DEFAULT_PRESSURE_CONSTANT,
         );
 
         // Left chamber floor cells (cols 1–8) should have standard pressure

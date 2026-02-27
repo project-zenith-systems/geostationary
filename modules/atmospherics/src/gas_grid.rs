@@ -1,10 +1,6 @@
 use bevy::prelude::*;
 use tiles::{TileKind, Tilemap};
 
-/// Default constant for deriving pressure from moles.
-/// pressure = moles * pressure_constant
-/// This simplifies the ideal gas law by assuming fixed temperature and unit cell volume.
-pub const DEFAULT_PRESSURE_CONSTANT: f32 = 1.0;
 /// Default fraction of the pressure difference that can be equalized between two
 /// neighboring cells over a full simulation step.
 ///
@@ -50,8 +46,6 @@ pub struct GasGrid {
     passable: Vec<bool>,
     /// Fraction of the pressure difference equalized per step.
     diffusion_rate: f32,
-    /// Multiplier converting moles to pressure (pressure = moles * pressure_constant).
-    pressure_constant: f32,
     /// Tracks the moles values from the last broadcast snapshot or delta.
     /// Used by the server to compute incremental deltas for replication.
     #[reflect(ignore)]
@@ -68,19 +62,18 @@ pub struct GasGrid {
 }
 
 impl GasGrid {
-    /// Creates a new gas grid with the given dimensions and default tuning constants.
+    /// Creates a new gas grid with the given dimensions and default diffusion rate.
     /// All cells are initialized with 0 moles and marked as passable.
     pub fn new(width: u32, height: u32) -> Self {
-        Self::with_tuning(width, height, DEFAULT_DIFFUSION_RATE, DEFAULT_PRESSURE_CONSTANT)
+        Self::with_tuning(width, height, DEFAULT_DIFFUSION_RATE)
     }
 
-    /// Creates a new gas grid with the given dimensions and tuning constants.
+    /// Creates a new gas grid with the given dimensions and diffusion rate.
     /// All cells are initialized with 0 moles and marked as passable.
     pub fn with_tuning(
         width: u32,
         height: u32,
         diffusion_rate: f32,
-        pressure_constant: f32,
     ) -> Self {
         let size = (width * height) as usize;
         Self {
@@ -89,7 +82,6 @@ impl GasGrid {
             cells: vec![GasCell::default(); size],
             passable: vec![true; size],
             diffusion_rate,
-            pressure_constant,
             last_broadcast_moles: vec![0.0; size],
             scratch_flows: Vec::new(),
             scratch_outgoing: vec![0.0; size],
@@ -144,11 +136,11 @@ impl GasGrid {
     }
 
     /// Returns the pressure at the given position.
-    /// Pressure is derived from moles using: pressure = moles * pressure_constant
+    /// Pressure equals moles (unit cell volume, fixed temperature).
     /// Returns None if the position is out of bounds.
     pub fn pressure_at(&self, pos: IVec2) -> Option<f32> {
         self.coord_to_index(pos)
-            .map(|idx| self.cells[idx].moles * self.pressure_constant)
+            .map(|idx| self.cells[idx].moles)
     }
 
     /// Computes the 2D pressure gradient at the given position using central differences.
@@ -185,7 +177,7 @@ impl GasGrid {
     fn passable_pressure_at(&self, pos: IVec2) -> Option<f32> {
         let idx = self.coord_to_index(pos)?;
         if self.passable[idx] {
-            Some(self.cells[idx].moles * self.pressure_constant)
+            Some(self.cells[idx].moles)
         } else {
             None
         }
@@ -308,7 +300,6 @@ impl GasGrid {
             cells,
             passable,
             diffusion_rate: DEFAULT_DIFFUSION_RATE,
-            pressure_constant: DEFAULT_PRESSURE_CONSTANT,
             last_broadcast_moles,
             scratch_flows: Vec::new(),
             scratch_outgoing: vec![0.0; size],
