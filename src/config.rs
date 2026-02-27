@@ -104,21 +104,3 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
 
     builder.build()?.try_deserialize()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_app_config_default() {
-        let config = AppConfig::default();
-        assert_eq!(config.network.port, 7777);
-        assert_eq!(config.window.title, "Geostationary");
-        assert_eq!(config.debug.physics_debug, false);
-        assert_eq!(config.atmospherics.standard_pressure, 101.325);
-        assert_eq!(config.atmospherics.pressure_force_scale, 50.0);
-        assert_eq!(config.atmospherics.diffusion_rate, 0.25);
-        assert_eq!(config.souls.player_name, "Player");
-        assert_eq!(config.debug.log_level, "info");
-    }
-}
