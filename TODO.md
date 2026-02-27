@@ -43,3 +43,20 @@ configuration.
 Use case: editing tile materials or creature meshes in an external tool
 and seeing the result in the running game immediately, without a
 restart–reconnect cycle.
+
+## Tile entity spatial lookup
+
+`apply_tile_mutation` does a linear scan of all tile entities to find the
+one at a given grid position. Fine for the 16x10 test room but will not
+scale. Replace with a `HashMap<IVec2, Entity>` resource or a grid-indexed
+component query.
+
+**Files:** `modules/tiles/src/lib.rs` (`apply_tile_mutation`)
+
+## WorldHit raycast priority
+
+Both `raycast_tiles` and `raycast_things` can emit `WorldHit` events for
+the same right-click when a tile and a thing overlap. The interactions
+module takes the last hit in the frame, so behavior depends on system
+execution order. Add explicit priority (things > tiles) or filter
+duplicate hits so the context menu is deterministic.
