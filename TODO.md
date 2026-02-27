@@ -299,6 +299,29 @@ module.
 
 **Plan:** `plan/break-a-wall` · [docs/plans/break-a-wall.md](docs/plans/break-a-wall.md)
 
+## Hot-reload config.toml at runtime
+
+Add a system that detects changes to `config.toml` and re-applies values
+to their corresponding resources without restarting the game. Could be
+file-mtime polling, filesystem notify, or a debug keypress (e.g. F6).
+
+Any config value backed by a Bevy resource or mutable field is a
+candidate: simulation tuning constants, network settings, debug flags,
+UI preferences, etc. Init-only values (like `standard_pressure`, which
+seeds the gas grid once) would need a separate "reset" action rather
+than live update.
+
+## Hot-reload assets at runtime
+
+Enable Bevy's asset hot-reloading so that changes to asset files are
+picked up at runtime without restarting the game. Bevy supports this via
+`AssetPlugin { watch_for_changes: true, .. }` or the equivalent 0.18
+configuration.
+
+Use case: editing tile materials or creature meshes in an external tool
+and seeing the result in the running game immediately, without a
+restart–reconnect cycle.
+
 ## [Deferred debug-overlay-quad-lifecycle]
 
 The atmos debug overlay (`spawn_overlay_quads` in `debug_overlay.rs`) spawns

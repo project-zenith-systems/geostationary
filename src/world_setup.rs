@@ -23,6 +23,8 @@ pub fn setup_world(
         &tilemap,
         config.atmospherics.standard_pressure,
         Some((IVec2::new(11, 1), IVec2::new(14, 8))),
+        config.atmospherics.diffusion_rate,
+        config.atmospherics.pressure_constant,
     );
 
     // Insert resources
@@ -121,7 +123,13 @@ mod tests {
         let tilemap = Tilemap::test_room();
 
         // Initialize GasGrid using the atmospherics module function
-        let gas_grid = atmospherics::initialize_gas_grid(&tilemap, TEST_STANDARD_PRESSURE, None);
+        let gas_grid = atmospherics::initialize_gas_grid(
+            &tilemap,
+            TEST_STANDARD_PRESSURE,
+            None,
+            atmospherics::DEFAULT_DIFFUSION_RATE,
+            atmospherics::DEFAULT_PRESSURE_CONSTANT,
+        );
 
         // Verify that floor cells have standard pressure
         let mut floor_cells_checked = 0;
@@ -180,6 +188,8 @@ mod tests {
             &tilemap,
             TEST_STANDARD_PRESSURE,
             Some((vacuum_min, vacuum_max)),
+            atmospherics::DEFAULT_DIFFUSION_RATE,
+            atmospherics::DEFAULT_PRESSURE_CONSTANT,
         );
 
         // Left chamber floor cells (cols 1–8) should have standard pressure

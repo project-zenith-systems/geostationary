@@ -1,28 +1,21 @@
 use bevy::prelude::*;
 use tiles::{TileKind, Tilemap};
 
-/// Constant for deriving pressure from moles.
-/// pressure = moles * PRESSURE_CONSTANT
+/// Default constant for deriving pressure from moles.
+/// pressure = moles * pressure_constant
 /// This simplifies the ideal gas law by assuming fixed temperature and unit cell volume.
-const PRESSURE_CONSTANT: f32 = 1.0;
-/// Fraction of the pressure difference that can be equalized between two neighboring cells
-/// over a full simulation step.
+pub const DEFAULT_PRESSURE_CONSTANT: f32 = 1.0;
+/// Default fraction of the pressure difference that can be equalized between two
+/// neighboring cells over a full simulation step.
 ///
 /// A value of `0.25` means that, at most, 25% of the pressure difference is resolved per
 /// step. Higher values make gas spread faster but can cause oscillations or numerical
 /// instability if too large.
-const DIFFUSION_RATE: f32 = 0.25;
-/// Maximum fraction of the per-step diffusion (`DIFFUSION_RATE`) that is allowed to be
-/// applied in a single diffusion substep.
-///
-/// This is used by the sub-stepping logic to break a potentially large diffusion update
-/// into several smaller, numerically stable substeps. It must remain **strictly less**
-/// than `DIFFUSION_RATE` so that the per-substep diffusion factor
-/// (`DIFFUSION_RATE * substep_dt`) stays bounded by `MAX_DIFFUSION_FACTOR_PER_STEP`,
-/// which is a stability constraint for explicit diffusion updates. If you change
-/// `DIFFUSION_RATE`, adjust this value accordingly while preserving the invariant
-/// `0.0 < MAX_DIFFUSION_FACTOR_PER_STEP < DIFFUSION_RATE`.
-const MAX_DIFFUSION_FACTOR_PER_STEP: f32 = 0.24;
+pub const DEFAULT_DIFFUSION_RATE: f32 = 0.25;
+/// Ratio of `max_diffusion_factor_per_step` to `diffusion_rate`.
+/// The substep limiter is computed as `diffusion_rate * MAX_DIFFUSION_FACTOR_RATIO`
+/// to maintain the stability invariant automatically when diffusion_rate changes.
+const MAX_DIFFUSION_FACTOR_RATIO: f32 = 0.96;
 
 /// Represents a single cell in the gas grid.
 #[derive(Debug, Clone, Copy, PartialEq, Reflect)]
@@ -55,6 +48,10 @@ pub struct GasGrid {
     height: u32,
     cells: Vec<GasCell>,
     passable: Vec<bool>,
+    /// Fraction of the pressure difference equalized per step.
+    diffusion_rate: f32,
+    /// Multiplier converting moles to pressure (pressure = moles * pressure_constant).
+    pressure_constant: f32,
     /// Tracks the moles values from the last broadcast snapshot or delta.
     /// Used by the server to compute incremental deltas for replication.
     #[reflect(ignore)]
@@ -71,15 +68,28 @@ pub struct GasGrid {
 }
 
 impl GasGrid {
-    /// Creates a new gas grid with the given dimensions.
+    /// Creates a new gas grid with the given dimensions and default tuning constants.
     /// All cells are initialized with 0 moles and marked as passable.
     pub fn new(width: u32, height: u32) -> Self {
+        Self::with_tuning(width, height, DEFAULT_DIFFUSION_RATE, DEFAULT_PRESSURE_CONSTANT)
+    }
+
+    /// Creates a new gas grid with the given dimensions and tuning constants.
+    /// All cells are initialized with 0 moles and marked as passable.
+    pub fn with_tuning(
+        width: u32,
+        height: u32,
+        diffusion_rate: f32,
+        pressure_constant: f32,
+    ) -> Self {
         let size = (width * height) as usize;
         Self {
             width,
             height,
             cells: vec![GasCell::default(); size],
             passable: vec![true; size],
+            diffusion_rate,
+            pressure_constant,
             last_broadcast_moles: vec![0.0; size],
             scratch_flows: Vec::new(),
             scratch_outgoing: vec![0.0; size],
@@ -134,11 +144,11 @@ impl GasGrid {
     }
 
     /// Returns the pressure at the given position.
-    /// Pressure is derived from moles using: pressure = moles * PRESSURE_CONSTANT
+    /// Pressure is derived from moles using: pressure = moles * pressure_constant
     /// Returns None if the position is out of bounds.
     pub fn pressure_at(&self, pos: IVec2) -> Option<f32> {
         self.coord_to_index(pos)
-            .map(|idx| self.cells[idx].moles * PRESSURE_CONSTANT)
+            .map(|idx| self.cells[idx].moles * self.pressure_constant)
     }
 
     /// Computes the 2D pressure gradient at the given position using central differences.
@@ -175,7 +185,7 @@ impl GasGrid {
     fn passable_pressure_at(&self, pos: IVec2) -> Option<f32> {
         let idx = self.coord_to_index(pos)?;
         if self.passable[idx] {
-            Some(self.cells[idx].moles * PRESSURE_CONSTANT)
+            Some(self.cells[idx].moles * self.pressure_constant)
         } else {
             None
         }
@@ -297,6 +307,8 @@ impl GasGrid {
             height,
             cells,
             passable,
+            diffusion_rate: DEFAULT_DIFFUSION_RATE,
+            pressure_constant: DEFAULT_PRESSURE_CONSTANT,
             last_broadcast_moles,
             scratch_flows: Vec::new(),
             scratch_outgoing: vec![0.0; size],
@@ -320,9 +332,10 @@ impl GasGrid {
             return;
         }
 
-        // Explicit diffusion is only stable when DIFFUSION_RATE * dt stays small.
+        // Explicit diffusion is only stable when diffusion_rate * dt stays small.
         // Split large dt into smaller sub-steps to avoid odd/even checkerboard oscillation.
-        let max_substep_dt = MAX_DIFFUSION_FACTOR_PER_STEP / DIFFUSION_RATE;
+        let max_factor = self.diffusion_rate * MAX_DIFFUSION_FACTOR_RATIO;
+        let max_substep_dt = max_factor / self.diffusion_rate;
         let substeps_f = (dt / max_substep_dt).ceil().max(1.0);
         // Clamp to avoid overflow when converting to u32 for extremely large dt values.
         let substeps = if substeps_f > u32::MAX as f32 {
@@ -340,6 +353,7 @@ impl GasGrid {
     fn step_substep(&mut self, dt: f32) {
         let width = self.width as usize;
         let height = self.height as usize;
+        let diffusion_rate = self.diffusion_rate;
 
         // Reuse scratch buffers to avoid per-substep heap allocations
         self.scratch_flows.clear();
@@ -361,7 +375,7 @@ impl GasGrid {
                     if self.passable[n_idx] {
                         let diff = moles_here - self.cells[n_idx].moles;
                         if diff > 0.0 {
-                            let amount = diff * DIFFUSION_RATE * dt;
+                            let amount = diff * diffusion_rate * dt;
                             self.scratch_flows.push(ProposedFlow {
                                 from: idx,
                                 to: n_idx,
@@ -369,7 +383,7 @@ impl GasGrid {
                             });
                             self.scratch_outgoing[idx] += amount;
                         } else if diff < 0.0 {
-                            let amount = (-diff) * DIFFUSION_RATE * dt;
+                            let amount = (-diff) * diffusion_rate * dt;
                             self.scratch_flows.push(ProposedFlow {
                                 from: n_idx,
                                 to: idx,
@@ -385,7 +399,7 @@ impl GasGrid {
                     if self.passable[n_idx] {
                         let diff = moles_here - self.cells[n_idx].moles;
                         if diff > 0.0 {
-                            let amount = diff * DIFFUSION_RATE * dt;
+                            let amount = diff * diffusion_rate * dt;
                             self.scratch_flows.push(ProposedFlow {
                                 from: idx,
                                 to: n_idx,
@@ -393,7 +407,7 @@ impl GasGrid {
                             });
                             self.scratch_outgoing[idx] += amount;
                         } else if diff < 0.0 {
-                            let amount = (-diff) * DIFFUSION_RATE * dt;
+                            let amount = (-diff) * diffusion_rate * dt;
                             self.scratch_flows.push(ProposedFlow {
                                 from: n_idx,
                                 to: idx,
@@ -594,7 +608,7 @@ mod tests {
         grid.set_moles(IVec2::new(2, 0), 2.5);
         grid.set_moles(IVec2::new(0, 1), 10.0);
 
-        // pressure = moles * PRESSURE_CONSTANT (1.0)
+        // pressure = moles * pressure_constant (default 1.0)
         assert_eq!(grid.pressure_at(IVec2::new(0, 0)), Some(0.0));
         assert_eq!(grid.pressure_at(IVec2::new(1, 0)), Some(1.0));
         assert_eq!(grid.pressure_at(IVec2::new(2, 0)), Some(2.5));
