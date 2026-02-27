@@ -16,6 +16,8 @@ members = [
     "modules/camera",
     "modules/atmospherics",
     "modules/souls",
+    "modules/input",
+    "modules/interactions",
 ]
 
 [profile.dev]
@@ -55,3 +57,5 @@ creatures = { path = "modules/creatures" }
 camera = { path = "modules/camera" }
 atmospherics = { path = "modules/atmospherics" }
 souls = { path = "modules/souls" }
+input = { path = "modules/input" }
+interactions = { path = "modules/interactions" }

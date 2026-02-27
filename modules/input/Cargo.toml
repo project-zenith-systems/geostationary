@@ -1,11 +1,8 @@
 [package]
-name = "atmospherics"
+name = "input"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 bevy = { workspace = true }
-tiles = { path = "../tiles" }
 network = { path = "../network" }
-physics = { path = "../physics" }
-wincode = { workspace = true }

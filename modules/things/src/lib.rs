@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use input::{PointerAction, WorldHit};
 use network::{
-    Client, ClientId, ControlledByClient, EntityState, ModuleReadySent, NetId, NetworkSet,
-    PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender,
-    NETWORK_UPDATE_INTERVAL,
+    Client, ClientId, ControlledByClient, EntityState, Headless, ModuleReadySent, NetId,
+    NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
+    StreamSender, NETWORK_UPDATE_INTERVAL,
 };
-use physics::{Collider, LinearVelocity, RigidBody};
+use physics::{Collider, LinearVelocity, RigidBody, SpatialQuery, SpatialQueryFilter};
 use serde::{Deserialize, Serialize};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -176,10 +177,17 @@ pub fn spawn_player_creature(
 ///
 /// Must be added before any plugin that calls [`ThingRegistry::register`]
 /// (e.g. `CreaturesPlugin`).
-#[derive(Default)]
-pub struct ThingsPlugin;
+pub struct ThingsPlugin<S: States + Copy> {
+    state: S,
+}
 
-impl Plugin for ThingsPlugin {
+impl<S: States + Copy> ThingsPlugin<S> {
+    pub fn in_state(state: S) -> Self {
+        Self { state }
+    }
+}
+
+impl<S: States + Copy> Plugin for ThingsPlugin<S> {
     fn build(&self, app: &mut App) {
         app.register_type::<Thing>();
         app.register_type::<PlayerControlled>();
@@ -203,6 +211,7 @@ impl Plugin for ThingsPlugin {
         app.insert_resource(sender);
         app.insert_resource(reader);
 
+        let state = self.state;
         app.add_systems(
             PreUpdate,
             (
@@ -216,6 +225,17 @@ impl Plugin for ThingsPlugin {
                 .before(NetworkSet::Send),
         );
         app.add_systems(Update, broadcast_state.run_if(resource_exists::<Server>));
+
+        // Register the messages raycast_things reads/writes so the resources
+        // exist even when InputPlugin is not added (e.g. headless server mode).
+        app.add_message::<PointerAction>();
+        app.add_message::<WorldHit>();
+        app.add_systems(
+            Update,
+            raycast_things
+                .run_if(in_state(state))
+                .run_if(not(resource_exists::<Headless>)),
+        );
     }
 }
 
@@ -465,6 +485,46 @@ fn broadcast_state(
             stream_sender.broadcast(&ThingsStreamMessage::StateUpdate { entities: states })
         {
             error!("Failed to broadcast entity state on things stream: {e}");
+        }
+    }
+}
+
+/// Listens for right-click [`PointerAction`] events, raycasts against entity colliders
+/// via [`SpatialQuery`], and emits [`WorldHit`] for the nearest hit thing entity.
+fn raycast_things(
+    mut pointer_action_reader: MessageReader<PointerAction>,
+    spatial_query: SpatialQuery,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    things: Query<&Thing>,
+    mut hit_writer: MessageWriter<WorldHit>,
+) {
+    let Ok((camera, camera_transform)) = camera.single() else {
+        return;
+    };
+
+    for action in pointer_action_reader.read() {
+        if action.button != MouseButton::Right {
+            continue;
+        }
+
+        let Ok(ray) = camera.viewport_to_world(camera_transform, action.screen_pos) else {
+            continue;
+        };
+
+        if let Some(hit) = spatial_query.cast_ray(
+            ray.origin,
+            ray.direction,
+            f32::MAX,
+            true,
+            &SpatialQueryFilter::default(),
+        ) {
+            if things.get(hit.entity).is_ok() {
+                let world_pos = ray.origin + *ray.direction * hit.distance;
+                hit_writer.write(WorldHit {
+                    entity: hit.entity,
+                    world_pos,
+                });
+            }
         }
     }
 }

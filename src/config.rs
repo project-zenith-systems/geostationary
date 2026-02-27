@@ -28,6 +28,9 @@ impl Default for AppConfig {
             },
             atmospherics: AtmosphericsConfig {
                 standard_pressure: 101.325,
+                pressure_force_scale: 50.0,
+                diffusion_rate: atmospherics::DEFAULT_DIFFUSION_RATE,
+                pressure_constant: atmospherics::DEFAULT_PRESSURE_CONSTANT,
             },
             souls: SoulsConfig {
                 player_name: "Player".to_string(),
@@ -55,6 +58,9 @@ pub struct DebugConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AtmosphericsConfig {
     pub standard_pressure: f32,
+    pub pressure_force_scale: f32,
+    pub diffusion_rate: f32,
+    pub pressure_constant: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +91,18 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
             "atmospherics.standard_pressure",
             defaults.atmospherics.standard_pressure as f64,
         )?
+        .set_default(
+            "atmospherics.pressure_force_scale",
+            defaults.atmospherics.pressure_force_scale as f64,
+        )?
+        .set_default(
+            "atmospherics.diffusion_rate",
+            defaults.atmospherics.diffusion_rate as f64,
+        )?
+        .set_default(
+            "atmospherics.pressure_constant",
+            defaults.atmospherics.pressure_constant as f64,
+        )?
         .set_default("souls.player_name", defaults.souls.player_name)?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
@@ -104,6 +122,9 @@ mod tests {
         assert_eq!(config.window.title, "Geostationary");
         assert_eq!(config.debug.physics_debug, false);
         assert_eq!(config.atmospherics.standard_pressure, 101.325);
+        assert_eq!(config.atmospherics.pressure_force_scale, 50.0);
+        assert_eq!(config.atmospherics.diffusion_rate, 0.25);
+        assert_eq!(config.atmospherics.pressure_constant, 1.0);
         assert_eq!(config.souls.player_name, "Player");
         assert_eq!(config.debug.log_level, "info");
     }

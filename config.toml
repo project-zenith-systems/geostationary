@@ -13,6 +13,18 @@ physics_debug = false
 
 [atmospherics]
 # Standard atmospheric pressure in moles (approximately 1 atm)
-# Since pressure = moles * PRESSURE_CONSTANT and PRESSURE_CONSTANT = 1.0,
-# this value directly represents the pressure as well.
+# Since pressure = moles * pressure_constant, this value directly
+# represents the pressure when pressure_constant = 1.0.
 standard_pressure = 101.325
+
+# Scale factor applied to the pressure gradient to produce a force in Newtons.
+# A value of 50.0 makes a 1-mole/cell gradient exert 50 N on a body.
+pressure_force_scale = 0.01
+
+# Fraction of pressure difference equalized between neighboring cells per step.
+# Higher = faster gas flow. Too high causes oscillation/instability.
+diffusion_rate = 2.0
+
+# Multiplier converting moles to pressure (pressure = moles * pressure_constant).
+# Affects both debug overlay values and pressure-force magnitude.
+pressure_constant = 5.0

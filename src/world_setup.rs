@@ -19,12 +19,20 @@ pub fn setup_world(
     mut server: ResMut<Server>,
 ) {
     let tilemap = Tilemap::test_room();
-    let gas_grid =
-        atmospherics::initialize_gas_grid(&tilemap, config.atmospherics.standard_pressure);
+    let gas_grid = atmospherics::initialize_gas_grid(
+        &tilemap,
+        config.atmospherics.standard_pressure,
+        Some((IVec2::new(11, 1), IVec2::new(14, 8))),
+        config.atmospherics.diffusion_rate,
+        config.atmospherics.pressure_constant,
+    );
 
     // Insert resources
     commands.insert_resource(tilemap);
     commands.insert_resource(gas_grid);
+    commands.insert_resource(atmospherics::PressureForceScale(
+        config.atmospherics.pressure_force_scale,
+    ));
 
     // Player capsule spawn removed - now handled by server.rs and client.rs
 
@@ -39,6 +47,7 @@ pub fn setup_world(
 fn cleanup_world(mut commands: Commands) {
     commands.remove_resource::<Tilemap>();
     commands.remove_resource::<GasGrid>();
+    commands.remove_resource::<atmospherics::PressureForceScale>();
 }
 
 pub struct WorldSetupPlugin;
@@ -114,7 +123,13 @@ mod tests {
         let tilemap = Tilemap::test_room();
 
         // Initialize GasGrid using the atmospherics module function
-        let gas_grid = atmospherics::initialize_gas_grid(&tilemap, TEST_STANDARD_PRESSURE);
+        let gas_grid = atmospherics::initialize_gas_grid(
+            &tilemap,
+            TEST_STANDARD_PRESSURE,
+            None,
+            atmospherics::DEFAULT_DIFFUSION_RATE,
+            atmospherics::DEFAULT_PRESSURE_CONSTANT,
+        );
 
         // Verify that floor cells have standard pressure
         let mut floor_cells_checked = 0;
@@ -158,5 +173,49 @@ mod tests {
             actual_total_moles,
             expected_total_moles
         );
+    }
+
+    #[test]
+    fn test_atmosphere_vacuum_region() {
+        const TEST_STANDARD_PRESSURE: f32 = 101.325;
+
+        let tilemap = Tilemap::test_room();
+
+        // Initialize with the right chamber (cols 11–14, rows 1–8) as vacuum
+        let vacuum_min = IVec2::new(11, 1);
+        let vacuum_max = IVec2::new(14, 8);
+        let gas_grid = atmospherics::initialize_gas_grid(
+            &tilemap,
+            TEST_STANDARD_PRESSURE,
+            Some((vacuum_min, vacuum_max)),
+            atmospherics::DEFAULT_DIFFUSION_RATE,
+            atmospherics::DEFAULT_PRESSURE_CONSTANT,
+        );
+
+        // Left chamber floor cells (cols 1–8) should have standard pressure
+        for y in 1..9i32 {
+            for x in 1..9i32 {
+                let pos = IVec2::new(x, y);
+                assert_eq!(
+                    gas_grid.pressure_at(pos),
+                    Some(TEST_STANDARD_PRESSURE),
+                    "Left chamber cell at {:?} should have standard pressure",
+                    pos
+                );
+            }
+        }
+
+        // Right chamber floor cells (cols 11–14, rows 1–8) should be vacuum (0.0)
+        for y in 1..9i32 {
+            for x in 11..15i32 {
+                let pos = IVec2::new(x, y);
+                assert_eq!(
+                    gas_grid.pressure_at(pos),
+                    Some(0.0),
+                    "Right chamber cell at {:?} should be vacuum (0.0 pressure)",
+                    pos
+                );
+            }
+        }
     }
 }

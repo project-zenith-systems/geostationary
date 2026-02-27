@@ -84,6 +84,10 @@ fn handle_server_events(
             ServerEvent::ClientMessageReceived { from, message } => {
                 handle_client_message(from, message, &mut player, &mut input, &mut sync_state);
             }
+            ServerEvent::ClientStreamFrame { .. } => {
+                // Routed to per-tag StreamReader buffers by drain_server_events;
+                // not processed here.
+            }
         }
     }
 }

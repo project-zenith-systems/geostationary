@@ -1,11 +1,11 @@
 [package]
-name = "atmospherics"
+name = "interactions"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 bevy = { workspace = true }
+input = { path = "../input" }
+ui = { path = "../ui" }
 tiles = { path = "../tiles" }
 network = { path = "../network" }
-physics = { path = "../physics" }
-wincode = { workspace = true }

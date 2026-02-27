@@ -8,3 +8,4 @@ bevy = { workspace = true }
 physics = { path = "../physics" }
 network = { path = "../network" }
 wincode = { workspace = true }
+input = { path = "../input" }

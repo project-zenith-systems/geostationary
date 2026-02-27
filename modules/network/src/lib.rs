@@ -130,6 +130,13 @@ pub enum ServerEvent {
     ClientDisconnected {
         id: ClientId,
     },
+    /// Raw framed data received from a client on a registered client→server module stream.
+    /// Routed internally to per-tag [`StreamReader`] buffers; not emitted as a Bevy message.
+    ClientStreamFrame {
+        from: ClientId,
+        tag: u8,
+        data: Bytes,
+    },
     Error(String),
 }
 
@@ -294,15 +301,23 @@ impl std::fmt::Display for StreamSendError {
 /// `None` when no server is running; replaced each time the server starts.
 type SharedStreamTx = Arc<Mutex<Option<mpsc::Sender<(u8, StreamWriteCmd)>>>>;
 
+/// Shared sender end for a client→server stream's write channel.
+/// `None` when no client is connected; replaced each time the client connects.
+type SharedClientStreamTx = Arc<Mutex<Option<mpsc::Sender<Bytes>>>>;
+
 /// Typed resource that modules use to write messages to their registered stream.
 ///
 /// Obtain one by calling [`StreamRegistry::register`] and inserting the
 /// returned value as a Bevy resource.  The sender is live only while a server
-/// is running; if no server is active, send attempts log a warning and return
+/// is running (for [`StreamDirection::ServerToClient`]) or while a client is
+/// connected (for [`StreamDirection::ClientToServer`]); if the relevant session
+/// is inactive, send attempts log a warning and return
 /// [`Err(StreamSendError::Closed)`].
 pub struct StreamSender<T: Send + Sync + 'static> {
     tag: u8,
+    direction: StreamDirection,
     shared_tx: SharedStreamTx,
+    client_tx: SharedClientStreamTx,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -333,9 +348,42 @@ impl<T: Send + Sync + 'static> StreamSender<T> {
         }
     }
 
+    fn send_raw_client(&self, data: Bytes) -> Result<(), StreamSendError> {
+        let guard = self.client_tx.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(tx) => match tx.try_send(data) {
+                Ok(_) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    log::error!(
+                        "StreamSender (tag {}): client stream buffer full, message dropped",
+                        self.tag
+                    );
+                    Err(StreamSendError::BufferFull)
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(StreamSendError::Closed),
+            },
+            None => {
+                log::error!(
+                    "StreamSender (tag {}): send called but no client is connected",
+                    self.tag
+                );
+                Err(StreamSendError::Closed)
+            }
+        }
+    }
+
     /// Send the [`StreamReady`] sentinel to a specific client.
     /// Call this after all initial-burst data has been sent on this stream.
+    ///
+    /// Only valid for streams registered with [`StreamDirection::ServerToClient`].
     pub fn send_stream_ready_to(&self, client: ClientId) -> Result<(), StreamSendError> {
+        if self.direction != StreamDirection::ServerToClient {
+            log::error!(
+                "StreamSender (tag {}): send_stream_ready_to called on a ClientToServer stream",
+                self.tag
+            );
+            return Err(StreamSendError::Closed);
+        }
         let bytes = proto_encode(&StreamReady).map_err(|e| {
             log::error!(
                 "StreamSender (tag {}): failed to encode StreamReady: {}",
@@ -356,7 +404,16 @@ where
     T: wincode::SchemaWrite<wincode::config::DefaultConfig, Src = T> + Send + Sync + 'static,
 {
     /// Encode `msg` and send it to a specific client on this stream.
+    ///
+    /// Only valid for streams registered with [`StreamDirection::ServerToClient`].
     pub fn send_to(&self, client: ClientId, msg: &T) -> Result<(), StreamSendError> {
+        if self.direction != StreamDirection::ServerToClient {
+            log::error!(
+                "StreamSender (tag {}): send_to called on a ClientToServer stream",
+                self.tag
+            );
+            return Err(StreamSendError::Closed);
+        }
         let bytes = protocol::encode(msg).map_err(|e| {
             log::error!("StreamSender (tag {}): encode failed: {}", self.tag, e);
             StreamSendError::Encode
@@ -368,7 +425,16 @@ where
     }
 
     /// Encode `msg` and broadcast it to all connected clients on this stream.
+    ///
+    /// Only valid for streams registered with [`StreamDirection::ServerToClient`].
     pub fn broadcast(&self, msg: &T) -> Result<(), StreamSendError> {
+        if self.direction != StreamDirection::ServerToClient {
+            log::error!(
+                "StreamSender (tag {}): broadcast called on a ClientToServer stream",
+                self.tag
+            );
+            return Err(StreamSendError::Closed);
+        }
         let bytes = protocol::encode(msg).map_err(|e| {
             log::error!("StreamSender (tag {}): encode failed: {}", self.tag, e);
             StreamSendError::Encode
@@ -376,6 +442,25 @@ where
         self.send_raw(StreamWriteCmd::Broadcast {
             data: Bytes::from(bytes),
         })
+    }
+
+    /// Encode `msg` and send it to the server on this client→server stream.
+    ///
+    /// Only valid for streams registered with [`StreamDirection::ClientToServer`].
+    /// Returns [`Err(StreamSendError::Closed)`] if no client is currently connected.
+    pub fn send(&self, msg: &T) -> Result<(), StreamSendError> {
+        if self.direction != StreamDirection::ClientToServer {
+            log::error!(
+                "StreamSender (tag {}): send called on a ServerToClient stream",
+                self.tag
+            );
+            return Err(StreamSendError::Closed);
+        }
+        let bytes = protocol::encode(msg).map_err(|e| {
+            log::error!("StreamSender (tag {}): encode failed: {}", self.tag, e);
+            StreamSendError::Encode
+        })?;
+        self.send_raw_client(Bytes::from(bytes))
     }
 }
 
@@ -390,8 +475,14 @@ pub struct StreamRegistry {
     /// Replaced with a live sender each time the server starts; set to `None`
     /// when the server stops.
     shared_tx: SharedStreamTx,
-    /// Per-tag receive buffers, shared with [`StreamReader`] instances.
+    /// Per-tag receive buffers for server→client frames, shared with [`StreamReader`] instances.
     per_stream_bufs: HashMap<u8, Arc<Mutex<VecDeque<Bytes>>>>,
+    /// Per-tag receive buffers for client→server frames, shared with [`StreamReader`] instances.
+    per_client_stream_bufs: HashMap<u8, Arc<Mutex<VecDeque<(ClientId, Bytes)>>>>,
+    /// Per-tag shared sender channels for client→server streams.
+    /// Each `SharedClientStreamTx` is wired to the live client stream when a client connects
+    /// and set to `None` on disconnect.
+    shared_client_txs: HashMap<u8, SharedClientStreamTx>,
     /// StreamReady events deferred to the next frame.  When a StreamReady
     /// arrives in the same drain batch as the data frames, game systems have
     /// not yet had a chance to process that data.  By buffering the ready
@@ -407,6 +498,8 @@ impl Default for StreamRegistry {
             entries: Vec::new(),
             shared_tx: Arc::new(Mutex::new(None)),
             per_stream_bufs: HashMap::new(),
+            per_client_stream_bufs: HashMap::new(),
+            shared_client_txs: HashMap::new(),
             deferred_ready: Vec::new(),
         }
     }
@@ -437,21 +530,45 @@ impl StreamRegistry {
             def.tag
         );
         let tag = def.tag;
+        let def_direction = def.direction;
         log::info!(
-            "StreamRegistry: registered stream '{}' (tag={})",
+            "StreamRegistry: registered stream '{}' (tag={}, direction={:?})",
             def.name,
-            tag
+            tag,
+            def.direction
         );
-        let buf: Arc<Mutex<VecDeque<Bytes>>> = Arc::new(Mutex::new(VecDeque::new()));
-        self.per_stream_bufs.insert(tag, buf.clone());
+
+        let (server_to_client_buf, client_to_server_buf, client_tx) = match def.direction {
+            StreamDirection::ServerToClient => {
+                let buf = Arc::new(Mutex::new(VecDeque::<Bytes>::new()));
+                self.per_stream_bufs.insert(tag, buf.clone());
+                // ClientToServer fields are unused for ServerToClient streams.
+                let unused_client_to_server_buf = Arc::new(Mutex::new(VecDeque::new()));
+                let unused_client_tx: SharedClientStreamTx = Arc::new(Mutex::new(None));
+                (buf, unused_client_to_server_buf, unused_client_tx)
+            }
+            StreamDirection::ClientToServer => {
+                let buf = Arc::new(Mutex::new(VecDeque::<(ClientId, Bytes)>::new()));
+                self.per_client_stream_bufs.insert(tag, buf.clone());
+                let shared_client_tx: SharedClientStreamTx = Arc::new(Mutex::new(None));
+                self.shared_client_txs.insert(tag, shared_client_tx.clone());
+                // ServerToClient buf is unused for ClientToServer streams.
+                let unused_server_to_client_buf = Arc::new(Mutex::new(VecDeque::new()));
+                (unused_server_to_client_buf, buf, shared_client_tx)
+            }
+        };
+
         self.entries.push(def);
         let sender = StreamSender {
             tag,
+            direction: def_direction,
             shared_tx: self.shared_tx.clone(),
+            client_tx,
             _phantom: std::marker::PhantomData,
         };
         let reader = StreamReader {
-            buf,
+            buf: server_to_client_buf,
+            client_buf: client_to_server_buf,
             _phantom: std::marker::PhantomData,
         };
         (sender, reader)
@@ -466,6 +583,20 @@ impl StreamRegistry {
                 .push_back(data);
         } else {
             log::error!("route_stream_frame: received frame for unregistered stream tag {tag}");
+        }
+    }
+
+    /// Route a raw client→server frame to the per-tag server-side receive buffer so that
+    /// the corresponding [`StreamReader`] can decode it via [`StreamReader::drain_from_client`].
+    pub(crate) fn route_client_stream_frame(&self, from: ClientId, tag: u8, data: Bytes) {
+        if let Some(buf) = self.per_client_stream_bufs.get(&tag) {
+            buf.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back((from, data));
+        } else {
+            log::error!(
+                "route_client_stream_frame: received frame for unregistered stream tag {tag}"
+            );
         }
     }
 
@@ -503,6 +634,38 @@ impl StreamRegistry {
         log::info!("StreamRegistry: server stopped, stream senders disconnected");
     }
 
+    /// Called by the client connect path.  For each registered client→server stream,
+    /// creates a fresh byte channel, wires the sender to the `SharedClientStreamTx`,
+    /// and returns `(tag, receiver)` pairs for the client task to open QUIC streams.
+    pub(crate) fn prepare_client_connect(&mut self) -> Vec<(u8, mpsc::Receiver<Bytes>)> {
+        let mut receivers = Vec::new();
+        for def in &self.entries {
+            if def.direction == StreamDirection::ClientToServer {
+                let (tx, rx) = mpsc::channel(STREAM_CMD_BUFFER_SIZE);
+                if let Some(shared) = self.shared_client_txs.get(&def.tag) {
+                    *shared.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+                }
+                receivers.push((def.tag, rx));
+            }
+        }
+        log::info!(
+            "StreamRegistry: client connecting with {} client→server stream(s)",
+            receivers.len()
+        );
+        receivers
+    }
+
+    /// Called when the client disconnects.  Disconnects client stream senders so that
+    /// [`StreamSender::send`] calls made while no client is connected are rejected.
+    pub(crate) fn on_client_disconnect(&self) {
+        for shared in self.shared_client_txs.values() {
+            *shared.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        if !self.shared_client_txs.is_empty() {
+            log::info!("StreamRegistry: client disconnected, client stream senders disconnected");
+        }
+    }
+
     /// Buffer a `StreamReady` tag to be emitted next frame instead of
     /// immediately, giving game systems a full frame to process the data.
     pub(crate) fn defer_stream_ready(&mut self, tag: u8) {
@@ -524,8 +687,15 @@ impl StreamRegistry {
 /// Obtain one by calling [`StreamRegistry::register`] and inserting the returned value as a
 /// Bevy resource.  Each call to [`StreamReader::drain`] returns an iterator over all messages
 /// that arrived since the last drain.
+///
+/// For streams registered with [`StreamDirection::ClientToServer`], use
+/// [`StreamReader::drain_from_client`] on the server side to receive frames alongside the
+/// sending client's [`ClientId`].
 pub struct StreamReader<T: Send + Sync + 'static> {
+    /// Receive buffer for server→client frames (used on client side).
     buf: Arc<Mutex<VecDeque<Bytes>>>,
+    /// Receive buffer for client→server frames (used on server side).
+    client_buf: Arc<Mutex<VecDeque<(ClientId, Bytes)>>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -546,6 +716,23 @@ where
             protocol::decode::<T>(&b)
                 .map_err(|e| log::error!("StreamReader: decode error: {e}"))
                 .ok()
+        })
+    }
+
+    /// Drain all buffered client→server frames, decoding each to `(ClientId, T)`.
+    ///
+    /// Only meaningful for streams registered with [`StreamDirection::ClientToServer`].
+    /// Frames that fail to decode are logged as errors and skipped.
+    pub fn drain_from_client(&mut self) -> impl Iterator<Item = (ClientId, T)> {
+        let frames: Vec<(ClientId, Bytes)> = {
+            let mut guard = self.client_buf.lock().unwrap_or_else(|e| e.into_inner());
+            guard.drain(..).collect()
+        };
+        frames.into_iter().filter_map(|(from, b)| {
+            protocol::decode::<T>(&b)
+                .map_err(|e| log::error!("StreamReader: decode error: {e}"))
+                .ok()
+                .map(|msg| (from, msg))
         })
     }
 }
@@ -602,6 +789,14 @@ fn drain_server_events(
                     registry.on_server_stop();
                 }
 
+                // Route client→server stream frames to per-tag StreamReader buffers.
+                // These are not emitted as Bevy messages; modules read them via StreamReader.
+                if let ServerEvent::ClientStreamFrame { from, tag, data } = &event {
+                    registry.route_client_stream_frame(*from, *tag, data.clone());
+                    count += 1;
+                    continue;
+                }
+
                 writer.write(event);
                 count += 1;
             }
@@ -646,6 +841,7 @@ fn drain_client_events(
                 if matches!(&event, ClientEvent::Disconnected { .. }) {
                     commands.remove_resource::<Client>();
                     commands.remove_resource::<NetClientSender>();
+                    registry.on_client_disconnect();
                 }
 
                 // Route stream frames to per-tag StreamReader buffers.
@@ -742,13 +938,22 @@ fn process_net_commands(
                 let (client_msg_tx, client_msg_rx) = mpsc::channel(CLIENT_BUFFER_SIZE);
                 commands.insert_resource(NetClientSender::new(client_msg_tx));
 
+                // Prepare client→server stream channels from the registry.
+                let client_stream_rxs = registry.prepare_client_connect();
+
                 let tx = client_event_tx.0.clone();
                 let addr = *addr;
                 let name = name.clone();
                 let cancel_token = tokio_util::sync::CancellationToken::new();
                 let token_clone = cancel_token.clone();
-                let handle =
-                    runtime.spawn(client::run_client(addr, tx, client_msg_rx, token_clone, name));
+                let handle = runtime.spawn(client::run_client(
+                    addr,
+                    tx,
+                    client_msg_rx,
+                    token_clone,
+                    name,
+                    client_stream_rxs,
+                ));
                 tasks.client_task = Some((handle, cancel_token));
             }
             NetCommand::StopHosting => {
@@ -977,5 +1182,159 @@ mod tests {
         registry.on_server_stop();
         let result = sender.send_stream_ready_to(ClientId(99));
         assert_eq!(result, Err(StreamSendError::Closed));
+    }
+
+    #[test]
+    fn test_stream_registry_client_to_server_register_and_count() {
+        let mut registry = StreamRegistry::default();
+        assert_eq!(registry.server_to_client_count(), 0);
+
+        registry.register::<ServerMessage>(StreamDef {
+            tag: 4,
+            name: "tile-input",
+            direction: StreamDirection::ClientToServer,
+        });
+        // ClientToServer streams do not count toward server_to_client_count
+        assert_eq!(registry.server_to_client_count(), 0);
+
+        // But we can also have a ServerToClient stream alongside it
+        registry.register::<ServerMessage>(StreamDef {
+            tag: 1,
+            name: "tiles",
+            direction: StreamDirection::ServerToClient,
+        });
+        assert_eq!(registry.server_to_client_count(), 1);
+    }
+
+    #[test]
+    fn test_stream_sender_client_closed_when_not_connected() {
+        let mut registry = StreamRegistry::default();
+        let (sender, _reader): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
+            tag: 4,
+            name: "tile-input",
+            direction: StreamDirection::ClientToServer,
+        });
+        // No client connected → client_tx is None → send returns Closed
+        let result = sender.send(&ServerMessage::InitialStateDone);
+        assert_eq!(result, Err(StreamSendError::Closed));
+    }
+
+    #[test]
+    fn test_stream_sender_client_send_and_disconnect() {
+        let mut registry = StreamRegistry::default();
+        let (sender, _reader): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
+            tag: 4,
+            name: "tile-input",
+            direction: StreamDirection::ClientToServer,
+        });
+
+        // Connect: prepare client channels
+        let rxs = registry.prepare_client_connect();
+        assert_eq!(rxs.len(), 1);
+        assert_eq!(rxs[0].0, 4);
+
+        // After prepare_client_connect the channel is live
+        let result = sender.send(&ServerMessage::InitialStateDone);
+        assert!(result.is_ok(), "send should succeed while client is connected");
+
+        // After on_client_disconnect the channel closes
+        registry.on_client_disconnect();
+        let result = sender.send(&ServerMessage::InitialStateDone);
+        assert_eq!(result, Err(StreamSendError::Closed));
+    }
+
+    #[test]
+    fn test_route_client_stream_frame_and_drain() {
+        let mut registry = StreamRegistry::default();
+        let (_sender, mut reader): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
+            tag: 4,
+            name: "tile-input",
+            direction: StreamDirection::ClientToServer,
+        });
+
+        // Simulate receiving a frame from a client
+        let client = ClientId(7);
+        let msg = ServerMessage::InitialStateDone;
+        let encoded = Bytes::from(protocol::encode(&msg).expect("encode"));
+        registry.route_client_stream_frame(client, 4, encoded);
+
+        // Drain should yield the decoded message with the sender's ClientId
+        let frames: Vec<(ClientId, ServerMessage)> = reader.drain_from_client().collect();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].0, client);
+        assert!(matches!(frames[0].1, ServerMessage::InitialStateDone));
+    }
+
+    #[test]
+    fn test_route_client_stream_frame_unknown_tag_logs_error() {
+        let registry = StreamRegistry::default();
+        // Routing to an unregistered tag should not panic (it just logs an error)
+        let client = ClientId(1);
+        registry.route_client_stream_frame(client, 99, Bytes::from_static(b"data"));
+        // No panic = test passes
+    }
+
+    #[test]
+    fn test_prepare_client_connect_only_client_to_server() {
+        let mut registry = StreamRegistry::default();
+        registry.register::<ServerMessage>(StreamDef {
+            tag: 1,
+            name: "tiles",
+            direction: StreamDirection::ServerToClient,
+        });
+        registry.register::<ServerMessage>(StreamDef {
+            tag: 4,
+            name: "tile-input",
+            direction: StreamDirection::ClientToServer,
+        });
+
+        // prepare_client_connect should only return receivers for ClientToServer streams
+        let rxs = registry.prepare_client_connect();
+        assert_eq!(rxs.len(), 1);
+        assert_eq!(rxs[0].0, 4);
+    }
+
+    #[test]
+    fn test_stream_sender_direction_guard_server_methods_on_client_to_server() {
+        let mut registry = StreamRegistry::default();
+        let (sender, _): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
+            tag: 4,
+            name: "tile-input",
+            direction: StreamDirection::ClientToServer,
+        });
+
+        // Server-only methods should return Closed on a ClientToServer stream.
+        assert_eq!(
+            sender.send_stream_ready_to(ClientId(1)),
+            Err(StreamSendError::Closed),
+            "send_stream_ready_to on ClientToServer should return Closed"
+        );
+        assert_eq!(
+            sender.send_to(ClientId(1), &ServerMessage::InitialStateDone),
+            Err(StreamSendError::Closed),
+            "send_to on ClientToServer should return Closed"
+        );
+        assert_eq!(
+            sender.broadcast(&ServerMessage::InitialStateDone),
+            Err(StreamSendError::Closed),
+            "broadcast on ClientToServer should return Closed"
+        );
+    }
+
+    #[test]
+    fn test_stream_sender_direction_guard_send_on_server_to_client() {
+        let mut registry = StreamRegistry::default();
+        let (sender, _): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
+            tag: 1,
+            name: "tiles",
+            direction: StreamDirection::ServerToClient,
+        });
+
+        // Client-only method should return Closed on a ServerToClient stream.
+        assert_eq!(
+            sender.send(&ServerMessage::InitialStateDone),
+            Err(StreamSendError::Closed),
+            "send on ServerToClient should return Closed"
+        );
     }
 }

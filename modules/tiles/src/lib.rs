@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use input::{PointerAction, WorldHit};
 use network::{
     ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
@@ -79,28 +80,26 @@ impl Tilemap {
         self.get(pos).is_some_and(|kind| kind.is_walkable())
     }
 
-    /// Creates a 12x10 test room with perimeter walls and internal obstacles.
+    /// Creates a 16x10 test room for decompression scenarios, with perimeter walls
+    /// and a central double wall that separates a left (pressurized) chamber from
+    /// a right (vacuum) chamber.
     pub fn test_room() -> Tilemap {
-        let mut tilemap = Tilemap::new(12, 10, TileKind::Floor);
+        let mut tilemap = Tilemap::new(16, 10, TileKind::Floor);
 
         // Perimeter walls
-        for x in 0..12 {
+        for x in 0..16 {
             tilemap.set(IVec2::new(x, 0), TileKind::Wall);
             tilemap.set(IVec2::new(x, 9), TileKind::Wall);
         }
         for y in 0..10 {
             tilemap.set(IVec2::new(0, y), TileKind::Wall);
-            tilemap.set(IVec2::new(11, y), TileKind::Wall);
+            tilemap.set(IVec2::new(15, y), TileKind::Wall);
         }
 
-        // Internal walls for collision testing
-        // Vertical wall segment
-        for y in 2..6 {
-            tilemap.set(IVec2::new(4, y), TileKind::Wall);
-        }
-        // Horizontal wall segment
-        for x in 7..10 {
-            tilemap.set(IVec2::new(x, 5), TileKind::Wall);
+        // Separating wall between left (pressurized, cols 1–8) and right (vacuum, cols 11–14) chambers
+        for y in 0..10 {
+            tilemap.set(IVec2::new(9, y), TileKind::Wall);
+            tilemap.set(IVec2::new(10, y), TileKind::Wall);
         }
 
         tilemap
@@ -129,10 +128,46 @@ pub enum TilesStreamMessage {
         height: u32,
         tiles: Vec<TileKind>,
     },
+    /// Incremental mutation broadcast to all clients after the server applies a toggle.
+    TileMutated {
+        position: [i32; 2],
+        kind: TileKind,
+    },
+}
+
+/// Client→server request to toggle a tile at the given position (stream 4).
+///
+/// **Temporary:** This dedicated stream will be superseded by a general-purpose
+/// interactions stream in a later plan iteration. Do not rely on stream 4 being
+/// tile-specific long-term.
+#[derive(Debug, Clone, SchemaRead, SchemaWrite)]
+pub struct TileToggle {
+    pub position: [i32; 2],
+    pub kind: TileKind,
+}
+
+/// Bevy event fired by the interactions module when the player requests a tile mutation.
+/// Consumed by [`execute_tile_toggle`] to send [`TileToggle`] on stream 4.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TileToggleRequest {
+    pub position: IVec2,
+    pub kind: TileKind,
+}
+
+/// Bevy event fired when a tile mutation arrives from the server (or is applied locally
+/// on a listen-server). Consumed by [`apply_tile_mutation`] to update the visual
+/// representation incrementally.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TileMutated {
+    pub position: IVec2,
+    pub kind: TileKind,
 }
 
 /// Stream tag for the server→client tiles stream (stream 1).
 pub const TILES_STREAM_TAG: u8 = 1;
+
+/// Stream tag for the client→server tile-toggle stream (stream 4).
+pub const TILE_TOGGLE_STREAM_TAG: u8 = 4;
 
 /// Decode a [`TilesStreamMessage`] from raw stream-frame bytes.
 pub fn decode_tiles_message(bytes: &[u8]) -> Result<TilesStreamMessage, String> {
@@ -175,6 +210,9 @@ impl TryFrom<TilesStreamMessage> for Tilemap {
                     tiles,
                 })
             }
+            TilesStreamMessage::TileMutated { .. } => {
+                Err("TileMutated is not a full tilemap snapshot".to_string())
+            }
         }
     }
 }
@@ -204,11 +242,38 @@ impl Plugin for TilesPlugin {
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
 
+        app.add_message::<TileToggleRequest>();
+        app.add_message::<TileMutated>();
+
+        // Register messages that raycast_tiles / execute_tile_toggle read/write
+        // so the resources exist even when InputPlugin is not added (e.g. headless tests).
+        app.add_message::<PointerAction>();
+        app.add_message::<WorldHit>();
+
         let headless = app.world().contains_resource::<Headless>();
         if !headless {
-            // Tile mesh spawning is visual-only; skip in headless server mode.
+            // Tile mesh spawning and visual mutation are visual-only; skip in headless server mode.
             app.init_resource::<TileMeshes>();
             app.add_systems(Update, spawn_tile_meshes);
+            // On a listen-server, TileMutated events are written by handle_tile_toggle
+            // (which runs in the same Update schedule).  Ordering after it ensures those
+            // events are visible in the same frame.
+            app.add_systems(
+                Update,
+                apply_tile_mutation
+                    .run_if(resource_exists::<Server>)
+                    .after(handle_tile_toggle),
+            );
+            // On a dedicated client, TileMutated events come from handle_tiles_stream
+            // (PreUpdate), so no intra-Update ordering is needed.
+            app.add_systems(
+                Update,
+                apply_tile_mutation.run_if(not(resource_exists::<Server>)),
+            );
+            app.add_systems(
+                Update,
+                (raycast_tiles, execute_tile_toggle),
+            );
         }
 
         app.add_systems(
@@ -226,8 +291,14 @@ impl Plugin for TilesPlugin {
             Update,
             send_tilemap_on_connect.run_if(resource_exists::<Server>),
         );
+        app.add_systems(
+            Update,
+            handle_tile_toggle
+                .run_if(resource_exists::<Server>)
+                .after(send_tilemap_on_connect),
+        );
 
-        // Register stream 1 (server→client tiles stream). Requires NetworkPlugin to be added first.
+        // Register streams. Requires NetworkPlugin to be added first.
         let mut registry = app.world_mut().get_resource_mut::<StreamRegistry>().expect(
             "TilesPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)",
         );
@@ -239,8 +310,18 @@ impl Plugin for TilesPlugin {
             name: "tiles",
             direction: StreamDirection::ServerToClient,
         });
+        let (toggle_sender, toggle_reader): (
+            StreamSender<TileToggle>,
+            StreamReader<TileToggle>,
+        ) = registry.register(StreamDef {
+            tag: TILE_TOGGLE_STREAM_TAG,
+            name: "tile_toggle",
+            direction: StreamDirection::ClientToServer,
+        });
         app.insert_resource(sender);
         app.insert_resource(reader);
+        app.insert_resource(toggle_sender);
+        app.insert_resource(toggle_reader);
     }
 }
 
@@ -278,6 +359,39 @@ impl FromWorld for TileMeshes {
     }
 }
 
+/// Spawns a single tile entity for the given grid position and kind.
+/// Used by both [`spawn_tile_meshes`] (initial load) and [`apply_tile_mutation`]
+/// (incremental updates) to guarantee identical visual and physics setup.
+fn spawn_tile_entity(commands: &mut Commands, position: IVec2, kind: TileKind, tile_meshes: &TileMeshes) {
+    let world_x = position.x as f32;
+    let world_z = position.y as f32;
+    match kind {
+        TileKind::Floor => {
+            // Collider is 0.1 tall (full dim), centered on transform.
+            // Offset y by -0.05 so the top surface sits at y=0.0.
+            commands.spawn((
+                Mesh3d(tile_meshes.floor_mesh.clone()),
+                MeshMaterial3d(tile_meshes.floor_material.clone()),
+                Transform::from_xyz(world_x, -0.05, world_z),
+                Tile { position },
+                RigidBody::Static,
+                Collider::cuboid(1.0, 0.1, 1.0),
+            ));
+        }
+        TileKind::Wall => {
+            commands.spawn((
+                Mesh3d(tile_meshes.wall_mesh.clone()),
+                MeshMaterial3d(tile_meshes.wall_material.clone()),
+                Transform::from_xyz(world_x, 0.5, world_z),
+                Tile { position },
+                RigidBody::Static,
+                // avian3d Collider::cuboid takes full dimensions, not half-extents
+                Collider::cuboid(1.0, 1.0, 1.0),
+            ));
+        }
+    }
+}
+
 fn spawn_tile_meshes(
     mut commands: Commands,
     tilemap: Option<Res<Tilemap>>,
@@ -293,68 +407,55 @@ fn spawn_tile_meshes(
         return;
     };
 
-    // Only spawn if tilemap was just added or changed
-    if !tilemap.is_changed() {
+    // Only spawn for the initial load; incremental mutations are handled by
+    // apply_tile_mutation.  Once any tile entities exist, this system is a no-op.
+    if !existing_tiles.is_empty() {
         return;
     }
 
-    // Despawn existing tile entities
-    for entity in &existing_tiles {
-        commands.entity(entity).despawn();
-    }
-
-    // Spawn tile entities
+    // Spawn tile entities for the full initial tilemap.
     for (pos, kind) in tilemap.iter() {
-        let world_x = pos.x as f32;
-        let world_z = pos.y as f32;
-
-        match kind {
-            TileKind::Floor => {
-                // Collider is 0.1 tall (full dim), centered on transform.
-                // Offset y by -0.05 so the top surface sits at y=0.0.
-                commands.spawn((
-                    Mesh3d(tile_meshes.floor_mesh.clone()),
-                    MeshMaterial3d(tile_meshes.floor_material.clone()),
-                    Transform::from_xyz(world_x, -0.05, world_z),
-                    Tile { position: pos },
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 0.1, 1.0),
-                ));
-            }
-            TileKind::Wall => {
-                commands.spawn((
-                    Mesh3d(tile_meshes.wall_mesh.clone()),
-                    MeshMaterial3d(tile_meshes.wall_material.clone()),
-                    Transform::from_xyz(world_x, 0.5, world_z),
-                    Tile { position: pos },
-                    RigidBody::Static,
-                    // avian3d Collider::cuboid takes full dimensions, not half-extents
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                ));
-            }
-        }
+        spawn_tile_entity(&mut commands, pos, kind, &tile_meshes);
     }
 }
 
-/// Bevy system that handles incoming tilemap snapshots from the server on stream 1.
-/// Drains [`StreamReader<TilesStreamMessage>`], explicitly matches on each variant,
-/// validates dimensions via [`TryFrom`], and inserts the [`Tilemap`] resource.
+/// Bevy system that handles incoming tilemap messages from the server on stream 1.
+/// Drains [`StreamReader<TilesStreamMessage>`], explicitly matches on each variant:
+/// - [`TilesStreamMessage::TilemapData`]: validates dimensions via [`TryFrom`] and
+///   inserts the [`Tilemap`] resource (initial full snapshot).
+/// - [`TilesStreamMessage::TileMutated`]: applies [`Tilemap::set`] for the affected
+///   cell and fires a [`TileMutated`] Bevy event so [`apply_tile_mutation`] can update
+///   the visual representation incrementally.
 fn handle_tiles_stream(
     mut commands: Commands,
     mut reader: ResMut<StreamReader<TilesStreamMessage>>,
+    mut tilemap: Option<ResMut<Tilemap>>,
+    mut mutation_events: MessageWriter<TileMutated>,
 ) {
     for msg in reader.drain() {
         match msg {
             variant @ TilesStreamMessage::TilemapData { .. } => match Tilemap::try_from(variant) {
-                Ok(tilemap) => {
+                Ok(tm) => {
                     info!(
                         "Received tilemap {}×{} from server",
-                        tilemap.width, tilemap.height
+                        tm.width, tm.height
                     );
-                    commands.insert_resource(tilemap);
+                    commands.insert_resource(tm);
                 }
                 Err(e) => error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}"),
             },
+            TilesStreamMessage::TileMutated { position, kind } => {
+                let pos = IVec2::new(position[0], position[1]);
+                if let Some(ref mut tm) = tilemap {
+                    tm.set(pos, kind);
+                    // Only emit the mutation event once the Tilemap resource exists.
+                    // This prevents spawning partial tile entities before the initial
+                    // TilemapData snapshot arrives. If entities were spawned early,
+                    // spawn_tile_meshes would see a non-empty tile query and skip
+                    // the full initial map spawn, leaving most tiles missing.
+                    mutation_events.write(TileMutated { position: pos, kind });
+                }
+            }
         }
     }
 }
@@ -421,6 +522,169 @@ fn send_tilemap_on_connect(
             from.0
         );
         module_ready.write(ModuleReadySent { client: from });
+    }
+}
+
+/// System that listens for right-click [`PointerAction`] events, raycasts from the
+/// camera through the screen position to the ground plane (y = 0), and emits a
+/// [`WorldHit`] event carrying the hit tile entity and world position if a valid
+/// tile exists at the resulting grid coordinate.
+///
+/// Runs in `Update`, gated on absence of [`Headless`].
+fn raycast_tiles(
+    mut pointer_events: MessageReader<PointerAction>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    tile_query: Query<(Entity, &Tile)>,
+    tilemap: Option<Res<Tilemap>>,
+    mut hit_events: MessageWriter<WorldHit>,
+) {
+    let Some(tilemap) = tilemap else { return };
+    let Ok((camera, cam_transform)) = camera_query.single() else { return };
+
+    for action in pointer_events.read() {
+        if action.button != MouseButton::Right {
+            continue;
+        }
+
+        let Ok(ray) = camera.viewport_to_world(cam_transform, action.screen_pos) else {
+            continue;
+        };
+
+        // Convert Dir3 to Vec3 for arithmetic.
+        let dir = Vec3::from(ray.direction);
+
+        // Intersect with the y = 0 ground plane: origin.y + t * dir.y = 0.
+        // Use a practical threshold rather than f32::EPSILON to avoid rejecting
+        // near-horizontal rays while still preventing division by near-zero.
+        if dir.y.abs() < 1e-4 {
+            continue; // Ray is effectively parallel to the ground plane.
+        }
+        let t = -ray.origin.y / dir.y;
+        if t < 0.0 {
+            continue; // Intersection is behind the camera.
+        }
+
+        let world_pos = ray.origin + t * dir;
+        // Grid coordinates: world X → column, world Z → row.
+        let grid_pos = IVec2::new(world_pos.x.round() as i32, world_pos.z.round() as i32);
+
+        if tilemap.get(grid_pos).is_some() {
+            if let Some((entity, _)) = tile_query.iter().find(|(_, t)| t.position == grid_pos) {
+                hit_events.write(WorldHit { entity, world_pos });
+            }
+        }
+    }
+}
+
+/// System that reads [`TileToggleRequest`] events and sends a [`TileToggle`] message
+/// to the server on stream 4 (client→server).
+///
+/// Runs in `Update`, gated on absence of [`Headless`].
+fn execute_tile_toggle(
+    mut requests: MessageReader<TileToggleRequest>,
+    sender: Option<Res<StreamSender<TileToggle>>>,
+) {
+    let Some(ref s) = sender else {
+        // Drain the event queue even when disconnected so they don't accumulate.
+        for _ in requests.read() {}
+        return;
+    };
+    for req in requests.read() {
+        if let Err(e) = s.send(&TileToggle {
+            position: [req.position.x, req.position.y],
+            kind: req.kind,
+        }) {
+            error!("Failed to send TileToggle to server: {}", e);
+        }
+    }
+}
+
+/// Server-side system that reads [`TileToggle`] messages from stream 4, validates each
+/// request (in-bounds, tile currently differs from the requested kind), applies the
+/// mutation via [`Tilemap::set`], then broadcasts [`TilesStreamMessage::TileMutated`]
+/// to all clients on stream 1.  Also fires a local [`TileMutated`] Bevy event so the
+/// listen-server's own [`apply_tile_mutation`] system can update its visuals.
+///
+/// Runs in `Update`, gated on [`Server`] resource.
+fn handle_tile_toggle(
+    mut reader: ResMut<StreamReader<TileToggle>>,
+    mut tilemap: Option<ResMut<Tilemap>>,
+    sender: Option<Res<StreamSender<TilesStreamMessage>>>,
+    mut mutation_events: MessageWriter<TileMutated>,
+) {
+    for (from, toggle) in reader.drain_from_client() {
+        let position = IVec2::new(toggle.position[0], toggle.position[1]);
+
+        let Some(ref mut tm) = tilemap else {
+            warn!("handle_tile_toggle: Tilemap resource not available");
+            continue;
+        };
+
+        // Validate: position must be within the tilemap bounds.
+        let Some(current) = tm.get(position) else {
+            warn!(
+                "TileToggle from {:?}: position {:?} is out of bounds",
+                from, position
+            );
+            continue;
+        };
+
+        // Validate: requested kind must differ from the current tile.
+        if current == toggle.kind {
+            warn!(
+                "TileToggle from {:?}: tile at {:?} is already {:?}",
+                from, position, toggle.kind
+            );
+            continue;
+        }
+
+        tm.set(position, toggle.kind);
+
+        // Fire local Bevy event so the listen-server updates its own visuals.
+        mutation_events.write(TileMutated { position, kind: toggle.kind });
+
+        // Broadcast the mutation to all connected clients on stream 1.
+        let Some(ref ts) = sender else {
+            error!("handle_tile_toggle: tiles stream sender not available");
+            continue;
+        };
+        if let Err(e) = ts.broadcast(&TilesStreamMessage::TileMutated {
+            position: toggle.position,
+            kind: toggle.kind,
+        }) {
+            error!("Failed to broadcast TileMutated: {}", e);
+        }
+    }
+}
+
+/// Client-side system that handles [`TileMutated`] events (fired by both
+/// [`handle_tiles_stream`] and, on listen-servers, by [`handle_tile_toggle`]).
+///
+/// Despawns the existing tile entity at the affected grid position and spawns a new
+/// one with the updated mesh, material, and collider via [`spawn_tile_entity`].
+/// This provides incremental rendering — only the changed tile is rebuilt.
+///
+/// On a listen-server, runs after [`handle_tile_toggle`] (same frame visibility).
+/// On a dedicated client, runs unconditionally (events arrive from PreUpdate).
+fn apply_tile_mutation(
+    mut commands: Commands,
+    mut events: MessageReader<TileMutated>,
+    tile_query: Query<(Entity, &Tile)>,
+    tile_meshes: Res<TileMeshes>,
+) {
+    for event in events.read() {
+        let TileMutated { position, kind } = *event;
+
+        // Despawn the existing tile entity at this grid position (if any).
+        for (entity, tile) in &tile_query {
+            if tile.position == position {
+                commands.entity(entity).despawn();
+                break;
+            }
+        }
+
+        // Spawn a replacement tile entity with the new kind.
+        spawn_tile_entity(&mut commands, position, kind, &tile_meshes);
     }
 }
 
@@ -496,26 +760,30 @@ mod tests {
     #[test]
     fn test_tilemap_test_room() {
         let room = Tilemap::test_room();
-        assert_eq!(room.width(), 12);
+        assert_eq!(room.width(), 16);
         assert_eq!(room.height(), 10);
 
         // Perimeter should be walls
-        for x in 0..12 {
+        for x in 0..16 {
             assert_eq!(room.get(IVec2::new(x, 0)), Some(TileKind::Wall));
             assert_eq!(room.get(IVec2::new(x, 9)), Some(TileKind::Wall));
         }
         for y in 0..10 {
             assert_eq!(room.get(IVec2::new(0, y)), Some(TileKind::Wall));
-            assert_eq!(room.get(IVec2::new(11, y)), Some(TileKind::Wall));
+            assert_eq!(room.get(IVec2::new(15, y)), Some(TileKind::Wall));
         }
 
-        // Interior should be floor (spot check)
-        assert_eq!(room.get(IVec2::new(5, 5)), Some(TileKind::Floor));
-        assert_eq!(room.get(IVec2::new(6, 3)), Some(TileKind::Floor));
+        // Left chamber (cols 1–8) should be floor
+        assert_eq!(room.get(IVec2::new(4, 5)), Some(TileKind::Floor));
+        assert_eq!(room.get(IVec2::new(8, 3)), Some(TileKind::Floor));
 
-        // Internal walls
-        assert_eq!(room.get(IVec2::new(4, 3)), Some(TileKind::Wall));
-        assert_eq!(room.get(IVec2::new(8, 5)), Some(TileKind::Wall));
+        // Separating wall (cols 9–10)
+        assert_eq!(room.get(IVec2::new(9, 5)), Some(TileKind::Wall));
+        assert_eq!(room.get(IVec2::new(10, 3)), Some(TileKind::Wall));
+
+        // Right chamber (cols 11–14) should be floor
+        assert_eq!(room.get(IVec2::new(11, 5)), Some(TileKind::Floor));
+        assert_eq!(room.get(IVec2::new(14, 3)), Some(TileKind::Floor));
     }
 
     #[test]
@@ -580,5 +848,46 @@ mod tests {
             result.unwrap_err().contains("overflow"),
             "error should mention overflow"
         );
+    }
+
+    #[test]
+    fn test_try_from_tile_mutated_returns_error() {
+        let msg = TilesStreamMessage::TileMutated {
+            position: [2, 3],
+            kind: TileKind::Floor,
+        };
+        let result = Tilemap::try_from(msg);
+        assert!(result.is_err(), "TileMutated should not convert to a Tilemap");
+    }
+
+    #[test]
+    fn test_tile_toggle_roundtrip() {
+        // TileToggle must survive a wincode encode→decode cycle.
+        let original = TileToggle {
+            position: [3, 7],
+            kind: TileKind::Wall,
+        };
+        let bytes = wincode::serialize(&original).expect("encode should succeed");
+        let restored: TileToggle = wincode::deserialize(&bytes).expect("decode should succeed");
+        assert_eq!(restored.position, original.position);
+        assert_eq!(restored.kind, TileKind::Wall);
+    }
+
+    #[test]
+    fn test_tile_mutated_message_roundtrip() {
+        let msg = TilesStreamMessage::TileMutated {
+            position: [5, 2],
+            kind: TileKind::Floor,
+        };
+        let bytes = wincode::serialize(&msg).expect("encode should succeed");
+        let restored: TilesStreamMessage =
+            wincode::deserialize(&bytes).expect("decode should succeed");
+        match restored {
+            TilesStreamMessage::TileMutated { position, kind } => {
+                assert_eq!(position, [5, 2]);
+                assert_eq!(kind, TileKind::Floor);
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
     }
 }
