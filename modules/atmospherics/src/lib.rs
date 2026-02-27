@@ -8,7 +8,7 @@ use tiles::Tilemap;
 use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
-pub use gas_grid::{GasCell, GasGrid};
+pub use gas_grid::{GasCell, GasGrid, DEFAULT_DIFFUSION_RATE, DEFAULT_PRESSURE_CONSTANT};
 
 mod debug_overlay;
 pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
@@ -42,12 +42,18 @@ pub enum AtmosStreamMessage {
 /// Creates and initializes a GasGrid from a Tilemap.
 /// All floor cells are filled with the given standard atmospheric pressure,
 /// except cells inside `vacuum_region` (inclusive bounding rect) which start at 0.0 moles.
+///
+/// `diffusion_rate` and `pressure_constant` are simulation tuning parameters stored on
+/// the grid and used during `step()` and pressure queries.
 pub fn initialize_gas_grid(
     tilemap: &Tilemap,
     standard_pressure: f32,
     vacuum_region: Option<(IVec2, IVec2)>,
+    diffusion_rate: f32,
+    pressure_constant: f32,
 ) -> GasGrid {
-    let mut gas_grid = GasGrid::new(tilemap.width(), tilemap.height());
+    let mut gas_grid =
+        GasGrid::with_tuning(tilemap.width(), tilemap.height(), diffusion_rate, pressure_constant);
 
     // Sync walls from tilemap to mark impassable cells
     gas_grid.sync_walls(tilemap);
@@ -181,9 +187,10 @@ fn apply_pressure_forces(
             transform.translation.z.round() as i32,
         );
 
-        // gradient is in (x, z) tile-grid space.
+        // gradient points toward increasing pressure; physical force is −∇P
+        // (objects are pushed from high pressure toward low pressure / the breach).
         let gradient = grid.pressure_gradient_at(tile_pos);
-        let force_vec = Vec3::new(gradient.x, 0.0, gradient.y) * scale;
+        let force_vec = Vec3::new(-gradient.x, 0.0, -gradient.y) * scale;
 
         if let Some(mut cf) = maybe_force {
             cf.0 = force_vec;
