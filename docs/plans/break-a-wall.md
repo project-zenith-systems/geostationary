@@ -501,4 +501,126 @@ Two spikes precede implementation:
 
 ## Post-mortem
 
-_(To be filled in after the plan ships.)_
+### Outcome
+
+The plan shipped everything it promised across PRs #153–#171. A player
+right-clicks a wall, selects "Remove Wall" from a context menu, the server
+validates and mutates the tilemap, all clients see the wall disappear, gas
+rushes toward the breach, and nearby physics bodies are pushed by the pressure
+gradient. The reverse ("Build Wall") also works. The test room demonstrates
+dramatic decompression between a pressurised chamber and a vacuum chamber.
+All nine "what done looks like" checkboxes are satisfied. Two spikes preceded
+implementation (pressure-force semantics, context-menu UI) and both informed
+the final design.
+
+### What shipped beyond the plan
+
+| Addition | Why |
+|----------|-----|
+| `ConstantForce` instead of `ExternalForce` | Avian 3D exposes `ConstantForce` for persistent per-tick forces. The plan assumed an `ExternalForce` API. The pressure-force spike (PR #153) caught this before implementation. |
+| `ContextMenuAction` message type in interactions | The plan described "fires domain-specific action events" but didn't name the intermediate message. `ContextMenuAction` bridges the UI button press to `TileToggleRequest`, keeping the interactions module decoupled from tile-toggle wire details. |
+| Three configurable simulation constants in `config.toml` | `standard_pressure`, `pressure_force_scale`, and `diffusion_rate` were all made config-driven (PR #164). The plan only specified `pressure_force_scale` as configurable. Making all three tuneable without recompilation proved essential during integration testing. |
+| `pressure_constant` removal (PR #171) | During tuning, the separate `PRESSURE_CONSTANT` multiplier was found to be redundant — moles already represent pressure directly in the single-gas model. Removing it simplified the force calculation and reduced a confusing degree of freedom. |
+| Simulation tuning pass (PR #170) | `diffusion_rate` raised from default 0.25 to 10.0 to make decompression visually dramatic in the 16×10 test room. Not planned but necessary for the "watch gas rush out" deliverable. |
+
+### Deviations from plan
+
+- **`WorldHit` is a struct, not an enum.** The plan specified
+  `WorldHit::Tile { position, kind }` and `WorldHit::Thing { entity, kind }`
+  as enum variants. The implementation uses a flat struct
+  `WorldHit { entity, world_pos }`. Downstream systems query the entity's
+  components (`Tile`, `Thing`) to determine type. This is more composable —
+  adding new hittable categories doesn't require extending an enum — but
+  means consumers do a small component query instead of pattern matching.
+
+- **`ConstantForce` instead of `ExternalForce`.** Avian 3D's API uses
+  `ConstantForce` for persistent forces that apply every physics step. The
+  plan assumed `ExternalForce` existed. The spike (PR #153) caught this
+  naming difference and the implementation used the correct type throughout.
+
+- **Overlays extracted twice.** PR #154 extracted `WorldSpaceOverlay` from
+  the player module, then PR #157 refined the extraction further. The plan
+  anticipated a single extraction step.
+
+- **No explicit spikes as separate branches.** The plan specified two
+  standalone spikes. The pressure-force spike shipped as PR #153 with both
+  the spike verification and the production `apply_pressure_forces` system.
+  The context-menu spike was folded into the interactions implementation
+  (PR #163) rather than being a separate experiment.
+
+### Hurdles
+
+1. **Pressure force direction was inverted.** The initial implementation
+   applied force in the gradient direction (toward high pressure) instead of
+   the negative gradient direction (toward vacuum/breach). PR #164 fixed the
+   sign. **Lesson:** Always verify force direction with a known test case —
+   gas at left, vacuum at right, expected push is rightward.
+
+2. **`pressure_constant` was a confusing extra multiplier.** With a
+   single-gas model where moles directly represent pressure, multiplying by
+   a separate constant just scaled everything uniformly. It made tuning
+   harder (two knobs for one effect) and the code harder to reason about.
+   PR #171 removed it. **Lesson:** Don't add conversion constants that don't
+   convert between meaningfully different units.
+
+3. **Diffusion rate needed 40× increase for visual impact.** The default
+   `DIFFUSION_RATE` of 0.25 made decompression imperceptible in the small
+   test room. The final tuned value of 10.0 produces dramatic gas flow.
+   **Lesson:** Tune simulation parameters against the actual test scenario,
+   not theoretical correctness. The "right" diffusion rate is the one that
+   produces the desired player experience at the current map scale.
+
+### What went well
+
+- **Spikes continued to pay off.** The pressure-force spike confirmed
+  `ConstantForce` semantics and runtime insertion before any atmospherics
+  code depended on it. Without the spike, the `ExternalForce` naming
+  mismatch would have been discovered mid-implementation.
+
+- **Bottom-up sequencing worked again.** PRs landed in dependency order:
+  input → overlay extraction → client→server streams → tile mutation →
+  raycast → gas replication → pressure forces → interactions → test room →
+  tuning. No PR needed rework due to missing infrastructure.
+
+- **Previous post-mortem recommendations were followed.** The dedicated
+  server post-mortem said: "design scheduling constraints before the
+  system," "spike codec edge cases," and "reserve a section for coordination
+  patterns." This plan's layer participation table included a schedule/run
+  condition column, and the two spikes preceded implementation.
+
+- **Module isolation held.** Adding the `input` and `interactions` modules
+  required zero changes to the network, atmospherics, or things modules
+  (beyond the planned additions). Each module owns its domain cleanly.
+
+- **The WorldSpaceOverlay extraction proved immediately reusable.** Both
+  nameplates and context menus use the same overlay system with no
+  duplication. The pattern is ready for future world-anchored UI (item
+  labels, health bars, tooltips).
+
+- **Config-driven tuning was essential.** Making simulation constants
+  configurable early (PR #164) enabled rapid iteration during the tuning
+  pass (PR #170) without recompilation.
+
+### What to do differently next time
+
+- **Verify force directions with a unit test, not manual testing.** The
+  inverted pressure force (hurdle 1) would have been caught by a test
+  asserting "entity at high-pressure cell adjacent to vacuum cell receives
+  force toward vacuum." Add directional assertions for any physics coupling.
+
+- **Tune simulation parameters as a dedicated task, not an afterthought.**
+  The tuning pass (PR #170) was unplanned and required multiple iterations.
+  Future plans with simulation coupling should include an explicit tuning
+  task with acceptance criteria ("gas visibly flows within 2 seconds of
+  breach").
+
+- **Spike the actual API, not the concept.** The plan said "spike
+  ExternalForce" but the real API was `ConstantForce`. Spikes should start
+  by finding the concrete type in the dependency's docs, not by assuming a
+  name from the plan.
+
+- **Flatten the WorldHit design earlier.** The plan's enum-based `WorldHit`
+  was designed top-down from "what categories exist." The implementation's
+  struct-based design emerged bottom-up from "what do consumers actually
+  need." Future interaction types should start from the consumer's query
+  pattern.
