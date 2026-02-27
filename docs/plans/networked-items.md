@@ -76,6 +76,19 @@ context menu with all available actions. This extends the existing
 `WorldHit` → action lookup → fire event pipeline without changing the
 architecture.
 
+**Unified interactions stream (stream 4).** The break-a-wall plan placed
+stream 4 in `tiles` with a note that it was temporary. This plan promotes
+stream 4 to a general-purpose **interactions stream** owned by the
+`interactions` module (L6). All client→server interaction requests —
+tile toggles, item pickups, item drops, and any future interactions — flow
+through a single `InteractionRequest` wire enum on stream 4. The
+`interactions` module registers the stream, serialises requests on the
+client, and dispatches them on the server by firing domain-specific Bevy
+events (`TileToggleRequest`, `ItemPickupRequest`, `ItemDropRequest`)
+downward. Lower-layer modules (`tiles`, `items`) never touch stream 4
+directly — they only read Bevy events. This removes `execute_tile_toggle`
+from `tiles` and moves that responsibility into `interactions`.
+
 **Data flow — item pickup:**
 
 ```
@@ -86,14 +99,14 @@ Client                          Server                          Other clients
   | -> things: raycast_things     |                                |
   |    -> WorldHit { entity }     |                                |
   | -> interactions: default_action|                               |
-  |    fires ItemPickupRequest    |                                |
-  |                               |                                |
-  | -> items: execute_pickup      |                                |
-  | --- ItemInteraction{Pickup}-->|                                |
-  |     (stream 5, c->s)         |                                |
-  |                               | validate: in range?            |
-  |                               | validate: item exists?         |
-  |                               | validate: hand has space?      |
+  |    -> InteractionRequest      |                                |
+  |       ::ItemPickup { target } |                                |
+  | --- stream 4, c->s --------->|                                |
+  |                               | interactions: dispatch         |
+  |                               |   fires ItemPickupRequest      |
+  |                               | items: handle_item_interaction  |
+  |                               |   validate: in range?          |
+  |                               |   validate: hand has space?    |
   |                               |                                |
   |                               | reparent item -> hand anchor   |
   |                               | remove physics components      |
@@ -117,24 +130,33 @@ instead of `WorldHit` directly. This solves #169 generically — any future
 raycaster (items, machines) just emits `WorldHit` and the resolution logic
 handles priority.
 
-**Stream architecture (additions in bold):**
+**Stream architecture (changes in bold):**
 
-| Stream tag | Owner          | Direction           | Content                                              |
-| ---------- | -------------- | ------------------- | ---------------------------------------------------- |
-| 0          | `network`      | bidirectional       | Welcome, InitialStateDone / Hello, Input (unchanged) |
-| 1          | `tiles`        | server -> client    | TilemapData, TileMutated, StreamReady (unchanged)    |
-| 2          | `atmospherics` | server -> client    | GasGridData, GasGridDelta, StreamReady (unchanged)   |
-| 3          | `things`       | server -> client    | EntitySpawned, StateUpdate, **ItemEvent**, StreamReady|
-| **5**      | **`items`**    | **client -> server**| **ItemInteraction { Pickup, Drop }**                 |
+| Stream tag | Owner              | Direction           | Content                                              |
+| ---------- | ------------------ | ------------------- | ---------------------------------------------------- |
+| 0          | `network`          | bidirectional       | Welcome, InitialStateDone / Hello, Input (unchanged) |
+| 1          | `tiles`            | server -> client    | TilemapData, TileMutated, StreamReady (unchanged)    |
+| 2          | `atmospherics`     | server -> client    | GasGridData, GasGridDelta, StreamReady (unchanged)   |
+| 3          | `things`           | server -> client    | EntitySpawned, StateUpdate, **ItemEvent**, StreamReady|
+| **4**      | **`interactions`** | **client -> server**| **InteractionRequest { TileToggle, ItemPickup, ItemDrop }** |
+
+Stream 4 ownership moves from `tiles` to `interactions`. The `TileToggle`
+wire type is replaced by `InteractionRequest::TileToggle` — same data,
+different envelope. `tiles` loses its stream 4 registration,
+`execute_tile_toggle`, and `handle_tile_toggle`; all tile-toggle logic
+(validation, tilemap mutation, broadcast) moves into `interactions`'
+`dispatch_interaction` system. `interactions` gains `send_interaction`
+(client) and `dispatch_interaction` (server).
 
 ### Layer participation
 
 | Layer | Module          | Systems / changes | Schedule / run condition |
 |-------|-----------------|-------------------|--------------------------|
 | L0    | `input`         | No changes. `PointerAction` and `WorldHit` already sufficient. | — |
+| L1    | `tiles`         | **Remove all stream 4 and tile-toggle systems.** Delete `TILE_TOGGLE_STREAM_TAG`, `TileToggle` wire type, stream 4 registration, `execute_tile_toggle`, `handle_tile_toggle`, `TileToggleRequest`, and `TileMutated` Bevy events. All tile-toggle logic (validation, tilemap mutation, `TileMutated` broadcast on stream 1) moves to `interactions`. `tiles` retains `Tilemap`, `TileKind`, tile mesh spawning, `apply_tile_mutation`, and stream 1 (server→client tilemap data). | No schedule changes to remaining systems. |
 | L1    | `things`        | **HandSlot component.** New `HandSlot { side: HandSide }` component and `HandSide` enum (`Left`, `Right`). **Hand anchor spawning:** `spawn_player_creature` gains a child entity with `HandSlot { side: Right }` and `Transform::from_translation(HAND_OFFSET)`. **ItemEvent on stream 3:** new enum variants `ItemEvent::PickedUp { item: NetId, holder: NetId }` and `ItemEvent::Dropped { item: NetId, position: [f32; 3] }` added to `ThingsStreamMessage`. Server-side: `broadcast_item_event` sends `ItemEvent` after item mutations. Client-side: `handle_item_event` receives and applies reparenting/deparenting. **Exclude held items from StateUpdate:** items parented to a `HandSlot` should not be included in the 30 Hz position broadcast (they inherit transform from parent). | `broadcast_item_event`: `Update`, after item systems. `handle_item_event`: `Update`, after stream drain, gated on `Client`. |
-| L2    | `items`         | **New module.** `Item` marker component (on all item entities). `Container` component with `slots: Vec<Option<Entity>>` and `capacity: usize`. `ItemInteraction` wire type (client->server, stream 5): enum with `Pickup { target: NetId }` and `Drop { hand_side: HandSide }`. **Server systems:** `handle_item_interaction` reads stream 5, validates range + item existence + container space, executes pickup (reparent + strip physics) or drop (deparent + restore physics + set position). **No client-side simulation** — clients apply `ItemEvent` messages from stream 3. | `handle_item_interaction`: `Update`, after stream drain, gated on `Server`. |
-| L6    | `interactions`  | **Raycast resolution (fixes #169).** `resolve_world_hits` system collects all `WorldHit` events per frame, picks closest to camera, emits `ResolvedHit`. **Default action system.** `default_interaction` system reads left-click `ResolvedHit` events. For items on floor: fires `ItemPickupRequest`. **Extended context menu.** `build_context_menu` reads right-click `ResolvedHit`. Action table gains: `Item` component -> ["Pick up"]; `Tile` with `kind == Floor` while player holds item -> ["Drop", "Build Wall"]. Drop fires `ItemDropRequest { drop_pos }` with the clicked floor world position. | `resolve_world_hits`: `Update`, after `raycast_tiles` and `raycast_things`. `default_interaction`: `Update`, after `resolve_world_hits`, gated on `not(Headless)`. `build_context_menu`: `Update`, after `resolve_world_hits`. |
+| L2    | `items`         | **New module.** `Item` marker component (on all item entities). `Container` component with `slots: Vec<Option<Entity>>` and `capacity: usize`. `ItemPickupRequest` and `ItemDropRequest` Bevy events (fired by `interactions`, read here). **Server systems:** `handle_item_interaction` reads `ItemPickupRequest`/`ItemDropRequest` events, validates range + item existence + container space, executes pickup (reparent + strip physics) or drop (deparent + restore physics + set position). **No client-side simulation** — clients apply `ItemEvent` messages from stream 3. | `handle_item_interaction`: `Update`, after `dispatch_interaction`, gated on `Server`. |
+| L6    | `interactions`  | **Unified interactions stream (stream 4).** Owns `InteractionRequest` wire enum and stream 4 registration (client→server). Client: `send_interaction` serialises requests. Server: `dispatch_interaction` drains stream 4 and handles all interaction types directly — tile toggle (validates, mutates `Tilemap`, broadcasts `TileMutated` on stream 1), item pickup (fires `ItemPickupRequest` for `items` module), item drop (fires `ItemDropRequest` for `items` module). **Raycast resolution (fixes #169).** `resolve_world_hits` system collects all `WorldHit` events per frame, picks closest to camera, emits `ResolvedHit`. **Default action system.** `default_interaction` reads left-click `ResolvedHit`; for items on floor, sends `InteractionRequest::ItemPickup`. **Extended context menu.** Action table gains: `Item` -> ["Pick up"]; `Tile(Floor)` while holding -> ["Drop", "Build Wall"]. | `resolve_world_hits`: `Update`, after `raycast_tiles` and `raycast_things`. `send_interaction`: `Update`, gated on `not(Headless)`. `dispatch_interaction`: `Update`, after stream drain, gated on `Server`. |
 | —     | `src/world_setup.rs` | **Item and container spawning.** Register item templates in `ThingRegistry`: can (kind 2), toolbox (kind 3). Spawn two cans and one toolbox in the pressurised chamber. Toolbox entity gets `Container { capacity: 6 }`. | `setup_world`: `OnEnter(InGame)`, gated on `Server`. |
 
 ### Not in this plan
@@ -166,7 +188,6 @@ modules/
     Cargo.toml
     src/
       lib.rs                     # Item, Container components.
-                                 #   ItemInteraction wire type (stream 5).
                                  #   ItemPickupRequest, ItemDropRequest events.
                                  #   Server: handle_item_interaction, pickup_item,
                                  #   drop_item helpers.
@@ -178,22 +199,28 @@ modules/
                                  #   spawn_player_creature.
                                  #   ItemEvent variants in ThingsStreamMessage.
                                  #   broadcast_item_event, handle_item_event.
+  tiles/
+    src/
+      lib.rs                     # MODIFIED — remove stream 4 registration,
+                                 #   TileToggle wire type, execute_tile_toggle,
+                                 #   handle_tile_toggle, TileToggleRequest,
+                                 #   TileMutated events. Retain Tilemap, tile
+                                 #   rendering, stream 1, apply_tile_mutation.
   interactions/
     src/
-      lib.rs                     # MODIFIED — default_interaction system for
-                                 #   left-click pickup. Extended action table
-                                 #   with item actions. ItemPickupRequest /
-                                 #   ItemDropRequest forwarding.
+      lib.rs                     # MODIFIED — owns stream 4 (InteractionRequest
+                                 #   wire enum). Client: send_interaction.
+                                 #   Server: dispatch_interaction (handles tile
+                                 #   toggle directly, fires ItemPickupRequest /
+                                 #   ItemDropRequest for items module).
+                                 #   default_interaction for left-click pickup.
+                                 #   resolve_world_hits for raycast priority.
   input/
     src/
       lib.rs                     # NO CHANGES
   network/
     src/
       lib.rs                     # NO CHANGES — stream infrastructure sufficient
-  physics/
-    src/
-      lib.rs                     # MODIFIED — re-export ConstantForce removal/
-                                 #   insertion helpers if needed
   atmospherics/
     src/
       lib.rs                     # NO CHANGES — pressure forces already apply
@@ -211,11 +238,14 @@ src/
 - **Root `Cargo.toml`:** Add `items` to workspace members and root
   `[dependencies]`
 - **`modules/items/Cargo.toml`:** New. Depends on `bevy`, `things` (for
-  `HandSlot`, `NetId`, `spawn_thing`), `network` (for `StreamSender`,
-  `StreamReader`, `StreamDef`), `physics` (for `RigidBody`, `Collider`,
-  `LinearVelocity`)
+  `HandSlot`, `NetId`, `spawn_thing`), `physics` (for `RigidBody`,
+  `Collider`, `LinearVelocity`)
 - **`modules/interactions/Cargo.toml`:** Add `items` (for
-  `ItemPickupRequest`, `ItemDropRequest`, `Item` component)
+  `ItemPickupRequest`, `ItemDropRequest`, `Item` component), `network`
+  (already present — for `StreamSender`, `StreamReader`, `StreamDef`
+  to own stream 4)
+- **`modules/tiles/Cargo.toml`:** Remove `input` dep if no longer needed
+  (raycast_tiles still uses `PointerAction` from `input`, so likely kept)
 - **`modules/things/Cargo.toml`:** No new deps — `HandSlot` is internal
 - **`src/main.rs`:** Add `ItemsPlugin` to both headless and client plugin
   chains (items module has both server and client systems)
@@ -307,15 +337,15 @@ on right-click):
 3. If entity has `Item` → fire `ItemPickupRequest { target: entity }`
 4. Future: other default actions for other entity types
 
-The `items` module reads `ItemPickupRequest`, resolves the entity's `NetId`,
-and sends `ItemInteraction::Pickup { target }` on stream 5.
+The `interactions` module handles this directly: it resolves the entity's
+`NetId` and sends `InteractionRequest::ItemPickup { target }` on stream 4.
 
 For drop: the context menu action table checks if the player is holding an
 item (hand container is non-empty) and the right-click target is a floor
 tile. If both conditions hold, "Drop" appears alongside "Build Wall" in the
-context menu. Selecting it fires `ItemDropRequest { drop_pos: Vec3 }` with
-the clicked floor's world position. The `items` module sends
-`ItemInteraction::Drop { hand_side, position }` on stream 5.
+context menu. Selecting it sends `InteractionRequest::ItemDrop { hand_side,
+position }` on stream 4. On the server, `dispatch_interaction` fires
+`ItemDropRequest` which the `items` module handles.
 
 ### Replication design
 
