@@ -38,6 +38,27 @@ struct LastBroadcast {
     velocity: Vec3,
 }
 
+/// Which hand a [`HandSlot`] anchor belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+pub enum HandSide {
+    Left,
+    Right,
+}
+
+/// Child entity anchor marking where a held item attaches.
+///
+/// Spawned as a child of every creature entity by the kind 0 [`ThingRegistry`]
+/// template. The items module will later add a `Container { capacity: 1 }` to
+/// this child once that component is defined.
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
+pub struct HandSlot {
+    pub side: HandSide,
+}
+
+/// Creature-local (local-space) offset from the creature origin to the hand anchor position.
+pub const HAND_OFFSET: Vec3 = Vec3::new(0.4, 0.5, 0.0);
+
 /// Marker component for the entity controlled by the local player.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
@@ -190,6 +211,8 @@ impl<S: States + Copy> ThingsPlugin<S> {
 impl<S: States + Copy> Plugin for ThingsPlugin<S> {
     fn build(&self, app: &mut App) {
         app.register_type::<Thing>();
+        app.register_type::<HandSide>();
+        app.register_type::<HandSlot>();
         app.register_type::<PlayerControlled>();
         app.register_type::<InputDirection>();
         app.register_type::<DisplayName>();
@@ -527,6 +550,64 @@ fn raycast_things(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that when a kind-0 SpawnThing event is triggered with a builder
+    /// that spawns a HandSlot child (as CreaturesPlugin does), the creature entity
+    /// ends up with a child entity carrying HandSlot { side: Right }.
+    #[test]
+    fn spawn_thing_kind_0_produces_hand_slot_child() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        // on_spawn_thing requires Assets<Mesh>; insert a bare resource to satisfy it.
+        app.insert_resource(Assets::<Mesh>::default());
+        app.init_resource::<ThingRegistry>();
+        app.add_observer(on_spawn_thing);
+
+        // Register a kind-0 builder that mirrors what CreaturesPlugin registers:
+        // spawn a HandSlot child on the creature entity.
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(0, |entity, _event, commands| {
+                commands.entity(entity).with_children(|parent| {
+                    parent.spawn((
+                        HandSlot {
+                            side: HandSide::Right,
+                        },
+                        Transform::from_translation(HAND_OFFSET),
+                    ));
+                });
+            });
+
+        let creature = app.world_mut().spawn_empty().id();
+        app.world_mut().trigger(SpawnThing {
+            entity: creature,
+            kind: 0,
+            position: Vec3::ZERO,
+        });
+        app.update();
+
+        let children = app
+            .world()
+            .entity(creature)
+            .get::<Children>()
+            .expect("creature should have at least one child after SpawnThing");
+
+        let hand_slot_child = children
+            .iter()
+            .find_map(|child| app.world().get::<HandSlot>(child));
+
+        let slot = hand_slot_child.expect("creature should have a HandSlot child entity");
+        assert_eq!(
+            slot.side,
+            HandSide::Right,
+            "HandSlot side should be Right"
+        );
     }
 }
 
