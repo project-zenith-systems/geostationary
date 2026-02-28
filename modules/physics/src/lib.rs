@@ -23,6 +23,25 @@ mod tests {
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
 
+    /// Build a headless `App` with physics, transform propagation, and a fixed
+    /// 60 Hz timestep. Uses default gravity (9.81 m/s² downward).
+    fn test_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            bevy::asset::AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            bevy::scene::ScenePlugin,
+            PhysicsPlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+            1.0 / 60.0,
+        )));
+        app.finish();
+        app
+    }
+
     /// Spike result: `ConstantForce` semantics in avian3d 0.5.
     ///
     /// Findings:
@@ -37,21 +56,9 @@ mod tests {
     ///   gradient is negligible).
     #[test]
     fn constant_force_persists_and_integrates() {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            TransformPlugin,
-            bevy::asset::AssetPlugin::default(),
-            bevy::mesh::MeshPlugin,
-            bevy::scene::ScenePlugin,
-            PhysicsPlugin,
-        ))
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-            1.0 / 60.0,
-        )));
+        let mut app = test_app();
         // Disable gravity so only ConstantForce contributes.
         app.insert_resource(avian3d::prelude::Gravity(Vec3::ZERO));
-        app.finish();
 
         // Spawn without ConstantForce initially.
         let entity = app
@@ -107,20 +114,8 @@ mod tests {
     ///   handling is required beyond the standard Bevy transform propagation.
     #[test]
     fn reparented_entity_follows_parent() {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            TransformPlugin,
-            bevy::asset::AssetPlugin::default(),
-            bevy::mesh::MeshPlugin,
-            bevy::scene::ScenePlugin,
-            PhysicsPlugin,
-        ))
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-            1.0 / 60.0,
-        )));
+        let mut app = test_app();
         app.insert_resource(avian3d::prelude::Gravity(Vec3::ZERO));
-        app.finish();
 
         // Spawn a stationary parent at (5, 3, 0) (no physics, no RigidBody).
         let parent = app
@@ -138,13 +133,11 @@ mod tests {
             ))
             .id();
 
-        // Remove physics components so the entity is purely transform-driven.
+        // Remove physics and reparent in one chain.
         app.world_mut()
             .entity_mut(child)
-            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
-
-        // Reparent the child; local Transform stays at the default (zero offset).
-        app.world_mut().entity_mut(child).insert(ChildOf(parent));
+            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>()
+            .insert(ChildOf(parent));
 
         // Two updates: the first processes the ChildOf insertion; the second
         // runs transform propagation and settles the GlobalTransform.
@@ -183,19 +176,7 @@ mod tests {
     ///   removal/re-insertion is sufficient to toggle physics on and off.
     #[test]
     fn deparented_entity_with_restored_physics_falls() {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            TransformPlugin,
-            bevy::asset::AssetPlugin::default(),
-            bevy::mesh::MeshPlugin,
-            bevy::scene::ScenePlugin,
-            PhysicsPlugin,
-        ))
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-            1.0 / 60.0,
-        )));
-        app.finish();
+        let mut app = test_app();
 
         // Spawn a dynamic entity elevated at y = 10.
         let entity = app
@@ -216,8 +197,8 @@ mod tests {
         // Remove physics and reparent — entity should stop falling.
         app.world_mut()
             .entity_mut(entity)
-            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
-        app.world_mut().entity_mut(entity).insert(ChildOf(parent));
+            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>()
+            .insert(ChildOf(parent));
 
         // Two updates confirm the entity does not fall while physics are absent.
         app.update();
@@ -230,12 +211,14 @@ mod tests {
         );
 
         // Deparent and restore physics.
-        app.world_mut().entity_mut(entity).remove::<ChildOf>();
-        app.world_mut().entity_mut(entity).insert((
-            RigidBody::Dynamic,
-            Collider::sphere(0.5),
-            GravityScale(1.0),
-        ));
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<ChildOf>()
+            .insert((
+                RigidBody::Dynamic,
+                Collider::sphere(0.5),
+                GravityScale(1.0),
+            ));
 
         // Two updates: Avian detects the new RigidBody on the first update and
         // advances the simulation by one fixed step on the second.
@@ -260,19 +243,7 @@ mod tests {
     ///   immediately resumes simulation (the entity acquires downward velocity).
     #[test]
     fn removing_and_reinserting_physics_does_not_panic() {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            TransformPlugin,
-            bevy::asset::AssetPlugin::default(),
-            bevy::mesh::MeshPlugin,
-            bevy::scene::ScenePlugin,
-            PhysicsPlugin,
-        ))
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-            1.0 / 60.0,
-        )));
-        app.finish();
+        let mut app = test_app();
 
         let entity = app
             .world_mut()
@@ -320,13 +291,15 @@ mod tests {
     /// Findings — `Visibility::Hidden` on a reparented entity:
     /// - `Visibility::Hidden` can be inserted on an entity after physics removal
     ///   and reparenting without errors.
-    /// - The component value is preserved across `app.update()` calls; no
-    ///   renderer or window plugin is required to set or read the component.
+    /// - Adding `VisibilityPlugin` enables visibility propagation; after
+    ///   `app.update()` the entity's `InheritedVisibility` becomes `false`,
+    ///   confirming the hidden flag propagates correctly even headlessly.
     /// - In a real scene this prevents the entity from being rendered while it
-    ///   is held (e.g. stored inside a container); the component only takes
-    ///   visual effect when a rendering backend is present.
+    ///   is held (e.g. stored inside a container).
     #[test]
     fn visibility_hidden_on_reparented_entity() {
+        // Built manually (not via test_app) because VisibilityPlugin must be
+        // added before app.finish().
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -335,6 +308,8 @@ mod tests {
             bevy::mesh::MeshPlugin,
             bevy::scene::ScenePlugin,
             PhysicsPlugin,
+            // Enable visibility propagation so InheritedVisibility is computed.
+            bevy::camera::visibility::VisibilityPlugin,
         ))
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
             1.0 / 60.0,
@@ -358,14 +333,11 @@ mod tests {
             ))
             .id();
 
-        // Remove physics, reparent, and hide.
+        // Remove physics, reparent, and hide — all in one chain.
         app.world_mut()
             .entity_mut(entity)
-            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
-        app.world_mut().entity_mut(entity).insert(ChildOf(parent));
-        app.world_mut()
-            .entity_mut(entity)
-            .insert(Visibility::Hidden);
+            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>()
+            .insert((ChildOf(parent), Visibility::Hidden));
 
         app.update();
 
@@ -376,6 +348,14 @@ mod tests {
             Visibility::Hidden,
             "expected Visibility::Hidden to be preserved, got {:?}",
             vis
+        );
+
+        // InheritedVisibility must be false — confirms the visibility system
+        // processed the hidden flag and would exclude this entity from rendering.
+        let inherited = app.world().get::<InheritedVisibility>(entity).unwrap();
+        assert!(
+            !inherited.get(),
+            "expected InheritedVisibility to be false for a hidden entity"
         );
     }
 
@@ -395,20 +375,7 @@ mod tests {
     ///   PhysicsPlugin               – avian3d PhysicsPlugins + gravity resource
     #[test]
     fn headless_physics_steps_with_gravity() {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            TransformPlugin,
-            bevy::asset::AssetPlugin::default(),
-            bevy::mesh::MeshPlugin,
-            bevy::scene::ScenePlugin,
-            PhysicsPlugin,
-        ))
-        // Fix the timestep so physics advances deterministically in tests.
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-            1.0 / 60.0,
-        )));
-        app.finish();
+        let mut app = test_app();
 
         let entity = app
             .world_mut()
