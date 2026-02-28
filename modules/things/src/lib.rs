@@ -56,7 +56,7 @@ pub struct HandSlot {
     pub side: HandSide,
 }
 
-/// World-space offset from the creature origin to the hand anchor position.
+/// Creature-local (local-space) offset from the creature origin to the hand anchor position.
 pub const HAND_OFFSET: Vec3 = Vec3::new(0.4, 0.5, 0.0);
 
 /// Marker component for the entity controlled by the local player.
@@ -599,7 +599,7 @@ mod tests {
 
         let hand_slot_child = children
             .iter()
-            .find_map(|child| app.world().entity(child).get::<HandSlot>());
+            .find_map(|child| app.world().get::<HandSlot>(child));
 
         let slot = hand_slot_child.expect("creature should have a HandSlot child entity");
         assert_eq!(
