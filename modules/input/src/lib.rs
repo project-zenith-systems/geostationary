@@ -18,6 +18,8 @@ pub struct PointerAction {
 /// types at this layer.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct WorldHit {
+    /// The mouse button that triggered this hit.
+    pub button: MouseButton,
     /// The entity that was hit (a tile entity, a thing entity, etc.).
     pub entity: Entity,
     /// The 3D world-space position of the hit point.
