@@ -53,19 +53,19 @@
    (camera), a small library of sound effects.
 
 5. **Doors** — The first full "content object" that exercises every
-   pipeline built in plans 1–4. A door is a Thing entity placed at a tile
-   position (the tile underneath is floor) with a GLTF model, open/close
-   animation, sound effects, a click interaction (open/close toggle),
-   networked state, and atmos integration (closed doors block gas flow
-   like walls, open doors allow it). Doors are placeable in the map editor
-   as entity spawn points. In a future arc, doors will be refactored into
-   the structures system. Proves that the content pipeline — model,
+   pipeline built in plans 1–4. A door is a regular entity placed at a
+   tile position (the tile underneath is floor) with a GLTF model,
+   open/close animation, sound effects, a click interaction (open/close
+   toggle), networked state, and atmos integration (closed doors block
+   gas flow like walls, open doors allow it). Doors are placeable in the
+   map editor as spawn points. In a future arc, doors will be refactored
+   into the structures system. Proves that the content pipeline — model,
    animation, sound, map placement, interaction, networking, simulation
-   coupling — works end to end. Requires: door entity type in the
-   `ThingRegistry` and map format, door model with open/close animation,
-   door interaction (click to toggle), server-authoritative door state
-   replicated to clients, atmos `GasGrid` treats closed doors as blocking
-   and open doors as passable, door sounds (open, close).
+   coupling — works end to end. Requires: door entity spawning in the map
+   loader, door model with open/close animation, door interaction (click
+   to toggle), server-authoritative door state replicated to clients,
+   atmos `GasGrid` treats closed doors as blocking and open doors as
+   passable, door sounds (open, close).
 
 ## Not in this arc
 
@@ -78,9 +78,9 @@
 - **Power grid or machines.** Lights are visual only — no power simulation,
   no APCs, no wiring. Lights are always on unless the tile is in vacuum.
   Power-dependent lighting is a future arc.
-- **Structures system.** Doors are Thing entities for now, not part of a
-  formal structures module. Refactoring doors (and future objects like
-  windows, airlocks, vents) into a structures system is a future arc.
+- **Structures system.** Doors are standalone entities for now, not part
+  of a formal structures module. Refactoring doors (and future objects
+  like windows, airlocks, vents) into a structures system is a future arc.
 - **Access control on doors.** Doors open for everyone. Keycards, job-locked
   doors, and hacking are future mechanics.
 - **Music or voice.** Sound is limited to spatial effects and ambient loops.
