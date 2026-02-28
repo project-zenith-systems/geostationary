@@ -24,7 +24,7 @@ re-insertion cleanly, or do we need to despawn/respawn?
 ## Add `button` field to `WorldHit` and fire raycasters on both buttons
 
 `modules/input/src/lib.rs`, `modules/things/src/lib.rs`,
-`modules/tiles/src/lib.rs`.
+`modules/tiles/src/lib.rs`, `modules/interactions/src/lib.rs`.
 
 - Add `button: MouseButton` field to `WorldHit` in the `input` module
 - Update `raycast_things` in `things` to fire on both left-click and
@@ -33,9 +33,13 @@ re-insertion cleanly, or do we need to despawn/respawn?
 - Update `raycast_tiles` in `tiles` with the same both-buttons change,
   passing `button` through to `WorldHit`
 - Update all existing `WorldHit` construction sites to include `button`
+- Update `build_context_menu` in `interactions` to filter to right-click
+  `WorldHit` only (currently it reads all `WorldHit` — once left-click
+  raycasts start firing, unfiltered reads would spawn context menus on
+  left-click)
 
-**Not included:** `ResolvedHit` or any interactions module changes (that
-comes in the interactions task).
+**Not included:** `ResolvedHit`, `default_interaction`, or other
+interactions module changes (those come in later tasks).
 
 **Depends on:** nothing.
 
@@ -48,13 +52,13 @@ comes in the interactions task).
 - New `HandSide` enum (`Left`, `Right`)
 - New `HandSlot { side: HandSide }` component
 - `spawn_player_creature` gains a child entity with
-  `HandSlot { side: Right }`, `Container { capacity: 1 }`, and
+  `HandSlot { side: Right }` and
   `Transform::from_translation(HAND_OFFSET)` — this is the named anchor
-  for held items
+  for held items (`Container { capacity: 1 }` is added later by the items
+  module task, since `Container` is defined there)
 - The kind 0 `ThingRegistry` template (creature) must also spawn the
   `HandSlot` child on the client side (so joining clients reconstruct it)
-- Unit tests: creature spawn produces a child entity with `HandSlot` and
-  `Container { capacity: 1 }`
+- Unit tests: creature spawn produces a child entity with `HandSlot`
 
 **Not included:** `ItemEvent` variants, `broadcast_item_event`,
 `handle_item_event`, `StateUpdate` exclusion (those come in later tasks).
@@ -74,9 +78,20 @@ New module: `modules/items/`.
 - `Container { capacity: usize, slots: Vec<Option<Entity>> }` component
 - `StashedPhysics { collider: Collider, gravity: GravityScale }` component
 - `ItemPickupRequest`, `ItemDropRequest`, `ItemStoreRequest`,
-  `ItemTakeRequest` Bevy events
+  `ItemTakeRequest` Bevy events (inbound requests)
+- `ItemActionEvent` Bevy message — **defined in `things`** (not `items`)
+  to avoid a circular crate dependency, since `items` already depends on
+  `things`. Variants use `Entity` and `Vec3` only — no item-specific types.
+  The items module imports and fires it after each successful operation;
+  `broadcast_item_event` in `things` reads it.
+- `InteractionRange(pub f32)` resource — the items module defines it;
+  `src/main.rs` inserts it from `AppConfig` at startup (avoids circular
+  dependency between workspace module and root crate)
+- Add `Container { capacity: 1 }` to every `HandSlot` entity (reactive
+  system in `Update` that queries `Added<HandSlot>` — hand entities are
+  spawned at runtime when players connect, not at startup)
 - Server system `handle_item_interaction` — reads all four request events,
-  validates `interaction_range` + item existence + container space, executes:
+  validates `InteractionRange` + item existence + container space, executes:
   - Pickup: stash physics, remove physics components, reparent to HandSlot,
     update Container
   - Drop: restore physics from StashedPhysics (not ConstantForce), deparent,
@@ -106,9 +121,9 @@ menu actions. The items module is server-side logic only in this task.
   - `Stored { item: NetId, container: NetId }`
   - `Taken { item: NetId, holder: NetId }`
 - Server-side `broadcast_item_event` system — runs after
-  `handle_item_interaction`, reads a Bevy event (fired by the items module
-  after each successful operation), sends `ItemEvent` on stream 3 to all
-  clients
+  `handle_item_interaction`, reads `ItemActionEvent` messages (fired by the
+  items module after each successful operation), sends `ItemEvent` on
+  stream 3 to all clients
 - Client-side `handle_item_event` system — drains `ItemEvent` from stream 3,
   applies reparenting/deparenting, strips/restores physics components, sets
   visibility, updates local `Container.slots` on both hand and target
@@ -123,13 +138,17 @@ menu actions. The items module is server-side logic only in this task.
 
 **Plan:** `plan/networked-items` · [docs/plans/networked-items.md](docs/plans/networked-items.md)
 
-## Item spawning and `InteractionConfig`
+## Item spawning and config
 
-`src/world_setup.rs`, `src/config.rs`.
+`modules/items/src/lib.rs`, `src/world_setup.rs`, `src/config.rs`,
+`src/main.rs`.
 
-- Add `InteractionConfig { interaction_range: f32 }` section to `AppConfig`
-  in `src/config.rs`, default `2.0`
-- Register item templates in `ThingRegistry`:
+- Add `interaction_range: f32` field (default `2.0`) to a new
+  `InteractionConfig` section in `AppConfig` (`src/config.rs`)
+- In `src/main.rs`, read `AppConfig.interaction.interaction_range` and
+  insert `InteractionRange(value)` resource (defined in items module)
+- **Template registration** happens in `ItemsPlugin::build()` (not in a
+  runtime system) — register item templates in `ThingRegistry`:
   - Kind 2 (can): small cylinder mesh, metallic material,
     `Collider::cylinder(0.15, 0.1)`, `RigidBody::Dynamic`,
     `GravityScale(1.0)`, `Item` marker, `Name::new("Can")`
@@ -137,7 +156,8 @@ menu actions. The items module is server-side logic only in this task.
     `Collider::cuboid(0.3, 0.15, 0.2)`, `RigidBody::Dynamic`,
     `GravityScale(1.0)`, `Item` marker, `Name::new("Toolbox")`,
     `Container { capacity: 6 }`
-- Spawn two cans and one toolbox in the pressurised chamber
+- **Item spawning** happens in `setup_world` (`src/world_setup.rs`) —
+  spawn two cans and one toolbox in the pressurised chamber
 - Toolbox spawns pre-loaded with one can inside it: can entity ref in
   `Container.slots[0]`, `Visibility::Hidden`, `StashedPhysics`, no
   `RigidBody`/`Collider`/`LinearVelocity`
@@ -167,7 +187,9 @@ menu actions. The items module is server-side logic only in this task.
   `apply_tile_mutation`). For item operations, fires the corresponding
   Bevy events (`ItemPickupRequest`, `ItemDropRequest`, `ItemStoreRequest`,
   `ItemTakeRequest`).
-- Add `items` dependency to `modules/interactions/Cargo.toml`
+- Add `items` and `tiles` dependencies to `modules/interactions/Cargo.toml`
+  (`tiles` needed for `Tilemap`, `TileKind`, `TileMutated`,
+  `StreamSender<TilesStreamMessage>`)
 - Unit test: `dispatch_interaction` handles `TileToggle` correctly
   (existing tile-toggle behaviour preserved after migration)
 
