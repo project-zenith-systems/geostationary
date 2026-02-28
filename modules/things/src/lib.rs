@@ -503,10 +503,6 @@ fn raycast_things(
     };
 
     for action in pointer_action_reader.read() {
-        if action.button != MouseButton::Right {
-            continue;
-        }
-
         let Ok(ray) = camera.viewport_to_world(camera_transform, action.screen_pos) else {
             continue;
         };
@@ -521,6 +517,7 @@ fn raycast_things(
             if things.get(hit.entity).is_ok() {
                 let world_pos = ray.origin + *ray.direction * hit.distance;
                 hit_writer.write(WorldHit {
+                    button: action.button,
                     entity: hit.entity,
                     world_pos,
                 });

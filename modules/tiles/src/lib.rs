@@ -542,10 +542,6 @@ fn raycast_tiles(
     let Ok((camera, cam_transform)) = camera_query.single() else { return };
 
     for action in pointer_events.read() {
-        if action.button != MouseButton::Right {
-            continue;
-        }
-
         let Ok(ray) = camera.viewport_to_world(cam_transform, action.screen_pos) else {
             continue;
         };
@@ -570,7 +566,7 @@ fn raycast_tiles(
 
         if tilemap.get(grid_pos).is_some() {
             if let Some((entity, _)) = tile_query.iter().find(|(_, t)| t.position == grid_pos) {
-                hit_events.write(WorldHit { entity, world_pos });
+                hit_events.write(WorldHit { button: action.button, entity, world_pos });
             }
         }
     }

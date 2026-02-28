@@ -46,8 +46,12 @@ fn build_context_menu(
     active_menu: Option<Res<ActiveMenu>>,
     theme: Res<UiTheme>,
 ) {
-    // Collect hits to avoid borrowing issues inside the loop.
-    let hits: Vec<WorldHit> = hit_events.read().copied().collect();
+    // Collect right-click hits to avoid borrowing issues inside the loop.
+    let hits: Vec<WorldHit> = hit_events
+        .read()
+        .copied()
+        .filter(|h| h.button == MouseButton::Right)
+        .collect();
     if hits.is_empty() {
         return;
     }
@@ -231,6 +235,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<Messages<WorldHit>>()
             .write(WorldHit {
+                button: MouseButton::Right,
                 entity: tile_entity,
                 world_pos: Vec3::new(1.0, 0.0, 1.0),
             });
@@ -265,6 +270,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<Messages<WorldHit>>()
             .write(WorldHit {
+                button: MouseButton::Right,
                 entity: non_tile,
                 world_pos: Vec3::ZERO,
             });
@@ -275,6 +281,47 @@ mod tests {
         assert!(
             !app.world().contains_resource::<ActiveMenu>(),
             "ActiveMenu resource should NOT be present for a non-tile hit"
+        );
+    }
+
+    /// Verifies that [`build_context_menu`] ignores left-click [`WorldHit`] events.
+    #[test]
+    fn build_context_menu_ignores_left_click_hit() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<WorldHit>();
+        app.add_message::<ContextMenuAction>();
+        app.add_message::<TileToggleRequest>();
+        app.init_resource::<UiTheme>();
+
+        // Spawn a wall tile entity.
+        let tile_entity = app
+            .world_mut()
+            .spawn(Tile {
+                position: IVec2::new(1, 1),
+            })
+            .id();
+
+        // Insert a tilemap with that tile as a wall.
+        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        tilemap.set(IVec2::new(1, 1), TileKind::Wall);
+        app.insert_resource(tilemap);
+
+        // Emit a left-click WorldHit targeting the tile entity.
+        app.world_mut()
+            .resource_mut::<Messages<WorldHit>>()
+            .write(WorldHit {
+                button: MouseButton::Left,
+                entity: tile_entity,
+                world_pos: Vec3::new(1.0, 0.0, 1.0),
+            });
+
+        app.add_systems(Update, build_context_menu);
+        app.update();
+
+        assert!(
+            !app.world().contains_resource::<ActiveMenu>(),
+            "ActiveMenu resource should NOT be present for a left-click WorldHit"
         );
     }
 
