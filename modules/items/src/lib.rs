@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use network::Server;
 use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
 use things::{HandSlot, ItemActionEvent};
 
@@ -153,15 +154,15 @@ fn init_hand_containers(mut commands: Commands, query: Query<Entity, Added<HandS
 ///
 /// For each request it:
 /// 1. Validates that all referenced entities exist and constraints are met
-///    (range, space, item marker, stashed physics for drop).
+///    (range, space, item marker, physics presence, stashed physics for drop).
 /// 2. Executes the operation via `Commands`.
 /// 3. Fires an [`ItemActionEvent`] so other systems (e.g. replication) can react.
 ///
 /// Validation failures are logged as warnings and the request is silently
 /// dropped — no error is sent back to the client in this iteration.
 ///
-/// The system runs unconditionally; on the client no request messages will be
-/// written so it is effectively a no-op there.
+/// The system is gated on [`Server`] so it only runs in server builds; on
+/// clients no request messages will be written and the resource is absent.
 #[allow(clippy::too_many_arguments)]
 fn handle_item_interaction(
     mut commands: Commands,
@@ -259,7 +260,8 @@ fn handle_item_interaction(
                 gravity: *gravity,
             })
             .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>()
-            .insert(ChildOf(hand_entity));
+            // Reset local transform so the item aligns with the hand anchor.
+            .insert((Transform::IDENTITY, ChildOf(hand_entity)));
 
         // Update hand container immediately (before commands are applied).
         if let Ok(mut container) = containers.get_mut(hand_entity) {
@@ -420,16 +422,23 @@ fn handle_item_interaction(
         };
 
         // Validate: item must be in the specified container.
-        let in_container = containers
-            .get(req.container)
-            .map(|c| c.contains(req.item))
-            .unwrap_or(false);
-        if !in_container {
-            warn!(
-                "ItemTakeRequest: item {:?} is not in container {:?}",
-                req.item, req.container
-            );
-            continue;
+        match containers.get(req.container) {
+            Ok(container) => {
+                if !container.contains(req.item) {
+                    warn!(
+                        "ItemTakeRequest: item {:?} is not in container {:?}",
+                        req.item, req.container
+                    );
+                    continue;
+                }
+            }
+            Err(_) => {
+                warn!(
+                    "ItemTakeRequest: entity {:?} has no Container component (requested as container for item {:?})",
+                    req.container, req.item
+                );
+                continue;
+            }
         }
 
         // Validate: actor must have a hand with space.
@@ -491,10 +500,10 @@ fn handle_item_interaction(
                 .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
         }
 
-        // Show and reparent to hand.
+        // Show and reparent to hand, resetting local transform to the hand anchor.
         commands
             .entity(req.item)
-            .insert((Visibility::Inherited, ChildOf(hand_entity)));
+            .insert((Visibility::Inherited, Transform::IDENTITY, ChildOf(hand_entity)));
         if let Ok(mut hand_container) = containers.get_mut(hand_entity) {
             hand_container.insert(req.item);
         }
@@ -577,7 +586,13 @@ impl Plugin for ItemsPlugin {
 
         app.init_resource::<InteractionRange>();
 
-        app.add_systems(Update, (init_hand_containers, handle_item_interaction));
+        app.add_systems(
+            Update,
+            (
+                init_hand_containers,
+                handle_item_interaction.run_if(resource_exists::<Server>),
+            ),
+        );
     }
 }
 

@@ -7,3 +7,4 @@ edition = "2024"
 bevy = { workspace = true }
 things = { path = "../things" }
 physics = { path = "../physics" }
+network = { path = "../network" }
