@@ -14,29 +14,35 @@
    wall, airlock placeholder) and save the result. The server loads a map
    file on startup and replicates it to clients via the existing tilemap
    stream. The hardcoded test room in `world_setup.rs` is replaced by a
-   default map file. Requires: a map file format (RON), an editor UI overlay
-   with tile palette and save/load controls, a map loader that feeds
-   `Tilemap` on the server, item spawn points defined in map data.
+   default map file. Item spawn points (type and position) are defined in
+   the map data and placeable in the editor. Requires: a map file format
+   (RON), an editor UI overlay with tile palette, item placement, and
+   save/load controls, a map loader that feeds `Tilemap` and spawns items
+   on the server.
 
 2. **Character models & animation** — Player creatures are rigged GLTF
    models with walk, idle, and hold-item animation states. The capsule
    placeholder is replaced. An animation state machine transitions between
-   states based on movement velocity and hand contents. The GLTF loading
-   pattern established here becomes the standard for all future 3D assets.
-   Requires: GLTF asset loading integrated with `ThingRegistry`, an
-   animation controller system (L0), creature template updated to reference
-   a model asset, hand anchor (`HandSlot`) repositioned to match the
-   model's hand bone, animation state replication so other clients see the
-   correct animation.
+   states based on movement velocity and hand contents. Animation state is
+   replicated so all clients see the correct animation on every character.
+   The GLTF loading pattern established here becomes the standard for all
+   future 3D assets. Requires: GLTF asset loading integrated with
+   `ThingRegistry`, an animation controller system (L0), creature template
+   updated to reference a model asset, hand anchor (`HandSlot`)
+   repositioned to match the model's hand bone, animation state replicated
+   via stream 3 (small enum: idle/walk/hold).
 
 3. **Tile art & lighting** — Floor and wall tiles use textured 3D meshes or
    materials instead of solid-colour primitives. Wall variants (corners,
    T-junctions, end caps) are selected automatically based on neighbour
-   connectivity. A basic lighting system provides ambient station lighting
-   and darkness in unpowered or breached areas. Requires: tile mesh/material
-   assets, an auto-tiling system that reads neighbour data from `Tilemap`,
-   a lighting grid or per-tile light component, integration with the map
-   editor (painted tiles use the new art).
+   connectivity. Ambient lighting gives the station a baseline lit
+   appearance. Dynamic light sources can be placed per-tile in the editor
+   with placeholder models, providing localised illumination. Breached or
+   vacuum areas are dark. Requires: tile mesh/material assets, an
+   auto-tiling system that reads neighbour data from `Tilemap`, an ambient
+   lighting model, per-tile placeable light entities with placeholder
+   meshes, integration with the map editor (painted tiles use the new art,
+   lights are placeable).
 
 4. **Sound & ambience** — Interactions and environment produce spatial
    audio. Footsteps, item pickup/drop, wall break, decompression whoosh,
@@ -66,9 +72,9 @@
   All characters use the same model.
 - **Item-specific animations.** Items display in-hand but the character has
   a single generic hold pose, not per-item animations.
-- **Power grid or machines.** Lighting is visual only — no power simulation,
-  no APCs, no wiring. Darkness is placed in the editor or caused by breach,
-  not by power failure.
+- **Power grid or machines.** Lights are visual only — no power simulation,
+  no APCs, no wiring. Lights are always on unless the tile is in vacuum.
+  Power-dependent lighting is a future arc.
 - **Access control on doors.** Doors open for everyone. Keycards, job-locked
   doors, and hacking are future mechanics.
 - **Music or voice.** Sound is limited to spatial effects and ambient loops.
