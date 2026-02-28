@@ -525,7 +525,7 @@ fn send_tilemap_on_connect(
     }
 }
 
-/// System that listens for right-click [`PointerAction`] events, raycasts from the
+/// System that listens for left-click and right-click [`PointerAction`] events, raycasts from the
 /// camera through the screen position to the ground plane (y = 0), and emits a
 /// [`WorldHit`] event carrying the hit tile entity and world position if a valid
 /// tile exists at the resulting grid coordinate.
@@ -542,6 +542,10 @@ fn raycast_tiles(
     let Ok((camera, cam_transform)) = camera_query.single() else { return };
 
     for action in pointer_events.read() {
+        if !matches!(action.button, MouseButton::Left | MouseButton::Right) {
+            continue;
+        }
+
         let Ok(ray) = camera.viewport_to_world(cam_transform, action.screen_pos) else {
             continue;
         };

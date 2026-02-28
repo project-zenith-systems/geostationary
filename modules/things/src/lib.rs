@@ -489,8 +489,8 @@ fn broadcast_state(
     }
 }
 
-/// Listens for right-click [`PointerAction`] events, raycasts against entity colliders
-/// via [`SpatialQuery`], and emits [`WorldHit`] for the nearest hit thing entity.
+/// Listens for left-click and right-click [`PointerAction`] events, raycasts against entity
+/// colliders via [`SpatialQuery`], and emits [`WorldHit`] for the nearest hit thing entity.
 fn raycast_things(
     mut pointer_action_reader: MessageReader<PointerAction>,
     spatial_query: SpatialQuery,
@@ -503,6 +503,10 @@ fn raycast_things(
     };
 
     for action in pointer_action_reader.read() {
+        if !matches!(action.button, MouseButton::Left | MouseButton::Right) {
+            continue;
+        }
+
         let Ok(ray) = camera.viewport_to_world(camera_transform, action.screen_pos) else {
             continue;
         };
