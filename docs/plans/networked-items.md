@@ -130,14 +130,14 @@ Client                          Server                          Other clients
 
 **Raycast priority (fixes #169).** Both `raycast_tiles` and
 `raycast_things` fire independently and may emit `WorldHit` for the same
-click. The `interactions` module resolves conflicts by comparing
-`world_pos.y` (or distance to camera) — the closest hit wins. This is
-implemented as a `resolve_world_hits` system that collects all `WorldHit`
-events in a frame and emits a single `ResolvedHit` event. Downstream
-systems (`build_context_menu`, `default_interaction`) read `ResolvedHit`
-instead of `WorldHit` directly. This solves #169 generically — any future
-raycaster (items, machines) just emits `WorldHit` and the resolution logic
-handles priority.
+click. The `interactions` module resolves conflicts by comparing the
+distance from the camera to each hit — the smallest camera-to-hit distance
+wins. This is implemented as a `resolve_world_hits` system that collects
+all `WorldHit` events in a frame and emits a single `ResolvedHit` event.
+Downstream systems (`build_context_menu`, `default_interaction`) read
+`ResolvedHit` instead of `WorldHit` directly. This solves #169 generically —
+any future raycaster (items, machines) just emits `WorldHit` and the
+resolution logic handles priority.
 
 **Stream architecture (changes in bold):**
 
@@ -509,7 +509,7 @@ future concern but not implemented.
 
 ### Testing strategy
 
-Unit tests follow [docs/testing-strategy.md](testing-strategy.md) and use
+Unit tests follow [docs/testing-strategy.md](../testing-strategy.md) and use
 Arrange–Act–Assert throughout.
 
 **Items module tests (server-side logic):**
