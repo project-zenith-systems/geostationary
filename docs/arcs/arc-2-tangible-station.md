@@ -4,21 +4,21 @@
 > test room. Characters are animated 3D models, items have distinct meshes,
 > tiles are textured, interactions produce spatial audio, and doors open and
 > close with full model/animation/sound/networking/atmos integration. A
-> content creator can paint a station layout in-game, save it, and load it
-> on the server.
+> content creator can paint a station layout in an offline editor, save it
+> as a map file, and load it on the server.
 
 ## Plans
 
 1. **Map authoring & loading** — Station layouts are data files, not code.
-   An in-game paint-mode editor lets a player place and remove tiles (floor,
-   wall, airlock placeholder) and save the result. The server loads a map
-   file on startup and replicates it to clients via the existing tilemap
-   stream. The hardcoded test room in `world_setup.rs` is replaced by a
-   default map file. Item spawn points (type and position) are defined in
-   the map data and placeable in the editor. Requires: a map file format
-   (RON), an editor UI overlay with tile palette, item placement, and
-   save/load controls, a map loader that feeds `Tilemap` and spawns items
-   on the server.
+   An offline editor mode (no server running) lets a user paint tiles
+   (floor, wall, airlock placeholder), place item spawn points, and save
+   the result as a RON map file. The server loads a map file on startup,
+   builds the `Tilemap`, spawns items, and replicates to clients via the
+   existing tilemap stream. The hardcoded test room in `world_setup.rs` is
+   replaced by a default map file. Requires: a map file format (RON), an
+   offline editor mode with tile palette, item placement, and save/load
+   controls, a map loader that feeds `Tilemap` and spawns items on the
+   server.
 
 2. **Character models & animation** — Player creatures are rigged GLTF
    models with walk, idle, and hold-item animation states. The capsule
@@ -53,16 +53,19 @@
    (camera), a small library of sound effects.
 
 5. **Doors** — The first full "content object" that exercises every
-   pipeline built in plans 1–4. A door is a map-placed tile type with a
-   GLTF model, open/close animation, sound effects, a click interaction
-   (open/close toggle), networked state, and atmos integration (closed
-   doors block gas flow like walls, open doors allow it). Proves that the
-   content pipeline — model, animation, sound, map placement, interaction,
-   networking, simulation coupling — works end to end. Requires: door tile
-   type in the map format and editor, door model with open/close animation,
+   pipeline built in plans 1–4. A door is a Thing entity placed at a tile
+   position (the tile underneath is floor) with a GLTF model, open/close
+   animation, sound effects, a click interaction (open/close toggle),
+   networked state, and atmos integration (closed doors block gas flow
+   like walls, open doors allow it). Doors are placeable in the map editor
+   as entity spawn points. In a future arc, doors will be refactored into
+   the structures system. Proves that the content pipeline — model,
+   animation, sound, map placement, interaction, networking, simulation
+   coupling — works end to end. Requires: door entity type in the
+   `ThingRegistry` and map format, door model with open/close animation,
    door interaction (click to toggle), server-authoritative door state
-   replicated to clients, atmos `GasGrid` treats closed doors as walls and
-   open doors as passable, door sounds (open, close).
+   replicated to clients, atmos `GasGrid` treats closed doors as blocking
+   and open doors as passable, door sounds (open, close).
 
 ## Not in this arc
 
@@ -75,6 +78,9 @@
 - **Power grid or machines.** Lights are visual only — no power simulation,
   no APCs, no wiring. Lights are always on unless the tile is in vacuum.
   Power-dependent lighting is a future arc.
+- **Structures system.** Doors are Thing entities for now, not part of a
+  formal structures module. Refactoring doors (and future objects like
+  windows, airlocks, vents) into a structures system is a future arc.
 - **Access control on doors.** Doors open for everyone. Keycards, job-locked
   doors, and hacking are future mechanics.
 - **Music or voice.** Sound is limited to spatial effects and ambient loops.
