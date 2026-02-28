@@ -18,6 +18,7 @@ members = [
     "modules/souls",
     "modules/input",
     "modules/interactions",
+    "modules/items",
 ]
 
 [profile.dev]
@@ -59,3 +60,4 @@ atmospherics = { path = "modules/atmospherics" }
 souls = { path = "modules/souls" }
 input = { path = "modules/input" }
 interactions = { path = "modules/interactions" }
+items = { path = "modules/items" }

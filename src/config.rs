@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub debug: DebugConfig,
     pub atmospherics: AtmosphericsConfig,
     pub souls: SoulsConfig,
+    pub items: ItemsConfig,
 }
 
 impl Default for AppConfig {
@@ -33,6 +34,9 @@ impl Default for AppConfig {
             },
             souls: SoulsConfig {
                 player_name: "Player".to_string(),
+            },
+            items: ItemsConfig {
+                interaction_range: 2.0,
             },
         }
     }
@@ -67,6 +71,12 @@ pub struct SoulsConfig {
     pub player_name: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ItemsConfig {
+    /// Maximum world-space distance for item interactions (pickup, store, take).
+    pub interaction_range: f32,
+}
+
 pub fn load_config() -> AppConfig {
     match load_config_inner() {
         Ok(config) => config,
@@ -98,6 +108,10 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
             defaults.atmospherics.diffusion_rate as f64,
         )?
         .set_default("souls.player_name", defaults.souls.player_name)?
+        .set_default(
+            "items.interaction_range",
+            defaults.items.interaction_range as f64,
+        )?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
         .add_source(Environment::with_prefix("GEOSTATIONARY").separator("__"));

@@ -3,6 +3,7 @@ use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use input::InputPlugin;
 use interactions::{ContextMenuAction, InteractionsPlugin};
+use items::{InteractionRange, ItemsPlugin};
 use main_menu::{MainMenuPlugin, MenuEvent};
 use network::{Headless, NetCommand, NetworkPlugin};
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};
@@ -64,6 +65,8 @@ fn main() {
             .add_plugins(souls::SoulsPlugin)
             .add_plugins(world_setup::WorldSetupPlugin)
             .add_plugins(server::ServerPlugin)
+            .add_plugins(ItemsPlugin)
+            .insert_resource(InteractionRange(app_config.items.interaction_range))
             .insert_state(app_state::AppState::InGame)
             .add_systems(Startup, host_on_startup);
     } else {
@@ -107,6 +110,8 @@ fn main() {
             .add_plugins(InteractionsPlugin::<app_state::AppState>::in_state(
                 app_state::AppState::InGame,
             ))
+            .add_plugins(ItemsPlugin)
+            .insert_resource(InteractionRange(app_config.items.interaction_range))
             .init_state::<app_state::AppState>();
     }
 
