@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use physics::{GravityScale, LinearVelocity, LockedAxes};
-use things::{InputDirection, ThingRegistry};
+use things::{HandSide, HandSlot, InputDirection, ThingRegistry, HAND_OFFSET};
 
 /// Marker component for creatures - entities that can move and act in the world.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
@@ -42,6 +42,14 @@ impl Plugin for CreaturesPlugin {
                     LockedAxes::ROTATION_LOCKED.lock_translation_y(),
                     GravityScale(0.0),
                 ));
+                commands.entity(entity).with_children(|parent| {
+                    parent.spawn((
+                        HandSlot {
+                            side: HandSide::Right,
+                        },
+                        Transform::from_translation(HAND_OFFSET),
+                    ));
+                });
             });
     }
 }
