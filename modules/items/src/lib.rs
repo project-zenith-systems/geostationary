@@ -10,13 +10,15 @@ use things::{HandSlot, ItemActionEvent};
 #[reflect(Component)]
 pub struct Item;
 
-/// Inventory container component.  Holds up to `capacity` item entities in its
+/// Inventory container component.  Holds up to `capacity()` item entities in its
 /// slot list.  Added automatically to every [`HandSlot`] entity by
 /// [`init_hand_containers`].
+///
+/// The number of slots is the authoritative capacity; `capacity()` derives from
+/// `slots.len()` to avoid any possibility of the two values diverging.
 #[derive(Component, Debug, Clone, Reflect)]
 #[reflect(Component)]
 pub struct Container {
-    pub capacity: usize,
     pub slots: Vec<Option<Entity>>,
 }
 
@@ -24,9 +26,13 @@ impl Container {
     /// Create an empty container with the given capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            capacity,
             slots: vec![None; capacity],
         }
+    }
+
+    /// The maximum number of items this container can hold (`slots.len()`).
+    pub fn capacity(&self) -> usize {
+        self.slots.len()
     }
 
     /// Returns `true` if at least one slot is empty.
@@ -168,7 +174,15 @@ fn handle_item_interaction(
     children: Query<&Children>,
     hand_slot_q: Query<Entity, With<HandSlot>>,
     mut containers: Query<&mut Container>,
-    items_q: Query<(Option<&Collider>, Option<&GravityScale>, Option<&StashedPhysics>), With<Item>>,
+    items_q: Query<
+        (
+            Option<&Collider>,
+            Option<&GravityScale>,
+            Option<&StashedPhysics>,
+            Option<&ChildOf>,
+        ),
+        With<Item>,
+    >,
     mut action_events: MessageWriter<ItemActionEvent>,
 ) {
     let range = interaction_range.0;
@@ -182,8 +196,31 @@ fn handle_item_interaction(
     // ── Pickup ────────────────────────────────────────────────────────────────
     for req in pickups {
         // Validate: item must have Item component.
-        let Ok((maybe_collider, maybe_gravity, _)) = items_q.get(req.item) else {
+        let Ok((maybe_collider, maybe_gravity, maybe_stash, maybe_parent)) =
+            items_q.get(req.item)
+        else {
             warn!("ItemPickupRequest: entity {:?} is not an Item", req.item);
+            continue;
+        };
+
+        // Validate: item must not already be held / stashed.
+        if maybe_stash.is_some() || maybe_parent.is_some() {
+            warn!(
+                "ItemPickupRequest: item {:?} is already held or parented — ignoring",
+                req.item
+            );
+            continue;
+        }
+
+        // Validate: item must have its own Collider and GravityScale so that
+        // physics can be faithfully stashed and restored.  Fabricating defaults
+        // here would make an originally non-physical item become a dynamic
+        // rigid body after a pickup/drop cycle.
+        let (Some(collider), Some(gravity)) = (maybe_collider, maybe_gravity) else {
+            warn!(
+                "ItemPickupRequest: item {:?} is missing Collider or GravityScale — cannot stash physics",
+                req.item
+            );
             continue;
         };
 
@@ -215,11 +252,12 @@ fn handle_item_interaction(
         };
 
         // Stash physics and reparent.
-        let collider = maybe_collider.cloned().unwrap_or_else(|| Collider::capsule(0.3, 0.5));
-        let gravity = maybe_gravity.copied().unwrap_or(GravityScale(1.0));
         commands
             .entity(req.item)
-            .insert(StashedPhysics { collider, gravity })
+            .insert(StashedPhysics {
+                collider: collider.clone(),
+                gravity: *gravity,
+            })
             .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>()
             .insert(ChildOf(hand_entity));
 
@@ -237,7 +275,7 @@ fn handle_item_interaction(
     // ── Drop ──────────────────────────────────────────────────────────────────
     for req in drops {
         // Validate: item must have Item component with StashedPhysics.
-        let Ok((_, _, maybe_stash)) = items_q.get(req.item) else {
+        let Ok((_, _, maybe_stash, _)) = items_q.get(req.item) else {
             warn!("ItemDropRequest: entity {:?} is not an Item", req.item);
             continue;
         };
@@ -248,6 +286,20 @@ fn handle_item_interaction(
             );
             continue;
         };
+
+        // Validate: drop_position must be within interaction range of the actor.
+        let Ok(actor_gt) = transforms.get(req.actor) else {
+            warn!("ItemDropRequest: actor {:?} has no GlobalTransform", req.actor);
+            continue;
+        };
+        let drop_distance = actor_gt.translation().distance(req.drop_position);
+        if drop_distance > range {
+            warn!(
+                "ItemDropRequest: drop_position {:?} is out of range ({:.2} > {:.2})",
+                req.drop_position, drop_distance, range
+            );
+            continue;
+        }
 
         // Find the hand slot container that holds this item.
         let Some(hand_entity) =
@@ -305,15 +357,26 @@ fn handle_item_interaction(
             continue;
         };
 
-        // Validate: distance to target container.
-        if let (Ok(actor_gt), Ok(container_gt)) =
-            (transforms.get(req.actor), transforms.get(req.container))
-        {
-            let distance = actor_gt.translation().distance(container_gt.translation());
-            if distance > range {
+        // Validate: distance to target container — both transforms are required.
+        match (
+            transforms.get(req.actor),
+            transforms.get(req.container),
+        ) {
+            (Ok(actor_gt), Ok(container_gt)) => {
+                let distance = actor_gt.translation().distance(container_gt.translation());
+                if distance > range {
+                    warn!(
+                        "ItemStoreRequest: container {:?} is out of range ({:.2} > {:.2})",
+                        req.container, distance, range
+                    );
+                    continue;
+                }
+            }
+            (actor_res, container_res) => {
                 warn!(
-                    "ItemStoreRequest: container {:?} is out of range ({:.2} > {:.2})",
-                    req.container, distance, range
+                    "ItemStoreRequest: missing GlobalTransform (actor missing: {}, container missing: {}) — rejecting",
+                    actor_res.is_err(),
+                    container_res.is_err()
                 );
                 continue;
             }
@@ -351,10 +414,10 @@ fn handle_item_interaction(
     // ── Take ──────────────────────────────────────────────────────────────────
     for req in takes {
         // Validate: item must be an Item.
-        if items_q.get(req.item).is_err() {
+        let Ok((maybe_collider, maybe_gravity, _, _)) = items_q.get(req.item) else {
             warn!("ItemTakeRequest: entity {:?} is not an Item", req.item);
             continue;
-        }
+        };
 
         // Validate: item must be in the specified container.
         let in_container = containers
@@ -380,24 +443,55 @@ fn handle_item_interaction(
             continue;
         };
 
-        // Validate: distance to container.
-        if let (Ok(actor_gt), Ok(container_gt)) =
-            (transforms.get(req.actor), transforms.get(req.container))
-        {
-            let distance = actor_gt.translation().distance(container_gt.translation());
-            if distance > range {
+        // Validate: distance to container — both transforms are required.
+        match (
+            transforms.get(req.actor),
+            transforms.get(req.container),
+        ) {
+            (Ok(actor_gt), Ok(container_gt)) => {
+                let distance = actor_gt.translation().distance(container_gt.translation());
+                if distance > range {
+                    warn!(
+                        "ItemTakeRequest: container {:?} is out of range ({:.2} > {:.2})",
+                        req.container, distance, range
+                    );
+                    continue;
+                }
+            }
+            (actor_res, container_res) => {
                 warn!(
-                    "ItemTakeRequest: container {:?} is out of range ({:.2} > {:.2})",
-                    req.container, distance, range
+                    "ItemTakeRequest: missing GlobalTransform (actor missing: {}, container missing: {}) — rejecting",
+                    actor_res.is_err(),
+                    container_res.is_err()
                 );
                 continue;
             }
         }
 
-        // Remove from source container, show, reparent to hand.
+        // Remove from source container.
         if let Ok(mut src_container) = containers.get_mut(req.container) {
             src_container.remove(req.item);
         }
+
+        // Ensure the item is in a non-physical "held" state: remove any
+        // physics components so a dynamic rigid body is never parented under a
+        // hand slot (which would cause jitter/collisions).  Only stash if
+        // the item has the required components (same rule as pickup).
+        if let (Some(collider), Some(gravity)) = (maybe_collider, maybe_gravity) {
+            commands
+                .entity(req.item)
+                .insert(StashedPhysics {
+                    collider: collider.clone(),
+                    gravity: *gravity,
+                })
+                .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+        } else {
+            commands
+                .entity(req.item)
+                .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+        }
+
+        // Show and reparent to hand.
         commands
             .entity(req.item)
             .insert((Visibility::Inherited, ChildOf(hand_entity)));
@@ -579,12 +673,12 @@ mod tests {
 
         app.update();
 
-        // After update: Container with capacity 1.
+        // After update: Container with 1 slot.
         let container = app
             .world()
             .get::<Container>(hand)
             .expect("HandSlot should have a Container after update");
-        assert_eq!(container.capacity, 1);
+        assert_eq!(container.capacity(), 1);
         assert_eq!(container.slots.len(), 1);
         assert!(container.slots[0].is_none());
     }
@@ -709,6 +803,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pickup_already_held_fails() {
+        let mut app = test_app();
+        let (actor, hand) = spawn_actor(&mut app, Vec3::ZERO);
+        // A second actor nearby, also in range.
+        let (actor2, _hand2) = spawn_actor(&mut app, Vec3::new(0.5, 0.0, 0.0));
+        let item = spawn_item(&mut app, Vec3::new(0.3, 0.0, 0.0));
+        app.update();
+
+        // actor2 picks up the item first.
+        app.world_mut()
+            .write_message(ItemPickupRequest { actor: actor2, item });
+        app.update();
+        assert!(app.world().get::<StashedPhysics>(item).is_some());
+
+        // actor1 tries to pick up the same already-held item — should fail.
+        app.world_mut()
+            .write_message(ItemPickupRequest { actor, item });
+        app.update();
+
+        // item should not be in actor1's hand.
+        assert!(
+            !app.world().get::<Container>(hand).unwrap().contains(item),
+            "already-held item should not be pickable by a second actor"
+        );
+    }
+
+    #[test]
+    fn pickup_item_missing_physics_fails() {
+        let mut app = test_app();
+        let (actor, hand) = spawn_actor(&mut app, Vec3::ZERO);
+        // Spawn an item WITHOUT physics components.
+        let item = app
+            .world_mut()
+            .spawn((Item, Transform::from_translation(Vec3::new(1.0, 0.0, 0.0))))
+            .id();
+        app.update();
+
+        app.world_mut()
+            .write_message(ItemPickupRequest { actor, item });
+        app.update();
+
+        // Non-physical item should be rejected — no StashedPhysics fabricated.
+        assert!(
+            app.world().get::<StashedPhysics>(item).is_none(),
+            "non-physical item should not get StashedPhysics"
+        );
+        let container = app.world().get::<Container>(hand).unwrap();
+        assert!(
+            !container.contains(item),
+            "non-physical item should not be picked up"
+        );
+    }
+
     // ── Drop ──────────────────────────────────────────────────────────────────
 
     #[test]
@@ -724,8 +872,8 @@ mod tests {
         app.update();
         assert!(app.world().get::<StashedPhysics>(item).is_some());
 
-        // Drop.
-        let drop_pos = Vec3::new(3.0, 0.0, 1.0);
+        // Drop within interaction range (distance 1.5 < 2.0).
+        let drop_pos = Vec3::new(1.5, 0.0, 0.0);
         app.world_mut().write_message(ItemDropRequest {
             actor,
             item,
@@ -802,6 +950,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn drop_out_of_range_fails() {
+        let mut app = test_app();
+        let (actor, _hand) = spawn_actor(&mut app, Vec3::ZERO);
+        let item = spawn_item(&mut app, Vec3::new(1.0, 0.0, 0.0));
+        app.update();
+
+        // Pick up the item first.
+        app.world_mut()
+            .write_message(ItemPickupRequest { actor, item });
+        app.update();
+        assert!(app.world().get::<StashedPhysics>(item).is_some());
+
+        // Attempt to drop at a position far outside interaction range.
+        app.world_mut().write_message(ItemDropRequest {
+            actor,
+            item,
+            drop_position: Vec3::new(50.0, 0.0, 0.0),
+        });
+        app.update();
+
+        // StashedPhysics should still be present — drop was rejected.
+        assert!(
+            app.world().get::<StashedPhysics>(item).is_some(),
+            "item should still be held when drop position is out of range"
+        );
+    }
+
     // ── Store ─────────────────────────────────────────────────────────────────
 
     #[test]
@@ -865,12 +1041,11 @@ mod tests {
         let (actor, hand) = spawn_actor(&mut app, Vec3::ZERO);
         let item1 = spawn_item(&mut app, Vec3::new(0.5, 0.0, 0.0));
         let item2 = spawn_item(&mut app, Vec3::new(0.8, 0.0, 0.0));
-        // A full container (capacity 1, pre-filled with item2).
+        // A full container (pre-filled with item2, capacity derived from slot count).
         let full_container = app
             .world_mut()
             .spawn((
                 Container {
-                    capacity: 1,
                     slots: vec![Some(item2)],
                 },
                 Transform::from_translation(Vec3::new(1.5, 0.0, 0.0)),
@@ -910,7 +1085,6 @@ mod tests {
             .world_mut()
             .spawn((
                 Container {
-                    capacity: 2,
                     slots: vec![Some(item), None],
                 },
                 Transform::from_translation(Vec3::new(1.5, 0.0, 0.0)),
@@ -929,7 +1103,7 @@ mod tests {
         });
         app.update();
 
-        // Item should be visible and in hand.
+        // Item should be in hand and not in source container.
         assert!(
             app.world().get::<Container>(hand).unwrap().contains(item),
             "item should be in hand after take"
@@ -956,6 +1130,16 @@ mod tests {
             .get::<ChildOf>(item)
             .expect("taken item should have a parent");
         assert_eq!(parent.parent(), hand, "item parent should be hand slot");
+
+        // Physics removed and StashedPhysics inserted so the item is in held state.
+        assert!(
+            app.world().get::<RigidBody>(item).is_none(),
+            "RigidBody should be removed when taken into hand"
+        );
+        assert!(
+            app.world().get::<StashedPhysics>(item).is_some(),
+            "StashedPhysics should be present after take"
+        );
     }
 
     #[test]
@@ -996,7 +1180,6 @@ mod tests {
             .world_mut()
             .spawn((
                 Container {
-                    capacity: 1,
                     slots: vec![Some(item)],
                 },
                 Transform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
@@ -1027,7 +1210,6 @@ mod tests {
             .world_mut()
             .spawn((
                 Container {
-                    capacity: 1,
                     slots: vec![Some(item2)],
                 },
                 Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
