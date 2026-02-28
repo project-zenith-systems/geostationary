@@ -60,9 +60,11 @@ implements all four: pickup (floor → hand), drop (hand → floor), store
 **Item lifecycle — reparenting, not despawn/respawn.** When an item is picked
 up, it stays as a live entity. Its `Transform` is reset to a local offset,
 it is reparented as a child of the `HandSlot` anchor entity, and its physics
-components (`RigidBody`, `Collider`, `LinearVelocity`) are removed to
-prevent physics simulation while held. When dropped, physics components are
-re-inserted and the item is deparented to world space at the creature's
+components (`RigidBody`, `Collider`, `LinearVelocity`, `GravityScale`,
+`ConstantForce`) are removed to prevent physics simulation while held. The
+original collider and gravity are preserved in a `StashedPhysics` component.
+When dropped, physics components are restored from `StashedPhysics` and the
+item is deparented to world space at the creature's
 position. This preserves entity identity and avoids the complexity of
 despawn/respawn replication.
 
@@ -160,7 +162,7 @@ different envelope. `tiles` loses its stream 4 registration,
 | Layer | Module          | Systems / changes | Schedule / run condition |
 |-------|-----------------|-------------------|--------------------------|
 | L0    | `input`         | **Add `button` field to `WorldHit`.** `WorldHit { entity, world_pos, button: MouseButton }` so downstream systems can distinguish left-click (default action) from right-click (context menu) without correlating with `PointerAction`. | — |
-| L1    | `tiles`         | **Remove stream 4 and tile-toggle request handling.** Delete `TILE_TOGGLE_STREAM_TAG`, `TileToggle` wire type, stream 4 registration, `execute_tile_toggle`, `handle_tile_toggle`, and `TileToggleRequest`. Tile-toggle validation, tilemap mutation, and `TileMutated` broadcast logic moves to `interactions`. `tiles` retains `Tilemap`, `TileKind`, tile mesh spawning, `apply_tile_mutation`, stream 1 (server→client), and the `TileMutated` wire message type (owned by `tiles`, used by `interactions` to broadcast on stream 1). | No schedule changes to remaining systems. |
+| L1    | `tiles`         | **Remove stream 4 and tile-toggle request handling.** Delete `TILE_TOGGLE_STREAM_TAG`, `TileToggle` wire type, stream 4 registration, `execute_tile_toggle`, `handle_tile_toggle`, and `TileToggleRequest`. Tile-toggle validation, tilemap mutation, and `TileMutated` broadcast logic moves to `interactions`. `tiles` retains `Tilemap`, `TileKind`, tile mesh spawning, `apply_tile_mutation`, stream 1 (server→client), and the `TileMutated` wire message type (owned by `tiles`, used by `interactions` to broadcast on stream 1). **`raycast_tiles` fires on both buttons** (same change as `raycast_things`), passes `button` through to `WorldHit`. | No schedule changes to remaining systems. |
 | L1    | `things`        | **`raycast_things` fires on both buttons.** Currently only processes right-click `PointerAction`; must also fire on left-click so `default_interaction` can pick up items. Passes `button` through to `WorldHit`. **HandSlot component.** New `HandSlot { side: HandSide }` component and `HandSide` enum (`Left`, `Right`). **Hand anchor spawning:** `spawn_player_creature` gains a child entity with `HandSlot { side: Right }` and `Transform::from_translation(HAND_OFFSET)`. **ItemEvent on stream 3:** new enum variants `ItemEvent::PickedUp { item: NetId, holder: NetId }`, `ItemEvent::Dropped { item: NetId, position: [f32; 3] }`, `ItemEvent::Stored { item: NetId, container: NetId }`, and `ItemEvent::Taken { item: NetId, holder: NetId }` added to `ThingsStreamMessage`. Server-side: `broadcast_item_event` sends `ItemEvent` after item mutations. Client-side: `handle_item_event` receives and applies reparenting/deparenting. **Exclude held items from StateUpdate:** items parented to a `HandSlot` should not be included in the 30 Hz position broadcast (they inherit transform from parent). | `broadcast_item_event`: `Update`, after item systems. `handle_item_event`: `Update`, after stream drain, gated on `Client`. |
 | L2    | `items`         | **New module.** `Item` marker component (on all item entities). `Container` component with `slots: Vec<Option<Entity>>` and `capacity: usize`. `ItemPickupRequest`, `ItemDropRequest`, `ItemStoreRequest`, and `ItemTakeRequest` Bevy events (fired by `interactions`, read here). **Server systems:** `handle_item_interaction` reads all four request events, validates range + item existence + container space, executes the operation (reparent/deparent, strip/restore physics, update Container slots, set visibility). **No client-side simulation** — clients apply `ItemEvent` messages from stream 3. | `handle_item_interaction`: `Update`, after `dispatch_interaction`, gated on `Server`. |
 | L6    | `interactions`  | **Unified interactions stream (stream 4).** Owns `InteractionRequest` wire enum and stream 4 registration (client→server). Client: `send_interaction` serialises requests. Server: `dispatch_interaction` drains stream 4 and handles all interaction types directly — tile toggle (validates, mutates `Tilemap`, broadcasts `TileMutated` on stream 1 as a wire message AND fires it as a local Bevy event for `apply_tile_mutation`), item pickup/drop/store/take (fires corresponding Bevy events for `items` module). **Raycast resolution (fixes #169).** `resolve_world_hits` system collects all `WorldHit` messages per frame, picks closest to camera, emits `ResolvedHit`. **Default action system.** `default_interaction` reads left-click `ResolvedHit`; for items on floor, sends `InteractionRequest::ItemPickup`. **Extended context menu.** Action table gains: `Item` on floor -> ["Pick up"]; `Tile(Floor)` while holding -> ["Drop", "Build Wall"]; `Container` entity while holding -> ["Store in {name}"]; `Container` entity with items while hand empty -> ["Take from {name}"]. | `resolve_world_hits`: `Update`, after `raycast_tiles` and `raycast_things`. `send_interaction`: `Update`, gated on `not(Headless)`. `dispatch_interaction`: `Update`, after stream drain, gated on `Server`. |
@@ -209,6 +211,7 @@ modules/
       lib.rs                     # MODIFIED — remove stream 4 registration,
                                  #   TileToggle wire type, execute_tile_toggle,
                                  #   handle_tile_toggle, TileToggleRequest.
+                                 #   raycast_tiles fires on both buttons.
                                  #   Retain Tilemap, TileMutated wire type,
                                  #   tile rendering, stream 1, apply_tile_mutation.
   interactions/
@@ -233,6 +236,8 @@ modules/
       lib.rs                     # NO CHANGES — pressure forces already apply
                                  #   to all Dynamic RigidBody entities
 src/
+  config.rs                      # MODIFIED — add InteractionConfig section
+                                 #   to AppConfig with interaction_range field.
   world_setup.rs                 # MODIFIED — register can/toolbox templates,
                                  #   spawn items in test room
   server.rs                      # NO CHANGES expected
@@ -249,9 +254,11 @@ src/
   `Collider`, `LinearVelocity`)
 - **`modules/interactions/Cargo.toml`:** Add `items` (for
   `ItemPickupRequest`, `ItemDropRequest`, `ItemStoreRequest`,
-  `ItemTakeRequest`, `Item`, `Container` components), `network`
-  (already present — for `StreamSender`, `StreamReader`, `StreamDef`
-  to own stream 4)
+  `ItemTakeRequest`, `Item`, `Container` components). Existing dep on
+  `tiles` is now load-bearing — `dispatch_interaction` mutates `Tilemap`,
+  reads `TileKind`, and sends `TileMutated` on stream 1. Existing dep on
+  `network` — for `StreamSender`, `StreamReader`, `StreamDef` to own
+  stream 4.
 - **`modules/tiles/Cargo.toml`:** Remove `input` dep if no longer needed
   (raycast_tiles still uses `PointerAction` from `input`, so likely kept)
 - **`modules/things/Cargo.toml`:** No new deps — `HandSlot` is internal
@@ -408,8 +415,8 @@ removed. This is simpler than a registry lookup and works for any item.
 ### Default interaction design
 
 The `interactions` module gains a `default_interaction` system that runs on
-left-click `WorldHit` events (as opposed to `build_context_menu` which runs
-on right-click):
+left-click `ResolvedHit` events (as opposed to `build_context_menu` which
+runs on right-click `ResolvedHit`):
 
 1. Read `ResolvedHit` where `hit.button == Left`
 2. Query the hit entity for components: `Item`, `Tile`, etc.
