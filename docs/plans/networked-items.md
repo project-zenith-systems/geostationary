@@ -23,10 +23,9 @@
 6. All pickup and drop actions are server-authoritative — the client sends a
    request, the server validates range and executes the mutation, and all
    clients see the result
-7. The toolbox has a `Container` component with capacity 6 — the data model
-   supports nesting. Container UI and store/take actions are deferred to a
-   future plan; for now the toolbox is just a pickable item that happens to
-   have container data
+7. The toolbox has a `Container` component with capacity 6 — store/take
+   actions work via context menu. Container UI (drag-and-drop, inventory
+   grid) is deferred to a future plan
 8. A player creature has a `HandSlot` child entity at a fixed offset; held
    items are parented to this entity and move with the creature
 9. The toolbox spawns pre-loaded with one can inside it; picking up the
@@ -92,8 +91,8 @@ tile toggles, item pickups, item drops, and any future interactions — flow
 through a single `InteractionRequest` wire enum on stream 4. The
 `interactions` module registers the stream, serialises requests on the
 client, and dispatches them on the server by firing domain-specific Bevy
-events (`TileToggleRequest`, `ItemPickupRequest`, `ItemDropRequest`)
-downward. Lower-layer modules (`tiles`, `items`) never touch stream 4
+events (`TileToggleRequest`, `ItemPickupRequest`, `ItemDropRequest`,
+`ItemStoreRequest`, `ItemTakeRequest`) downward. Lower-layer modules (`tiles`, `items`) never touch stream 4
 directly — they only read Bevy events. This removes `execute_tile_toggle`
 from `tiles` and moves that responsibility into `interactions`.
 
@@ -160,12 +159,12 @@ different envelope. `tiles` loses its stream 4 registration,
 
 | Layer | Module          | Systems / changes | Schedule / run condition |
 |-------|-----------------|-------------------|--------------------------|
-| L0    | `input`         | No changes. `PointerAction` and `WorldHit` already sufficient. | — |
+| L0    | `input`         | **Add `button` field to `WorldHit`.** `WorldHit { entity, world_pos, button: MouseButton }` so downstream systems can distinguish left-click (default action) from right-click (context menu) without correlating with `PointerAction`. | — |
 | L1    | `tiles`         | **Remove stream 4 and tile-toggle request handling.** Delete `TILE_TOGGLE_STREAM_TAG`, `TileToggle` wire type, stream 4 registration, `execute_tile_toggle`, `handle_tile_toggle`, and `TileToggleRequest`. Tile-toggle validation, tilemap mutation, and `TileMutated` broadcast logic moves to `interactions`. `tiles` retains `Tilemap`, `TileKind`, tile mesh spawning, `apply_tile_mutation`, stream 1 (server→client), and the `TileMutated` wire message type (owned by `tiles`, used by `interactions` to broadcast on stream 1). | No schedule changes to remaining systems. |
-| L1    | `things`        | **HandSlot component.** New `HandSlot { side: HandSide }` component and `HandSide` enum (`Left`, `Right`). **Hand anchor spawning:** `spawn_player_creature` gains a child entity with `HandSlot { side: Right }` and `Transform::from_translation(HAND_OFFSET)`. **ItemEvent on stream 3:** new enum variants `ItemEvent::PickedUp { item: NetId, holder: NetId }`, `ItemEvent::Dropped { item: NetId, position: [f32; 3] }`, `ItemEvent::Stored { item: NetId, container: NetId }`, and `ItemEvent::Taken { item: NetId, holder: NetId }` added to `ThingsStreamMessage`. Server-side: `broadcast_item_event` sends `ItemEvent` after item mutations. Client-side: `handle_item_event` receives and applies reparenting/deparenting. **Exclude held items from StateUpdate:** items parented to a `HandSlot` should not be included in the 30 Hz position broadcast (they inherit transform from parent). | `broadcast_item_event`: `Update`, after item systems. `handle_item_event`: `Update`, after stream drain, gated on `Client`. |
+| L1    | `things`        | **`raycast_things` fires on both buttons.** Currently only processes right-click `PointerAction`; must also fire on left-click so `default_interaction` can pick up items. Passes `button` through to `WorldHit`. **HandSlot component.** New `HandSlot { side: HandSide }` component and `HandSide` enum (`Left`, `Right`). **Hand anchor spawning:** `spawn_player_creature` gains a child entity with `HandSlot { side: Right }` and `Transform::from_translation(HAND_OFFSET)`. **ItemEvent on stream 3:** new enum variants `ItemEvent::PickedUp { item: NetId, holder: NetId }`, `ItemEvent::Dropped { item: NetId, position: [f32; 3] }`, `ItemEvent::Stored { item: NetId, container: NetId }`, and `ItemEvent::Taken { item: NetId, holder: NetId }` added to `ThingsStreamMessage`. Server-side: `broadcast_item_event` sends `ItemEvent` after item mutations. Client-side: `handle_item_event` receives and applies reparenting/deparenting. **Exclude held items from StateUpdate:** items parented to a `HandSlot` should not be included in the 30 Hz position broadcast (they inherit transform from parent). | `broadcast_item_event`: `Update`, after item systems. `handle_item_event`: `Update`, after stream drain, gated on `Client`. |
 | L2    | `items`         | **New module.** `Item` marker component (on all item entities). `Container` component with `slots: Vec<Option<Entity>>` and `capacity: usize`. `ItemPickupRequest`, `ItemDropRequest`, `ItemStoreRequest`, and `ItemTakeRequest` Bevy events (fired by `interactions`, read here). **Server systems:** `handle_item_interaction` reads all four request events, validates range + item existence + container space, executes the operation (reparent/deparent, strip/restore physics, update Container slots, set visibility). **No client-side simulation** — clients apply `ItemEvent` messages from stream 3. | `handle_item_interaction`: `Update`, after `dispatch_interaction`, gated on `Server`. |
-| L6    | `interactions`  | **Unified interactions stream (stream 4).** Owns `InteractionRequest` wire enum and stream 4 registration (client→server). Client: `send_interaction` serialises requests. Server: `dispatch_interaction` drains stream 4 and handles all interaction types directly — tile toggle (validates, mutates `Tilemap`, broadcasts `TileMutated` on stream 1), item pickup/drop/store/take (fires corresponding Bevy events for `items` module). **Raycast resolution (fixes #169).** `resolve_world_hits` system collects all `WorldHit` messages per frame, picks closest to camera, emits `ResolvedHit`. **Default action system.** `default_interaction` reads left-click `ResolvedHit`; for items on floor, sends `InteractionRequest::ItemPickup`. **Extended context menu.** Action table gains: `Item` on floor -> ["Pick up"]; `Tile(Floor)` while holding -> ["Drop", "Build Wall"]; `Container` entity while holding -> ["Store in {name}"]; `Container` entity with items while hand empty -> ["Take from {name}"]. | `resolve_world_hits`: `Update`, after `raycast_tiles` and `raycast_things`. `send_interaction`: `Update`, gated on `not(Headless)`. `dispatch_interaction`: `Update`, after stream drain, gated on `Server`. |
-| —     | `src/world_setup.rs` | **Item and container spawning.** Register item templates in `ThingRegistry`: can (kind 2), toolbox (kind 3). Spawn two cans and one toolbox in the pressurised chamber. Toolbox entity gets `Container { capacity: 6 }` and spawns pre-loaded with one can inside it (can entity ref in `Container.slots[0]`, `Visibility::Hidden`, no physics components). | `setup_world`: `OnEnter(InGame)`, gated on `Server`. |
+| L6    | `interactions`  | **Unified interactions stream (stream 4).** Owns `InteractionRequest` wire enum and stream 4 registration (client→server). Client: `send_interaction` serialises requests. Server: `dispatch_interaction` drains stream 4 and handles all interaction types directly — tile toggle (validates, mutates `Tilemap`, broadcasts `TileMutated` on stream 1 as a wire message AND fires it as a local Bevy event for `apply_tile_mutation`), item pickup/drop/store/take (fires corresponding Bevy events for `items` module). **Raycast resolution (fixes #169).** `resolve_world_hits` system collects all `WorldHit` messages per frame, picks closest to camera, emits `ResolvedHit`. **Default action system.** `default_interaction` reads left-click `ResolvedHit`; for items on floor, sends `InteractionRequest::ItemPickup`. **Extended context menu.** Action table gains: `Item` on floor -> ["Pick up"]; `Tile(Floor)` while holding -> ["Drop", "Build Wall"]; `Container` entity while holding -> ["Store in {name}"]; `Container` entity with items while hand empty -> ["Take from {name}"]. | `resolve_world_hits`: `Update`, after `raycast_tiles` and `raycast_things`. `send_interaction`: `Update`, gated on `not(Headless)`. `dispatch_interaction`: `Update`, after stream drain, gated on `Server`. |
+| —     | `src/world_setup.rs` | **Item and container spawning.** Register item templates in `ThingRegistry`: can (kind 2), toolbox (kind 3). Spawn two cans and one toolbox in the pressurised chamber. Toolbox entity gets `Container { capacity: 6 }` and spawns pre-loaded with one can inside it (can entity ref in `Container.slots[0]`, `Visibility::Hidden`, `StashedPhysics`, no `RigidBody`/`Collider`/`LinearVelocity`). | `setup_world`: `OnEnter(InGame)`, gated on `Server`. |
 
 ### Not in this plan
 
@@ -191,7 +190,7 @@ modules/
   items/                         # NEW MODULE (L2)
     Cargo.toml
     src/
-      lib.rs                     # Item, Container components.
+      lib.rs                     # Item, Container, StashedPhysics components.
                                  #   ItemPickupRequest, ItemDropRequest,
                                  #   ItemStoreRequest, ItemTakeRequest events.
                                  #   Server: handle_item_interaction, pickup_item,
@@ -199,7 +198,8 @@ modules/
                                  #   Container query helpers.
   things/
     src/
-      lib.rs                     # MODIFIED — HandSlot, HandSide components.
+      lib.rs                     # MODIFIED — raycast_things fires on both
+                                 #   buttons. HandSlot, HandSide components.
                                  #   Hand anchor child entity in
                                  #   spawn_player_creature.
                                  #   ItemEvent variants in ThingsStreamMessage.
@@ -208,9 +208,9 @@ modules/
     src/
       lib.rs                     # MODIFIED — remove stream 4 registration,
                                  #   TileToggle wire type, execute_tile_toggle,
-                                 #   handle_tile_toggle, TileToggleRequest,
-                                 #   TileMutated events. Retain Tilemap, tile
-                                 #   rendering, stream 1, apply_tile_mutation.
+                                 #   handle_tile_toggle, TileToggleRequest.
+                                 #   Retain Tilemap, TileMutated wire type,
+                                 #   tile rendering, stream 1, apply_tile_mutation.
   interactions/
     src/
       lib.rs                     # MODIFIED — owns stream 4 (InteractionRequest
@@ -223,7 +223,8 @@ modules/
                                  #   resolve_world_hits for raycast priority.
   input/
     src/
-      lib.rs                     # NO CHANGES
+      lib.rs                     # MODIFIED — add `button: MouseButton`
+                                 #   field to `WorldHit`.
   network/
     src/
       lib.rs                     # NO CHANGES — stream infrastructure sufficient
@@ -261,7 +262,10 @@ src/
 
 Items are `Thing` entities (spawned via `spawn_thing`) with an additional
 `Item` marker component. The `ThingRegistry` template for each item kind
-inserts `Item` and kind-specific visual/physical properties.
+inserts `Item`, a `Name` component (Bevy's built-in `Name` for display
+purposes — e.g. `Name::new("Can")`, `Name::new("Toolbox")`), and
+kind-specific visual/physical properties. The context menu uses `Name` for
+labels like "Store in Toolbox" and "Take from Toolbox".
 
 **Can (kind 2):**
 - Small cylinder mesh, metallic material
@@ -304,34 +308,69 @@ references** in `Container.slots` — they don't need to be visible, so they
 don't need to be ECS children of the toolbox. Only the actively held item
 (the one in the hand) is visually parented.
 
+### Client-side container state
+
+The context menu needs to know whether the local player is holding an item
+(hand container full/empty) and whether a target entity is a container with
+items. This requires `Container` components on both server and client.
+
+**Template-inserted.** The `ThingRegistry` template for kind 3 (toolbox)
+inserts `Container { capacity: 6 }` on both server and client. The
+`HandSlot` child entity gets `Container { capacity: 1 }` during creature
+spawning — on the server via `spawn_player_creature`, on the client via
+the kind 0 `ThingRegistry` template (which runs when `EntitySpawned` is
+received and the creature is reconstructed).
+
+**Client keeps `Container.slots` in sync.** Each `handle_item_event`
+handler updates the local `Container` component:
+- `PickedUp`: insert item entity into holder's hand `Container.slots[0]`
+- `Dropped`: clear hand `Container.slots[0]`
+- `Stored`: clear hand `Container.slots[0]`, insert into target container
+- `Taken`: clear source container slot, insert into hand `Container.slots[0]`
+
+This gives the interactions module enough local state to build correct
+context menus without querying the server.
+
 ### Pickup and drop mechanics
+
+**Physics stashing.** When an item is picked up, its physics components
+need to be restored on drop with the correct shape (cylinder for cans,
+cuboid for toolboxes). Before removing physics components, the server
+inserts a `StashedPhysics { collider: Collider, gravity: GravityScale }`
+component that preserves the item's original physics data. On drop,
+`StashedPhysics` is read to restore the correct collider and gravity, then
+removed. This is simpler than a registry lookup and works for any item.
 
 **Pickup (server-side):**
 1. Validate: item entity exists, has `Item` component
-2. Validate: requester's creature is within `INTERACTION_RANGE` meters
+2. Validate: requester's creature is within `interaction_range` meters
 3. Validate: requester's hand `Container` has an empty slot
-4. Remove `RigidBody`, `Collider`, `LinearVelocity`, `ConstantForce` from
-   item entity
-5. Set item's `Transform` to local offset (small, near hand)
-6. Reparent item entity as child of `HandSlot` entity
-7. Insert item entity ref into hand `Container.slots[0]`
-8. Broadcast `ItemEvent::PickedUp { item, holder }` on stream 3
+4. Stash: insert `StashedPhysics` with clone of current `Collider` and
+   `GravityScale`
+5. Remove `RigidBody`, `Collider`, `LinearVelocity`, `GravityScale`,
+   `ConstantForce` from item entity
+6. Set item's `Transform` to local offset (small, near hand)
+7. Reparent item entity as child of `HandSlot` entity
+8. Insert item entity ref into hand `Container.slots[0]`
+9. Broadcast `ItemEvent::PickedUp { item, holder }` on stream 3
 
 **Drop (server-side):**
 1. Validate: requester's hand `Container.slots[0]` is `Some(entity)`
-2. Validate: requested drop position is within `INTERACTION_RANGE` of creature
+2. Validate: requested drop position is within `interaction_range` of creature
 3. Remove item from hand `Container.slots[0]`
 4. Deparent item from `HandSlot`
 5. Set item's `Transform` to the requested drop position (validated in range)
-6. Re-insert `RigidBody::Dynamic`, `Collider`, `LinearVelocity::ZERO`,
-   etc. (restore physics)
+6. Restore physics from `StashedPhysics`: re-insert `RigidBody::Dynamic`,
+   stashed `Collider`, stashed `GravityScale`, `LinearVelocity::ZERO`.
+   Do **not** re-insert `ConstantForce` (atmospherics handles that).
+   Remove `StashedPhysics`.
 7. Broadcast `ItemEvent::Dropped { item, position }` on stream 3
 
 **Store (server-side):**
 1. Validate: requester's hand `Container.slots[0]` is `Some(item)`
 2. Validate: target container entity exists, has `Container`, is within
-   `interaction_range` (floor container) or is the held item itself
-   (nested — deferred, not this plan)
+   `interaction_range`. The target must be on the floor (not the held item
+   — storing into a held container requires container UI, deferred)
 3. Validate: target container has an empty slot
 4. Remove item from hand `Container.slots[0]`
 5. Deparent item from `HandSlot`
@@ -355,14 +394,16 @@ don't need to be ECS children of the toolbox. Only the actively held item
 - `PickedUp`: Look up item by `NetId`. Look up holder creature by `NetId`,
   then query its children for the entity with `HandSlot` component. Reparent
   item under that `HandSlot` entity, remove physics components, set local
-  transform.
+  transform. Update hand `Container.slots[0]`.
 - `Dropped`: Look up item by `NetId`, deparent, set world transform,
   re-insert physics components (not `ConstantForce` — atmospherics handles
-  that)
-- `Stored`: Look up item by `NetId`, deparent from `HandSlot`, set
-  `Visibility::Hidden`
+  that). Clear hand `Container.slots[0]`.
+- `Stored`: Look up item by `NetId`, deparent if currently parented (no-op
+  during initial sync), set `Visibility::Hidden`, update local `Container`
+  slots
 - `Taken`: Look up item and holder by `NetId`, reparent under holder's
-  `HandSlot`, set `Visibility::Inherited`, set local transform
+  `HandSlot`, set `Visibility::Inherited`, set local transform. Update
+  source container and hand `Container.slots`.
 
 ### Default interaction design
 
@@ -370,13 +411,11 @@ The `interactions` module gains a `default_interaction` system that runs on
 left-click `WorldHit` events (as opposed to `build_context_menu` which runs
 on right-click):
 
-1. Read `WorldHit` from left-click `PointerAction`
+1. Read `ResolvedHit` where `hit.button == Left`
 2. Query the hit entity for components: `Item`, `Tile`, etc.
-3. If entity has `Item` → fire `ItemPickupRequest { target: entity }`
+3. If entity has `Item` → send `InteractionRequest::ItemPickup { target }`
+   on stream 4
 4. Future: other default actions for other entity types
-
-The `interactions` module handles this directly: it resolves the entity's
-`NetId` and sends `InteractionRequest::ItemPickup { target }` on stream 4.
 
 For drop: the context menu action table checks if the player is holding an
 item (hand container is non-empty) and the right-click target is a floor
@@ -397,11 +436,10 @@ The server takes the first occupied slot.
 
 ### Replication design
 
-**On connect (initial sync):** Items are already replicated as `Thing`
-entities via stream 3 (`EntitySpawned`). The `ThingRegistry` template
-reconstructs them with correct mesh/collider/Item marker. After all
-`EntitySpawned` messages are sent, the server replays the current
-item-container state:
+**On connect (initial sync):** Items are replicated as `Thing` entities via
+stream 3 (`EntitySpawned`). The `ThingRegistry` template reconstructs them
+with correct mesh/collider/Item marker. After all `EntitySpawned` messages
+are sent, the server replays the current item-container state:
 - `ItemEvent::PickedUp { item, holder }` for each item held in a hand
   (client reparents under HandSlot, removes physics, shows item)
 - `ItemEvent::Stored { item, container }` for each item stored inside a
@@ -409,6 +447,16 @@ item-container state:
 This reuses the same client-side `handle_item_event` code path — no
 separate sync message needed. Order matters: `EntitySpawned` for all
 entities first (so NetIds are resolved), then item events.
+
+**Stored items on spawn.** Items that start inside a container (e.g. the
+pre-loaded can in the toolbox) are spawned server-side with
+`Visibility::Hidden`, no physics components, and a `StashedPhysics`
+component. Their `EntitySpawned` message carries position `Vec3::ZERO`
+(irrelevant — they're hidden). The client's `ThingRegistry` template spawns
+them normally (visible, with physics), then the subsequent
+`ItemEvent::Stored` hides them and strips physics. The brief visible frame
+is acceptable — `EntitySpawned` and `ItemEvent::Stored` arrive in the same
+stream 3 batch before the client renders.
 
 **Ongoing:** `ItemEvent` messages on stream 3 handle all state changes:
 pickup, drop, store, take. `StateUpdate` (position/velocity at 30 Hz)
@@ -431,22 +479,25 @@ system:
    — tiles, things — may emit one per click)
 2. Picks the hit closest to the camera (smallest distance from camera
    `Transform.translation` to `world_pos`)
-3. Emits `ResolvedHit { hit: WorldHit, button: MouseButton }`
+3. Emits `ResolvedHit { hit: WorldHit }` (button is inside `WorldHit`)
 
 Downstream systems (`build_context_menu`, `default_interaction`) read
 `ResolvedHit` instead of `WorldHit`. This is a minimal change — the
 interactions module already sits between input and action dispatch.
 
-The `WorldHit` message type stays in `input` (L0). `ResolvedHit` lives in
-`interactions` (L6). No lower-layer changes needed.
+The `WorldHit` message type stays in `input` (L0) but gains a `button:
+MouseButton` field so `ResolvedHit` can carry it. `ResolvedHit` lives in
+`interactions` (L6). `raycast_things` (L1) and `raycast_tiles` (L1) both
+set `button` from the originating `PointerAction`.
 
 ### Interaction range validation
 
 Server-side pickup validation checks Euclidean distance between the
 requester's creature `Transform` and the target item's `Transform`. The
-range constant `interaction_range` is a field on `SimulationConstants`
-(the existing configurable constants resource) so that any module can
-reference it. Default value: `2.0` meters. Line-of-sight is noted as a
+range constant `interaction_range` is a field on a new `InteractionConfig`
+section in `AppConfig` (the existing configurable resource in
+`src/config.rs`) so that any module can reference it. Default value: `2.0`
+meters. Line-of-sight is noted as a
 future concern but not implemented.
 
 ### Testing strategy
@@ -464,8 +515,9 @@ Arrange–Act–Assert throughout.
   not-in-range fails
 - Pickup mechanics: physics components removed, item reparented to HandSlot,
   Container slot occupied
-- Drop mechanics: physics components restored (including `ConstantForce`
-  removal — see note below), item deparented, Container slot cleared
+- Drop mechanics: physics restored from `StashedPhysics` (correct collider
+  shape, no `ConstantForce` — see note below), item deparented, Container
+  slot cleared, `StashedPhysics` removed
 - Store mechanics: item deparented from HandSlot, hidden, added to target
   Container slot
 - Take mechanics: item removed from Container slot, shown, reparented to
