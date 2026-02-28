@@ -109,7 +109,7 @@ mod tests {
     /// - Removing `RigidBody`/`Collider`/`LinearVelocity`/`GravityScale` from a
     ///   dynamic entity and inserting `ChildOf(parent)` causes the entity to
     ///   follow its parent correctly.
-    /// - After one `app.update()` the entity's `GlobalTransform` reflects the
+    /// - After two `app.update()` calls the entity's `GlobalTransform` reflects the
     ///   parent's world position plus the child's local offset. No special
     ///   handling is required beyond the standard Bevy transform propagation.
     #[test]
@@ -298,8 +298,8 @@ mod tests {
     ///   is held (e.g. stored inside a container).
     #[test]
     fn visibility_hidden_on_reparented_entity() {
-        // Built manually (not via test_app) because VisibilityPlugin must be
-        // added before app.finish().
+        // Built manually (not via test_app) because test_app() calls app.finish() internally;
+        // VisibilityPlugin cannot be added to an already-finished App.
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
