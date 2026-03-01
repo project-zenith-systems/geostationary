@@ -228,6 +228,7 @@ impl Plugin for AtmosphericsPlugin {
                 pause_toggle_input,
                 debug_overlay::toggle_overlay,
                 debug_overlay::spawn_overlay_quads,
+                debug_overlay::update_overlay_on_tile_mutation,
                 debug_overlay::despawn_overlay_quads,
                 debug_overlay::update_overlay_colors,
             )

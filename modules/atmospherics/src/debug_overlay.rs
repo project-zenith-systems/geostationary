@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use tiles::Tilemap;
+use tiles::{TileMutated, Tilemap};
 
 use crate::GasGrid;
 
@@ -227,6 +227,70 @@ pub fn update_overlay_colors(
         };
 
         material.base_color = color;
+    }
+}
+
+/// System that reacts to [`TileMutated`] events while the overlay is active.
+///
+/// - If a tile becomes a wall (not walkable), the corresponding overlay quad is despawned
+///   and its mesh/material assets are freed.
+/// - If a tile becomes walkable (floor), a new overlay quad is spawned for that position
+///   if one does not already exist.
+///
+/// This ensures the overlay stays in sync with the tilemap when tiles are built or
+/// demolished while the overlay is visible.
+pub fn update_overlay_on_tile_mutation(
+    mut commands: Commands,
+    overlay: Res<AtmosDebugOverlay>,
+    mut tile_events: MessageReader<TileMutated>,
+    existing_quads: Query<(Entity, &OverlayQuad)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !overlay.0 {
+        return;
+    }
+
+    for event in tile_events.read() {
+        let TileMutated { position, kind } = *event;
+
+        if kind.is_walkable() {
+            // Tile became walkable — spawn an overlay quad if one doesn't already exist.
+            let already_exists = existing_quads.iter().any(|(_, q)| q.position == position);
+            if !already_exists {
+                let world_x = position.x as f32;
+                let world_z = position.y as f32;
+                let mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
+                let material = materials.add(StandardMaterial {
+                    base_color: Color::srgba(0.0, 1.0, 0.0, 0.5),
+                    alpha_mode: AlphaMode::Blend,
+                    unlit: true,
+                    ..default()
+                });
+                commands.spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_xyz(world_x, 0.01, world_z),
+                    OverlayQuad {
+                        position,
+                        mesh,
+                        material,
+                    },
+                ));
+                debug!("Spawned overlay quad at {:?} (tile became walkable)", position);
+            }
+        } else {
+            // Tile became a wall — despawn the overlay quad at this position (if any).
+            for (entity, quad) in existing_quads.iter() {
+                if quad.position == position {
+                    meshes.remove(&quad.mesh);
+                    materials.remove(&quad.material);
+                    commands.entity(entity).despawn();
+                    debug!("Despawned overlay quad at {:?} (tile became wall)", position);
+                    break;
+                }
+            }
+        }
     }
 }
 
