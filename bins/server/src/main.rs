@@ -23,7 +23,8 @@ fn main() {
     let mut app = App::new();
     app.insert_resource(app_config.clone());
 
-    // Dedicated headless server: minimal plugin set for physics + networking, no window/rendering.
+    // Dedicated headless server: minimal plugin set for physics + networking.
+    // No window or rendering. Mesh/scene asset support is retained for physics.
     app.add_plugins(MinimalPlugins)
         .add_plugins(LogPlugin {
             level: log_level,
