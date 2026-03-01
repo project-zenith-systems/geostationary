@@ -1,4 +1,4 @@
-# Arc: Networked World State
+# Arc 1: Networked World State
 
 > **Goal:** Two players connect to a dedicated server, see each other's
 > names, pick up and drop items, break walls to cause decompression that

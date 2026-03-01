@@ -2824,7 +2824,6 @@ dependencies = [
  "atmospherics",
  "bevy",
  "camera",
- "config",
  "creatures",
  "input",
  "interactions",
@@ -2832,11 +2831,27 @@ dependencies = [
  "network",
  "physics",
  "player",
- "serde",
+ "shared",
  "souls",
  "things",
  "tiles",
  "ui",
+]
+
+[[package]]
+name = "geostationary-server"
+version = "0.1.0"
+dependencies = [
+ "atmospherics",
+ "bevy",
+ "creatures",
+ "items",
+ "network",
+ "physics",
+ "shared",
+ "souls",
+ "things",
+ "tiles",
 ]
 
 [[package]]
@@ -5365,6 +5380,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shared"
+version = "0.1.0"
+dependencies = [
+ "atmospherics",
+ "bevy",
+ "config",
+ "creatures",
+ "network",
+ "physics",
+ "serde",
+ "souls",
+ "things",
+ "tiles",
 ]
 
 [[package]]
