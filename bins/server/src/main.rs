@@ -96,8 +96,8 @@ fn host_on_startup(mut net_commands: MessageWriter<NetCommand>, config: Res<AppC
 /// * **Phase 2a** (after [`SHUTDOWN_FLUSH_FRAMES`] more frames): send
 ///   [`NetCommand::StopHosting`] so the network layer begins tearing down.
 /// * **Phase 2b** (once [`NetServerSender`] is removed): request [`AppExit`].
-///   [`NetServerSender`] is removed by [`drain_server_events`] when it receives
-///   [`ServerEvent::HostingStopped`], which is emitted by the server task once
+///   [`NetServerSender`] is removed by `drain_server_events` when it receives
+///   `ServerEvent::HostingStopped`, which is emitted by the server task once
 ///   hosting has stopped (it no longer accepts new connections), but not
 ///   necessarily after all existing connections have fully closed.  Waiting for
 ///   this guarantees that `process_net_commands` (which runs in `PreUpdate`) has
