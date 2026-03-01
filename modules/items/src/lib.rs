@@ -610,8 +610,7 @@ fn handle_item_event(
     children: Query<&Children>,
     hand_slot_q: Query<Entity, With<HandSlot>>,
 ) {
-    let events: Vec<ItemEvent> = pending.0.drain(..).collect();
-    for event in events {
+    for event in pending.0.drain(..) {
         match event {
             ItemEvent::PickedUp { item, holder } => {
                 let Some(&item_entity) = net_id_index.0.get(&item) else {
@@ -870,9 +869,14 @@ impl Plugin for ItemsPlugin {
             Update,
             (
                 init_hand_containers,
-                handle_item_interaction.run_if(resource_exists::<Server>),
+                ApplyDeferred,
                 handle_item_event.run_if(resource_exists::<network::Client>),
-            ),
+            )
+                .chain(),
+        );
+        app.add_systems(
+            Update,
+            handle_item_interaction.run_if(resource_exists::<Server>),
         );
         app.add_systems(
             PreUpdate,
