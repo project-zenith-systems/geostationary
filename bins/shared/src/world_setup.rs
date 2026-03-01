@@ -59,9 +59,9 @@ pub fn setup_world(
         .insert(DespawnOnExit(AppState::InGame));
 
     // After all SpawnThing triggers have been applied, stash the can inside the toolbox.
-    // The can gets StashedPhysics (derived from its template components) + Visibility::Hidden
-    // and its live-physics components are removed; the toolbox Container.slots[0] is set to
-    // point at the can entity.
+    // The can gets StashedPhysics (capturing its Collider/GravityScale) and Visibility::Hidden,
+    // and its dynamic-physics components (RigidBody, LinearVelocity) are removed; the toolbox
+    // Container.slots[0] is set to point at the can entity.
     commands.queue(move |world: &mut World| {
         let (collider, gravity) = {
             let e = world.entity(can_stashed);
@@ -235,8 +235,9 @@ mod tests {
 
     /// Verifies the stash logic used in `setup_world`:
     /// a can pre-loaded into a toolbox gets `StashedPhysics` + `Visibility::Hidden`
-    /// with its physics components removed, and the toolbox `Container.slots[0]` holds
-    /// the can's entity reference.
+    /// with its dynamic-physics components (e.g. `RigidBody`, `LinearVelocity`, `Restitution`)
+    /// removed while retaining `Collider` and `GravityScale`, and the toolbox
+    /// `Container.slots[0]` holds the can's entity reference.
     #[test]
     fn test_toolbox_preloaded_with_stashed_can() {
         use bevy::time::TimeUpdateStrategy;
