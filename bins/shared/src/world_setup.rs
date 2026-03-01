@@ -81,9 +81,11 @@ pub fn setup_world(
             .entity_mut(can_stashed)
             .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
 
-        if let Some(mut container) = world.entity_mut(toolbox).get_mut::<Container>() {
-            container.slots[0] = Some(can_stashed);
-        }
+        let mut toolbox_entity = world.entity_mut(toolbox);
+        let mut container = toolbox_entity
+            .get_mut::<Container>()
+            .expect("toolbox entity must have a Container (kind 3 template) for stashing the can");
+        container.slots[0] = Some(can_stashed);
     });
 }
 
@@ -229,5 +231,110 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Verifies the stash logic used in `setup_world`:
+    /// a can pre-loaded into a toolbox gets `StashedPhysics` + `Visibility::Hidden`
+    /// with its physics components removed, and the toolbox `Container.slots[0]` holds
+    /// the can's entity reference.
+    #[test]
+    fn test_toolbox_preloaded_with_stashed_can() {
+        use bevy::time::TimeUpdateStrategy;
+        use items::Item;
+        use physics::PhysicsPlugin;
+        use std::time::Duration;
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            bevy::asset::AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            bevy::scene::ScenePlugin,
+            PhysicsPlugin,
+            bevy::camera::visibility::VisibilityPlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+            1.0 / 60.0,
+        )));
+        app.finish();
+
+        // Spawn a can with the same components the kind-2 template inserts.
+        let can = app
+            .world_mut()
+            .spawn((
+                Transform::default(),
+                RigidBody::Dynamic,
+                Collider::cylinder(0.15, 0.1),
+                GravityScale(1.0),
+                LinearVelocity::default(),
+                Item,
+            ))
+            .id();
+
+        // Spawn a toolbox with the same components the kind-3 template inserts.
+        let toolbox = app
+            .world_mut()
+            .spawn((Transform::default(), Container::with_capacity(6)))
+            .id();
+
+        // Apply the same stash logic as the commands.queue() closure in setup_world.
+        let (collider, gravity) = {
+            let e = app.world().entity(can);
+            (
+                e.get::<Collider>()
+                    .expect("can kind-2 template must insert Collider")
+                    .clone(),
+                *e.get::<GravityScale>()
+                    .expect("can kind-2 template must insert GravityScale"),
+            )
+        };
+        {
+            let world = app.world_mut();
+            world
+                .entity_mut(can)
+                .insert((StashedPhysics { collider, gravity }, Visibility::Hidden));
+            world
+                .entity_mut(can)
+                .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+            let mut toolbox_entity = world.entity_mut(toolbox);
+            let mut container = toolbox_entity
+                .get_mut::<Container>()
+                .expect("toolbox entity must have a Container (kind 3 template)");
+            container.slots[0] = Some(can);
+        }
+
+        // Toolbox slot 0 must reference the stashed can.
+        let container = app.world().get::<Container>(toolbox).unwrap();
+        assert_eq!(
+            container.slots[0],
+            Some(can),
+            "toolbox slot 0 should be the stashed can"
+        );
+
+        // Stashed can must have StashedPhysics and be hidden.
+        assert!(
+            app.world().get::<StashedPhysics>(can).is_some(),
+            "stashed can must have StashedPhysics"
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(can),
+            Some(&Visibility::Hidden),
+            "stashed can must have Visibility::Hidden"
+        );
+
+        // Physics components must have been stripped.
+        assert!(
+            app.world().get::<RigidBody>(can).is_none(),
+            "stashed can must have no RigidBody"
+        );
+        assert!(
+            app.world().get::<Collider>(can).is_none(),
+            "stashed can must have no Collider"
+        );
+        assert!(
+            app.world().get::<LinearVelocity>(can).is_none(),
+            "stashed can must have no LinearVelocity"
+        );
     }
 }
