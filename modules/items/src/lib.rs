@@ -477,28 +477,31 @@ fn handle_item_interaction(
             }
         }
 
-        // Remove from source container.
+        // Validate: item must have the required physics components to be taken.
+        let (Some(collider), Some(gravity)) = (maybe_collider, maybe_gravity) else {
+            warn!(
+                "ItemTakeRequest: item {:?} is missing Collider and/or GravityScale — rejecting",
+                req.item
+            );
+            continue;
+        };
+
+        // Remove from source container now that we know the item can be held.
         if let Ok(mut src_container) = containers.get_mut(req.container) {
             src_container.remove(req.item);
         }
 
         // Ensure the item is in a non-physical "held" state: remove any
         // physics components so a dynamic rigid body is never parented under a
-        // hand slot (which would cause jitter/collisions).  Only stash if
-        // the item has the required components (same rule as pickup).
-        if let (Some(collider), Some(gravity)) = (maybe_collider, maybe_gravity) {
-            commands
-                .entity(req.item)
-                .insert(StashedPhysics {
-                    collider: collider.clone(),
-                    gravity: *gravity,
-                })
-                .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
-        } else {
-            commands
-                .entity(req.item)
-                .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
-        }
+        // hand slot (which would cause jitter/collisions).  Stash the physics
+        // components so they can be restored on drop (same rule as pickup).
+        commands
+            .entity(req.item)
+            .insert(StashedPhysics {
+                collider: collider.clone(),
+                gravity: *gravity,
+            })
+            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
 
         // Show and reparent to hand, resetting local transform to the hand anchor.
         commands
