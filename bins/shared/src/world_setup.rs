@@ -79,7 +79,7 @@ pub fn setup_world(
         ));
         world
             .entity_mut(can_stashed)
-            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+            .remove::<(RigidBody, LinearVelocity)>();
 
         let mut toolbox_entity = world.entity_mut(toolbox);
         let mut container = toolbox_entity
@@ -296,7 +296,7 @@ mod tests {
                 .insert((StashedPhysics { collider, gravity }, Visibility::Hidden));
             world
                 .entity_mut(can)
-                .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+                .remove::<(RigidBody, LinearVelocity)>();
             let mut toolbox_entity = world.entity_mut(toolbox);
             let mut container = toolbox_entity
                 .get_mut::<Container>()
@@ -323,18 +323,19 @@ mod tests {
             "stashed can must have Visibility::Hidden"
         );
 
-        // Physics components must have been stripped.
+        // RigidBody and LinearVelocity must have been stripped (no live physics),
+        // but Collider and GravityScale are kept so ItemTakeRequest validation passes.
         assert!(
             app.world().get::<RigidBody>(can).is_none(),
             "stashed can must have no RigidBody"
         );
         assert!(
-            app.world().get::<Collider>(can).is_none(),
-            "stashed can must have no Collider"
-        );
-        assert!(
             app.world().get::<LinearVelocity>(can).is_none(),
             "stashed can must have no LinearVelocity"
+        );
+        assert!(
+            app.world().get::<Collider>(can).is_some(),
+            "stashed can must retain Collider so ItemTakeRequest can validate it"
         );
     }
 }
