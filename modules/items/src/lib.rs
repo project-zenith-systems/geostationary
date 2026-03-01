@@ -878,7 +878,8 @@ impl Plugin for ItemsPlugin {
             PreUpdate,
             broadcast_stored_on_join
                 .run_if(resource_exists::<Server>)
-                .after(things::ThingsSet::HandleClientJoined),
+                .after(things::ThingsSet::HandleClientJoined)
+                .before(things::ThingsSet::SendStreamReady),
         );
     }
 }
@@ -1610,7 +1611,7 @@ mod tests {
     }
 
     /// Spawn a creature with a hand slot and a registered NetId.
-    /// Returns (creature_entity, hand_entity, creature_net_id).
+    /// Returns (creature_entity, hand_entity).
     fn spawn_creature_with_net_id(
         app: &mut App,
         net_id: NetId,

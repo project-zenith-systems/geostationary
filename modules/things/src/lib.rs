@@ -15,8 +15,15 @@ use wincode::{SchemaRead, SchemaWrite};
 /// Other modules can use this for explicit ordering relative to things systems.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ThingsSet {
-    /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages and [`StreamReady`] to a joining client.
+    /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] and
+    /// [`ThingsStreamMessage::ItemEvent(PickedUp)`] messages to a joining client.
     HandleClientJoined,
+    /// Sends the [`StreamReady`] sentinel for stream 3 to a joining client.
+    ///
+    /// Runs after [`HandleClientJoined`] so that other modules can insert their
+    /// own catch-up messages (e.g. `ItemEvent::Stored`) between the entity-spawn
+    /// burst and the ready signal.
+    SendStreamReady,
 }
 
 /// Marker component for non-grid-bound world objects.
@@ -290,6 +297,13 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
         app.insert_resource(reader);
 
         let state = self.state;
+        app.configure_sets(
+            PreUpdate,
+            ThingsSet::SendStreamReady
+                .after(ThingsSet::HandleClientJoined)
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send),
+        );
         app.add_systems(
             PreUpdate,
             (
@@ -298,6 +312,9 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
                 handle_client_joined
                     .run_if(resource_exists::<Server>)
                     .in_set(ThingsSet::HandleClientJoined),
+                send_stream_ready_on_join
+                    .run_if(resource_exists::<Server>)
+                    .in_set(ThingsSet::SendStreamReady),
             )
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
@@ -461,6 +478,12 @@ fn handle_entity_lifecycle(
                 }
             }
             ThingsStreamMessage::ItemEvent(ie) => {
+                // On a listen-server the item state is already authoritative; applying
+                // replicated events again would trigger redundant warnings and
+                // double-apply operations.  Mirror the StateUpdate guard above.
+                if is_listen_server {
+                    continue;
+                }
                 // Buffer for the items module's handle_item_event system which
                 // runs in Update after entity commands from PreUpdate are applied.
                 pending_item_events.0.push(ie);
@@ -472,13 +495,17 @@ fn handle_entity_lifecycle(
 /// Handles server-side catch-up on client join for stream 3.
 ///
 /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages for all currently
-/// tracked entities to the joining client, then sends
-/// [`ThingsStreamMessage::ItemEvent(ItemEvent::PickedUp)`] for each item currently
-/// held in a hand (parented to a [`HandSlot`]), and finally sends the
-/// [`StreamReady`] sentinel for stream 3.
+/// tracked entities and [`ThingsStreamMessage::ItemEvent(ItemEvent::PickedUp)`] for
+/// each currently held item to the joining client.
 ///
-/// Creature spawning and the EntitySpawned broadcast for the new player entity are handled
-/// by the `souls` module's `bind_soul` system.
+/// The [`StreamReady`] sentinel is sent separately by [`send_stream_ready_on_join`]
+/// in [`ThingsSet::SendStreamReady`], which runs after both this system *and* any
+/// other module catch-up systems (e.g. `broadcast_stored_on_join` in `items`).
+/// This ensures all initial-burst data — including stored-item events added by the
+/// `items` module — arrives on the client before the ready signal.
+///
+/// Creature spawning and the EntitySpawned broadcast for the new player entity are
+/// handled by the `souls` module's `bind_soul` system.
 fn handle_client_joined(
     mut messages: MessageReader<PlayerEvent>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
@@ -494,7 +521,6 @@ fn handle_client_joined(
     hand_slot_q: Query<(), With<HandSlot>>,
     hand_parent_q: Query<&ChildOf, With<HandSlot>>,
     creature_net_id_q: Query<&NetId, Without<HandSlot>>,
-    mut module_ready: MessageWriter<ModuleReadySent>,
 ) {
     for event in messages.read() {
         let PlayerEvent::Joined { id: from, .. } = event else {
@@ -558,9 +584,26 @@ fn handle_client_joined(
                 );
             }
         }
+    }
+}
 
-        // Signal that the initial burst for stream 3 is complete.
-        // The new player entity's EntitySpawned is broadcast by the souls module after this.
+/// Sends the [`StreamReady`] sentinel for stream 3 to every client that joined
+/// this frame.
+///
+/// Runs in [`ThingsSet::SendStreamReady`], which is ordered after
+/// [`ThingsSet::HandleClientJoined`].  This guarantees that all initial-burst
+/// messages — including any catch-up frames inserted by other modules between the
+/// two sets (e.g. `broadcast_stored_on_join` in `items`) — have been enqueued
+/// before the client sees the ready signal.
+fn send_stream_ready_on_join(
+    mut messages: MessageReader<PlayerEvent>,
+    stream_sender: Res<StreamSender<ThingsStreamMessage>>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
+) {
+    for event in messages.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
         if let Err(e) = stream_sender.send_stream_ready_to(*from) {
             error!(
                 "Failed to send StreamReady for things stream to ClientId({}): {e}",
