@@ -88,14 +88,20 @@ fn host_on_startup(mut net_commands: MessageWriter<NetCommand>, config: Res<AppC
     );
 }
 
-/// Checks for a pending CTRL-C / SIGINT signal and performs a two-phase graceful shutdown:
+/// Checks for a pending CTRL-C / SIGINT signal and performs a graceful shutdown:
 ///
 /// * **Phase 1** (first frame the signal is detected): broadcast [`ServerMessage::Shutdown`]
 ///   to all connected clients so they can disconnect cleanly, then insert the
 ///   [`ShuttingDown`] marker resource.
-/// * **Phase 2** (after [`SHUTDOWN_FLUSH_FRAMES`] more frames): send
-///   [`NetCommand::StopHosting`] to close network connections, then request
-///   [`AppExit`] to terminate the process.
+/// * **Phase 2a** (after [`SHUTDOWN_FLUSH_FRAMES`] more frames): send
+///   [`NetCommand::StopHosting`] so the network layer begins tearing down.
+/// * **Phase 2b** (once [`NetServerSender`] is removed): request [`AppExit`].
+///   [`NetServerSender`] is removed by [`drain_server_events`] when it receives
+///   [`ServerEvent::HostingStopped`], which is emitted by the server task only
+///   after all connections are closed.  Waiting for this guarantees that
+///   `process_net_commands` (which runs in `PreUpdate`) has had a full frame to
+///   process the [`NetCommand::StopHosting`] written in the previous `Update`
+///   before the process exits.
 ///
 /// The flush delay gives the async network layer several frames (~100 ms at 30 Hz)
 /// to deliver the [`ServerMessage::Shutdown`] broadcast through both the server-command
@@ -116,17 +122,23 @@ fn check_shutdown_signal(
     match shutting_down {
         None => {
             // Phase 1: notify clients and mark shutdown in progress.
-            if let Some(sender) = sender {
-                sender.broadcast(&ServerMessage::Shutdown);
+            if let Some(sender_ref) = sender.as_ref() {
+                sender_ref.broadcast(&ServerMessage::Shutdown);
             }
             commands.insert_resource(ShuttingDown { frames_elapsed: 0 });
             info!("Shutdown signal received: notifying clients and stopping server...");
         }
         Some(mut state) => {
             state.frames_elapsed += 1;
-            if state.frames_elapsed >= SHUTDOWN_FLUSH_FRAMES {
-                // Phase 2: stop hosting and exit after the flush window.
+            if state.frames_elapsed == SHUTDOWN_FLUSH_FRAMES {
+                // Phase 2a: after the flush window, request the network to stop hosting.
+                // StopHosting will be processed by process_net_commands in the next PreUpdate.
                 net_commands.write(NetCommand::StopHosting);
+            }
+
+            // Phase 2b: once hosting has actually stopped (NetServerSender removed by
+            // drain_server_events on HostingStopped), it is safe to exit.
+            if state.frames_elapsed >= SHUTDOWN_FLUSH_FRAMES && sender.is_none() {
                 app_exit.write(AppExit::Success);
             }
         }
