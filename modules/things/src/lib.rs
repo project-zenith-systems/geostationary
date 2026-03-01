@@ -16,7 +16,7 @@ use wincode::{SchemaRead, SchemaWrite};
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ThingsSet {
     /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] and
-    /// [`ThingsStreamMessage::ItemEvent(PickedUp)`] messages to a joining client.
+    /// [`ThingsStreamMessage::ItemEvent`] with [`ItemEvent::PickedUp`] messages to a joining client.
     HandleClientJoined,
     /// Sends the [`StreamReady`] sentinel for stream 3 to a joining client.
     ///
@@ -495,7 +495,7 @@ fn handle_entity_lifecycle(
 /// Handles server-side catch-up on client join for stream 3.
 ///
 /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages for all currently
-/// tracked entities and [`ThingsStreamMessage::ItemEvent(ItemEvent::PickedUp)`] for
+/// tracked entities and [`ThingsStreamMessage::ItemEvent`] with [`ItemEvent::PickedUp`] for
 /// each currently held item to the joining client.
 ///
 /// The [`StreamReady`] sentinel is sent separately by [`send_stream_ready_on_join`]
