@@ -76,6 +76,26 @@ pub struct DisplayName(pub String);
 #[reflect(Component)]
 pub struct InputDirection(pub Vec3);
 
+/// Bevy message fired by the items module after each successful item operation.
+///
+/// Defined here (in `things`) rather than in `items` to avoid a circular crate
+/// dependency: `items` already depends on `things`.  Variants use only [`Entity`]
+/// and [`Vec3`] — no item-specific types.
+///
+/// A future `broadcast_item_event` system in `things` will read this and
+/// replicate the action to connected clients.
+#[derive(Message, Clone, Debug)]
+pub enum ItemActionEvent {
+    /// An item was picked up and placed into a hand slot.
+    PickedUp { item: Entity, hand: Entity },
+    /// An item was dropped from a hand slot at the given world position.
+    Dropped { item: Entity, position: Vec3 },
+    /// An item was moved from a hand slot into a container.
+    Stored { item: Entity, container: Entity },
+    /// An item was taken from a container into a hand slot.
+    Taken { item: Entity, hand: Entity },
+}
+
 /// Entity event to construct the visual and physical representation of a thing.
 /// The observer adds base components (mesh, physics, Thing marker) then runs
 /// the template registered for the given `kind` via [`ThingRegistry`].
@@ -253,6 +273,8 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
         // exist even when InputPlugin is not added (e.g. headless server mode).
         app.add_message::<PointerAction>();
         app.add_message::<WorldHit>();
+        // ItemActionEvent is defined here so items can fire it without a circular dependency.
+        app.add_message::<ItemActionEvent>();
         app.add_systems(
             Update,
             raycast_things

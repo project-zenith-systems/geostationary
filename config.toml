@@ -22,3 +22,7 @@ pressure_force_scale = 1.0
 # Fraction of pressure difference equalized between neighboring cells per step.
 # Higher = faster gas flow. Too high causes oscillation/instability.
 diffusion_rate = 10.0
+
+[items]
+# Maximum world-space distance for item interactions (pickup, store, take, drop).
+interaction_range = 2.0
