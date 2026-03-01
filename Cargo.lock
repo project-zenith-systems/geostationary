@@ -5390,6 +5390,7 @@ dependencies = [
  "bevy",
  "config",
  "creatures",
+ "items",
  "network",
  "physics",
  "serde",
