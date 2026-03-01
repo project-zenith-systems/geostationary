@@ -18,7 +18,7 @@ pub const INTERACTIONS_STREAM_TAG: u8 = 4;
 /// Each variant corresponds to a player-initiated interaction request.
 /// The server decodes this in [`dispatch_interaction`] and applies the
 /// corresponding game logic.
-#[derive(Debug, Clone, SchemaRead, SchemaWrite)]
+#[derive(Message, Debug, Clone, SchemaRead, SchemaWrite)]
 pub enum InteractionRequest {
     /// Request to change a tile at the given grid position to a new kind.
     TileToggle {
@@ -269,8 +269,8 @@ fn dispatch_interaction(
 
                 // Validate: requested kind must differ from the current tile.
                 if current == kind {
-                    warn!(
-                        "TileToggle from {:?}: tile at {:?} is already {:?}",
+                    debug!(
+                        "TileToggle from {:?}: tile at {:?} is already {:?}, ignoring",
                         from, pos, kind
                     );
                     continue;
@@ -429,7 +429,9 @@ impl<S: States + Copy> Plugin for InteractionsPlugin<S> {
 
         app.add_systems(
             Update,
-            dispatch_interaction.run_if(resource_exists::<Server>),
+            dispatch_interaction
+                .run_if(in_state(state))
+                .run_if(resource_exists::<Server>),
         );
 
         // Register stream 4 (client→server interactions stream).

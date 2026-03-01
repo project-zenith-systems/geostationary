@@ -233,9 +233,10 @@ impl Plugin for TilesPlugin {
             app.init_resource::<TileMeshes>();
             app.add_systems(Update, spawn_tile_meshes);
             // On a listen-server, TileMutated events are written by dispatch_interaction
-            // (interactions module).  On a dedicated client they come from handle_tiles_stream.
+            // (interactions module, Update schedule).  Running apply_tile_mutation in PostUpdate
+            // guarantees it executes after dispatch_interaction has written the events.
             app.add_systems(
-                Update,
+                PostUpdate,
                 apply_tile_mutation.run_if(resource_exists::<Server>),
             );
             // On a dedicated client, TileMutated events come from handle_tiles_stream
