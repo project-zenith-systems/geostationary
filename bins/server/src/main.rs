@@ -1,5 +1,6 @@
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
+use interactions::InteractionsPlugin;
 use network::{Headless, NetCommand, NetworkPlugin};
 use physics::PhysicsPlugin;
 use shared::config::AppConfig;
@@ -49,6 +50,9 @@ fn main() {
         .add_plugins(shared::world_setup::WorldSetupPlugin)
         .add_plugins(shared::server::ServerPlugin)
         .add_plugins(ItemsPlugin)
+        .add_plugins(InteractionsPlugin::<shared::app_state::AppState>::in_state(
+            shared::app_state::AppState::InGame,
+        ))
         .insert_resource(InteractionRange(app_config.items.interaction_range))
         .insert_state(shared::app_state::AppState::InGame)
         .add_systems(Startup, host_on_startup);

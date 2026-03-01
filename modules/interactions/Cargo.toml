@@ -9,3 +9,9 @@ input = { path = "../input" }
 ui = { path = "../ui" }
 tiles = { path = "../tiles" }
 network = { path = "../network" }
+items = { path = "../items" }
+things = { path = "../things" }
+wincode = { workspace = true }
+
+[dev-dependencies]
+bytes = "1"

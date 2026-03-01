@@ -2845,6 +2845,7 @@ dependencies = [
  "atmospherics",
  "bevy",
  "creatures",
+ "interactions",
  "items",
  "network",
  "physics",
@@ -3366,10 +3367,14 @@ name = "interactions"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bytes",
  "input",
+ "items",
  "network",
+ "things",
  "tiles",
  "ui",
+ "wincode",
 ]
 
 [[package]]
