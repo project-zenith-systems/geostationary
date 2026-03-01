@@ -4,7 +4,7 @@ use network::{
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{ConstantForce, RigidBody};
-use tiles::Tilemap;
+use tiles::{TileMutated, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
@@ -209,6 +209,7 @@ impl Plugin for AtmosphericsPlugin {
         app.register_type::<GasGrid>();
         app.init_resource::<AtmosDebugOverlay>();
         app.init_resource::<AtmosSimPaused>();
+        app.add_message::<TileMutated>();
         app.add_systems(
             FixedUpdate,
             (wall_sync_system, diffusion_step_system, apply_pressure_forces)

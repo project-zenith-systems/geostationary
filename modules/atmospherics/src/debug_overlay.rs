@@ -251,6 +251,15 @@ pub fn update_overlay_on_tile_mutation(
         return;
     }
 
+    // Seed the shared mesh handle from any pre-existing quad.  We cache it in a
+    // local variable so that multiple walkable events in the same frame all reuse
+    // the same mesh handle even though Commands-deferred spawns are not yet visible
+    // to the `existing_quads` query.
+    let mut shared_mesh: Option<Handle<Mesh>> = existing_quads
+        .iter()
+        .next()
+        .map(|(_, q)| q.mesh.clone());
+
     for event in tile_events.read() {
         let TileMutated { position, kind } = *event;
 
@@ -260,12 +269,11 @@ pub fn update_overlay_on_tile_mutation(
             if !already_exists {
                 let world_x = position.x as f32;
                 let world_z = position.y as f32;
-                // Reuse the shared mesh from any existing quad, or create a new one if none exist.
-                let mesh = existing_quads
-                    .iter()
-                    .next()
-                    .map(|(_, q)| q.mesh.clone())
-                    .unwrap_or_else(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5))));
+                // Reuse the cached shared mesh handle, or create one (and cache it for
+                // all subsequent spawns in this invocation).
+                let mesh = shared_mesh
+                    .get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5))))
+                    .clone();
                 let material = materials.add(StandardMaterial {
                     base_color: Color::srgba(0.0, 1.0, 0.0, 0.5),
                     alpha_mode: AlphaMode::Blend,
@@ -288,13 +296,15 @@ pub fn update_overlay_on_tile_mutation(
             // Tile became a wall — despawn the overlay quad at this position (if any).
             for (entity, quad) in existing_quads.iter() {
                 if quad.position == position {
-                    // Only remove the mesh asset if no other OverlayQuad shares this handle.
-                    let mesh_is_shared = existing_quads
-                        .iter()
-                        .any(|(e, q)| e != entity && q.mesh.id() == quad.mesh.id());
-                    if !mesh_is_shared {
-                        meshes.remove(&quad.mesh);
-                    }
+                    // Remove the per-quad material (each quad owns a unique material handle).
+                    // Do NOT remove the shared mesh asset here: despawns are deferred via
+                    // Commands, so the quad entity (and its mesh handle) can still be
+                    // observed by the query later in this loop.  Removing the asset now
+                    // would invalidate any Handle<Mesh> obtained by a later walkable event
+                    // in the same batch.  The shared mesh is cleaned up automatically by
+                    // Bevy's asset ref-counting once all OverlayQuad entities that hold
+                    // the handle are gone, and explicitly by despawn_overlay_quads when
+                    // the overlay is toggled off.
                     materials.remove(&quad.material);
                     commands.entity(entity).despawn();
                     debug!("Despawned overlay quad at {:?} (tile became wall)", position);
@@ -316,7 +326,7 @@ mod tests {
     /// test app's message queue from outside a system. Can be reused
     /// across multiple frames by setting a new value before each `update()`.
     #[derive(Resource, Default)]
-    struct PendingMutation(Option<TileMutated>);
+    struct PendingMutation(Vec<TileMutated>);
 
     /// System that drains [`PendingMutation`] into the message stream so that
     /// `update_overlay_on_tile_mutation` can read it in the same frame.
@@ -324,7 +334,7 @@ mod tests {
         mut writer: MessageWriter<TileMutated>,
         mut pending: ResMut<PendingMutation>,
     ) {
-        if let Some(msg) = pending.0.take() {
+        for msg in pending.0.drain(..) {
             writer.write(msg);
         }
     }
@@ -376,10 +386,21 @@ mod tests {
             .id()
     }
 
-    /// Helper: write a mutation event and advance by one frame.
+    /// Helper: write a single mutation event and advance by one frame.
     fn fire_mutation(app: &mut App, position: IVec2, kind: TileKind) {
-        app.world_mut().resource_mut::<PendingMutation>().0 =
-            Some(TileMutated { position, kind });
+        app.world_mut()
+            .resource_mut::<PendingMutation>()
+            .0
+            .push(TileMutated { position, kind });
+        app.update();
+    }
+
+    /// Helper: write multiple mutation events in the same frame and advance.
+    fn fire_mutations(app: &mut App, events: impl IntoIterator<Item = (IVec2, TileKind)>) {
+        let mut pending = app.world_mut().resource_mut::<PendingMutation>();
+        for (position, kind) in events {
+            pending.0.push(TileMutated { position, kind });
+        }
         app.update();
     }
 
@@ -560,6 +581,37 @@ mod tests {
                 .get(mesh_id)
                 .is_some(),
             "shared mesh should not be removed while other quads still reference it"
+        );
+    }
+
+    #[test]
+    fn test_multiple_walkable_events_same_frame_share_one_mesh() {
+        let mut app = make_test_app();
+
+        // Fire two walkable mutations in the same frame with no prior quads.
+        // Both new quads must share the same mesh handle (not create separate meshes).
+        fire_mutations(
+            &mut app,
+            [
+                (IVec2::new(0, 0), TileKind::Floor),
+                (IVec2::new(1, 0), TileKind::Floor),
+            ],
+        );
+
+        assert_eq!(
+            quad_count(&mut app),
+            2,
+            "both walkable mutations should produce quads"
+        );
+
+        let mut q = app.world_mut().query::<&OverlayQuad>();
+        let mesh_ids: std::collections::HashSet<_> =
+            q.iter(app.world()).map(|quad| quad.mesh.id()).collect();
+
+        assert_eq!(
+            mesh_ids.len(),
+            1,
+            "both quads spawned in the same frame should share one mesh handle"
         );
     }
 }
