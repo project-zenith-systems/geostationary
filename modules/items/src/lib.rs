@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use network::{NetId, PlayerEvent, Server, StreamSender};
 use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
 use things::{
-    HandSlot, ItemActionEvent, ItemEvent, NetIdIndex, PendingItemEvents, ThingsStreamMessage,
+    HandSlot, ItemActionEvent, ItemEvent, NetIdIndex, PendingItemEvents, SpawnThing,
+    ThingRegistry, ThingsStreamMessage,
 };
 
 // ── Components ────────────────────────────────────────────────────────────────
@@ -885,6 +886,33 @@ impl Plugin for ItemsPlugin {
                 .after(things::ThingsSet::HandleClientJoined)
                 .before(things::ThingsSet::SendStreamReady),
         );
+
+        // Register kind 2 (can): small metallic cylinder.
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(2, |entity, _event: &SpawnThing, commands| {
+                commands.entity(entity).insert((
+                    Collider::cylinder(0.15, 0.1),
+                    RigidBody::Dynamic,
+                    GravityScale(1.0),
+                    Item,
+                    Name::new("Can"),
+                ));
+            });
+
+        // Register kind 3 (toolbox): box with a 6-slot container.
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(3, |entity, _event: &SpawnThing, commands| {
+                commands.entity(entity).insert((
+                    Collider::cuboid(0.3, 0.15, 0.2),
+                    RigidBody::Dynamic,
+                    GravityScale(1.0),
+                    Item,
+                    Name::new("Toolbox"),
+                    Container::with_capacity(6),
+                ));
+            });
     }
 }
 

@@ -1,8 +1,9 @@
 use atmospherics::GasGrid;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use items::{Container, StashedPhysics};
 use network::Server;
-use physics::{Collider, GravityScale, Restitution};
+use physics::{Collider, GravityScale, LinearVelocity, Restitution, RigidBody};
 use things::ThingRegistry;
 use tiles::Tilemap;
 
@@ -37,6 +38,53 @@ pub fn setup_world(
     let (ball, _net_id) =
         things::spawn_thing(&mut commands, &mut server, 1, Vec3::new(6.0, 5.0, 3.0));
     commands.entity(ball).insert(DespawnOnExit(AppState::InGame));
+
+    // Spawn a free can (kind 2) in the pressurised chamber.
+    let (can1, _) =
+        things::spawn_thing(&mut commands, &mut server, 2, Vec3::new(4.0, 1.0, 3.0));
+    commands.entity(can1).insert(DespawnOnExit(AppState::InGame));
+
+    // Spawn the stashed can — it will be pre-loaded inside the toolbox.
+    let (can_stashed, _) =
+        things::spawn_thing(&mut commands, &mut server, 2, Vec3::new(5.0, 1.0, 3.0));
+    commands
+        .entity(can_stashed)
+        .insert(DespawnOnExit(AppState::InGame));
+
+    // Spawn toolbox (kind 3) in the pressurised chamber.
+    let (toolbox, _) =
+        things::spawn_thing(&mut commands, &mut server, 3, Vec3::new(5.0, 1.0, 3.0));
+    commands
+        .entity(toolbox)
+        .insert(DespawnOnExit(AppState::InGame));
+
+    // After all SpawnThing triggers have been applied, stash the can inside the toolbox.
+    // The can gets StashedPhysics (derived from its template components) + Visibility::Hidden
+    // and its live-physics components are removed; the toolbox Container.slots[0] is set to
+    // point at the can entity.
+    commands.queue(move |world: &mut World| {
+        let (collider, gravity) = {
+            let e = world.entity(can_stashed);
+            (
+                e.get::<Collider>()
+                    .expect("can kind-2 template must insert Collider")
+                    .clone(),
+                *e.get::<GravityScale>()
+                    .expect("can kind-2 template must insert GravityScale"),
+            )
+        };
+        world.entity_mut(can_stashed).insert((
+            StashedPhysics { collider, gravity },
+            Visibility::Hidden,
+        ));
+        world
+            .entity_mut(can_stashed)
+            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+
+        if let Some(mut container) = world.entity_mut(toolbox).get_mut::<Container>() {
+            container.slots[0] = Some(can_stashed);
+        }
+    });
 }
 
 /// System that cleans up the world when exiting InGame state.
