@@ -326,7 +326,7 @@ fn dispatch_interaction(
                 drop_req.write(ItemDropRequest {
                     actor,
                     item,
-                    drop_position: Vec3::from(drop_position),
+                    drop_position: Vec3::from_array(drop_position),
                 });
             }
 
@@ -413,6 +413,8 @@ impl<S: States + Copy> Plugin for InteractionsPlugin<S> {
     fn build(&self, app: &mut App) {
         app.add_message::<ContextMenuAction>();
         app.add_message::<InteractionRequest>();
+        app.add_message::<PointerAction>();
+        app.add_message::<WorldHit>();
 
         let state = self.state;
         app.add_systems(
