@@ -2,8 +2,8 @@ use bevy::{app::AppExit, prelude::*, state::state_scoped::DespawnOnExit};
 use network::{ClientEvent, NetCommand, NetworkSet, ServerEvent};
 use ui::*;
 
-use crate::app_state::AppState;
-use crate::config::AppConfig;
+use shared::app_state::AppState;
+use shared::config::AppConfig;
 
 mod loading_screen;
 mod settings_screen;

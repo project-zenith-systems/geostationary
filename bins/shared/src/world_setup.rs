@@ -1,7 +1,7 @@
 use atmospherics::GasGrid;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use network::{Headless, Server};
+use network::Server;
 use physics::{Collider, GravityScale, Restitution};
 use things::ThingRegistry;
 use tiles::Tilemap;
@@ -9,8 +9,7 @@ use tiles::Tilemap;
 use crate::app_state::AppState;
 use crate::config::AppConfig;
 
-const BALL_RADIUS: f32 = 0.3;
-const BALL_COLOR: (f32, f32, f32) = (1.0, 0.8, 0.0); // Bright yellow
+pub const BALL_RADIUS: f32 = 0.3;
 
 /// System that sets up the world when entering InGame state (server only).
 pub fn setup_world(
@@ -33,8 +32,6 @@ pub fn setup_world(
         config.atmospherics.pressure_force_scale,
     ));
 
-    // Player capsule spawn removed - now handled by server.rs and client.rs
-
     // Spawn a bouncing ball above the floor using the thing prefab system (kind 1).
     // Position it at y=5.0 so it has room to fall and bounce.
     let (ball, _net_id) =
@@ -53,47 +50,17 @@ pub struct WorldSetupPlugin;
 
 impl Plugin for WorldSetupPlugin {
     fn build(&self, app: &mut App) {
-        let headless = app.world().contains_resource::<Headless>();
-
-        if headless {
-            // In headless mode, no rendering is available: register the ball with physics only.
-            app.world_mut()
-                .resource_mut::<ThingRegistry>()
-                .register(1, |entity, _event, commands| {
-                    commands.entity(entity).insert((
-                        Collider::sphere(BALL_RADIUS),
-                        GravityScale(1.0),
-                        Restitution::new(0.8),
-                    ));
-                });
-        } else {
-            // Pre-load ball assets once at startup so every spawned ball reuses the same handles.
-            let ball_mesh = app
-                .world_mut()
-                .resource_mut::<Assets<Mesh>>()
-                .add(Sphere::new(BALL_RADIUS));
-            let ball_mat = app
-                .world_mut()
-                .resource_mut::<Assets<StandardMaterial>>()
-                .add(StandardMaterial {
-                    base_color: Color::srgb(BALL_COLOR.0, BALL_COLOR.1, BALL_COLOR.2),
-                    ..default()
-                });
-
-            // Register ball as thing kind 1: overrides the default capsule from on_spawn_thing
-            // with a sphere mesh, sphere collider, standard gravity, and bounciness.
-            app.world_mut()
-                .resource_mut::<ThingRegistry>()
-                .register(1, move |entity, _event, commands| {
-                    commands.entity(entity).insert((
-                        Mesh3d(ball_mesh.clone()),
-                        MeshMaterial3d(ball_mat.clone()),
-                        Collider::sphere(BALL_RADIUS),
-                        GravityScale(1.0),
-                        Restitution::new(0.8),
-                    ));
-                });
-        }
+        // Register ball as thing kind 1 with physics-only components.
+        // Client binaries can override this registration to add mesh + material.
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(1, |entity, _event, commands| {
+                commands.entity(entity).insert((
+                    Collider::sphere(BALL_RADIUS),
+                    GravityScale(1.0),
+                    Restitution::new(0.8),
+                ));
+            });
 
         // Run setup_world as soon as Server exists and Tilemap hasn't been created yet.
         // This decouples world creation from the InGame state transition, which is

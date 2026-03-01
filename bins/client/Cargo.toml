@@ -1,0 +1,21 @@
+[package]
+name = "geostationary"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { workspace = true }
+
+shared = { path = "../shared" }
+network = { path = "../../modules/network" }
+physics = { path = "../../modules/physics" }
+tiles = { path = "../../modules/tiles" }
+things = { path = "../../modules/things" }
+atmospherics = { path = "../../modules/atmospherics" }
+creatures = { path = "../../modules/creatures" }
+souls = { path = "../../modules/souls" }
+ui = { path = "../../modules/ui" }
+camera = { path = "../../modules/camera" }
+input = { path = "../../modules/input" }
+interactions = { path = "../../modules/interactions" }
+player = { path = "../../modules/player" }
