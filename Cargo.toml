@@ -1,11 +1,9 @@
-[package]
-name = "geostationary"
-version = "0.1.0"
-edition = "2024"
-
 [workspace]
 resolver = "3"
 members = [
+    "bins/shared",
+    "bins/client",
+    "bins/server",
     "modules/ui",
     "modules/network",
     "modules/tiles",
@@ -19,9 +17,10 @@ members = [
     "modules/input",
     "modules/interactions",
 ]
+default-members = ["bins/client"]
 
 [profile.dev]
-opt-level = 0
+opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 1
@@ -37,25 +36,14 @@ opt-level = "s"
 strip = "debuginfo"
 
 [workspace.dependencies]
-bevy = { version = "0.18" }
+bevy = { version = "0.18", default-features = false, features = [
+    "bevy_state",
+    "bevy_pbr",
+    "bevy_mesh",
+    "bevy_scene",
+    "bevy_asset",
+    "bevy_log",
+] }
 config = { version = "0.15", features = ["ron", "toml"] }
 serde = { version = "1", features = ["derive"] }
 wincode = { version = "0.4", features = ["derive"] }
-
-[dependencies]
-bevy = { workspace = true }
-config = { workspace = true }
-serde = { workspace = true }
-
-ui = { path = "modules/ui" }
-network = { path = "modules/network" }
-tiles = { path = "modules/tiles" }
-things = { path = "modules/things" }
-physics = { path = "modules/physics" }
-player = { path = "modules/player" }
-creatures = { path = "modules/creatures" }
-camera = { path = "modules/camera" }
-atmospherics = { path = "modules/atmospherics" }
-souls = { path = "modules/souls" }
-input = { path = "modules/input" }
-interactions = { path = "modules/interactions" }

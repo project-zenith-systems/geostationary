@@ -3,7 +3,7 @@ use bevy::state::state_scoped::DespawnOnExit;
 use network::{Client, ClientEvent, NetworkSet, NetId, ServerMessage};
 use things::NetIdIndex;
 
-use crate::app_state::AppState;
+use shared::app_state::AppState;
 
 pub struct ClientPlugin;
 

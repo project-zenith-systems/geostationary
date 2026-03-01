@@ -4,6 +4,34 @@ A round-based multiplayer space station simulation built with [Bevy](https://bev
 
 See [docs/architecture.md](docs/architecture.md) for the full systems architecture.
 
+## Project Structure
+
+The workspace is split into two binaries and a set of shared modules:
+
+```
+bins/
+  client/     — full game client with rendering, UI, input
+  server/     — headless dedicated server (no windowing/rendering deps)
+  shared/     — library used by both: AppState, config, ServerPlugin, WorldSetupPlugin
+modules/      — gameplay crates (network, physics, tiles, things, etc.)
+```
+
+### Building
+
+```sh
+# Client (full game)
+cargo run -p geostationary
+
+# Dedicated server (headless)
+cargo run -p geostationary-server
+
+# Check server compiles
+cargo check -p geostationary-server
+
+# Run all tests
+cargo test --workspace
+```
+
 ## TODO.md
 
 To batch-create GitHub issues, add a `TODO.md` file to the repository root and push to `main`. A workflow will automatically convert each entry into a labeled issue and remove the file.
