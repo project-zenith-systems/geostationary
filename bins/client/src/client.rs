@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use network::{Client, ClientEvent, NetworkSet, NetId, ServerMessage};
+use network::{Client, ClientEvent, NetCommand, NetworkSet, NetId, ServerMessage};
 use things::NetIdIndex;
 
 use shared::app_state::AppState;
@@ -93,6 +93,7 @@ fn handle_client_events(
     state: Res<State<AppState>>,
     mut client: ResMut<Client>,
     mut sync: ResMut<PendingSync>,
+    mut net_commands: MessageWriter<NetCommand>,
 ) {
     for event in messages.read() {
         match event {
@@ -148,6 +149,7 @@ fn handle_client_events(
                 }
                 ServerMessage::Shutdown => {
                     info!("Server is shutting down");
+                    net_commands.write(NetCommand::Disconnect);
                     next_state.set(AppState::MainMenu);
                 }
             },

@@ -97,11 +97,12 @@ fn host_on_startup(mut net_commands: MessageWriter<NetCommand>, config: Res<AppC
 ///   [`NetCommand::StopHosting`] so the network layer begins tearing down.
 /// * **Phase 2b** (once [`NetServerSender`] is removed): request [`AppExit`].
 ///   [`NetServerSender`] is removed by [`drain_server_events`] when it receives
-///   [`ServerEvent::HostingStopped`], which is emitted by the server task only
-///   after all connections are closed.  Waiting for this guarantees that
-///   `process_net_commands` (which runs in `PreUpdate`) has had a full frame to
-///   process the [`NetCommand::StopHosting`] written in the previous `Update`
-///   before the process exits.
+///   [`ServerEvent::HostingStopped`], which is emitted by the server task once
+///   hosting has stopped (it no longer accepts new connections), but not
+///   necessarily after all existing connections have fully closed.  Waiting for
+///   this guarantees that `process_net_commands` (which runs in `PreUpdate`) has
+///   had a full frame to process the [`NetCommand::StopHosting`] written in the
+///   previous `Update` before the process exits.
 ///
 /// The flush delay gives the async network layer several frames (~100 ms at 30 Hz)
 /// to deliver the [`ServerMessage::Shutdown`] broadcast through both the server-command
