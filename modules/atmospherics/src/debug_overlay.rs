@@ -260,7 +260,12 @@ pub fn update_overlay_on_tile_mutation(
             if !already_exists {
                 let world_x = position.x as f32;
                 let world_z = position.y as f32;
-                let mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
+                // Reuse the shared mesh from any existing quad, or create a new one if none exist.
+                let mesh = existing_quads
+                    .iter()
+                    .next()
+                    .map(|(_, q)| q.mesh.clone())
+                    .unwrap_or_else(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5))));
                 let material = materials.add(StandardMaterial {
                     base_color: Color::srgba(0.0, 1.0, 0.0, 0.5),
                     alpha_mode: AlphaMode::Blend,
@@ -283,7 +288,13 @@ pub fn update_overlay_on_tile_mutation(
             // Tile became a wall — despawn the overlay quad at this position (if any).
             for (entity, quad) in existing_quads.iter() {
                 if quad.position == position {
-                    meshes.remove(&quad.mesh);
+                    // Only remove the mesh asset if no other OverlayQuad shares this handle.
+                    let mesh_is_shared = existing_quads
+                        .iter()
+                        .any(|(e, q)| e != entity && q.mesh.id() == quad.mesh.id());
+                    if !mesh_is_shared {
+                        meshes.remove(&quad.mesh);
+                    }
                     materials.remove(&quad.material);
                     commands.entity(entity).despawn();
                     debug!("Despawned overlay quad at {:?} (tile became wall)", position);
@@ -297,6 +308,82 @@ pub fn update_overlay_on_tile_mutation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tiles::TileKind;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// A resource used to inject a [`TileMutated`] message into the
+    /// test app's message queue from outside a system. Can be reused
+    /// across multiple frames by setting a new value before each `update()`.
+    #[derive(Resource, Default)]
+    struct PendingMutation(Option<TileMutated>);
+
+    /// System that drains [`PendingMutation`] into the message stream so that
+    /// `update_overlay_on_tile_mutation` can read it in the same frame.
+    fn inject_pending_mutation(
+        mut writer: MessageWriter<TileMutated>,
+        mut pending: ResMut<PendingMutation>,
+    ) {
+        if let Some(msg) = pending.0.take() {
+            writer.write(msg);
+        }
+    }
+
+    /// Build a minimal [`App`] wired up for overlay mutation tests.
+    fn make_test_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.insert_resource(AtmosDebugOverlay(true));
+        app.add_message::<TileMutated>();
+        app.init_asset::<Mesh>();
+        app.init_asset::<StandardMaterial>();
+        app.init_resource::<PendingMutation>();
+        app.add_systems(
+            Update,
+            (inject_pending_mutation, update_overlay_on_tile_mutation).chain(),
+        );
+        app
+    }
+
+    /// Count the number of [`OverlayQuad`] entities currently in the world.
+    fn quad_count(app: &mut App) -> usize {
+        let mut q = app.world_mut().query::<&OverlayQuad>();
+        q.iter(app.world()).count()
+    }
+
+    /// Spawn a bare `OverlayQuad` entity with real mesh/material assets but
+    /// without rendering components (`Mesh3d`, `MeshMaterial3d`, `Transform`),
+    /// which are not needed for the mutation system tests.
+    fn spawn_test_quad(app: &mut App, position: IVec2) -> Entity {
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                unlit: true,
+                ..default()
+            });
+        app.world_mut()
+            .spawn(OverlayQuad {
+                position,
+                mesh,
+                material,
+            })
+            .id()
+    }
+
+    /// Helper: write a mutation event and advance by one frame.
+    fn fire_mutation(app: &mut App, position: IVec2, kind: TileKind) {
+        app.world_mut().resource_mut::<PendingMutation>().0 =
+            Some(TileMutated { position, kind });
+        app.update();
+    }
+
+    // ── pre-existing unit tests ───────────────────────────────────────────
 
     #[test]
     fn test_overlay_default_off() {
@@ -315,5 +402,164 @@ mod tests {
 
         overlay.0 = !overlay.0;
         assert!(!overlay.0, "Should be off after second toggle");
+    }
+
+    // ── ECS-style mutation system tests ──────────────────────────────────
+
+    #[test]
+    fn test_mutation_skips_when_overlay_off() {
+        let mut app = make_test_app();
+        app.insert_resource(AtmosDebugOverlay(false));
+        spawn_test_quad(&mut app, IVec2::new(1, 1));
+
+        fire_mutation(&mut app, IVec2::new(1, 1), TileKind::Wall);
+
+        assert_eq!(
+            quad_count(&mut app),
+            1,
+            "quad should not be despawned when overlay is off"
+        );
+    }
+
+    #[test]
+    fn test_mutation_despawns_quad_when_tile_becomes_wall() {
+        let mut app = make_test_app();
+        spawn_test_quad(&mut app, IVec2::new(2, 3));
+
+        fire_mutation(&mut app, IVec2::new(2, 3), TileKind::Wall);
+
+        assert_eq!(
+            quad_count(&mut app),
+            0,
+            "quad should be despawned when tile becomes a wall"
+        );
+    }
+
+    #[test]
+    fn test_mutation_does_not_despawn_other_quads() {
+        let mut app = make_test_app();
+        spawn_test_quad(&mut app, IVec2::new(1, 1));
+        spawn_test_quad(&mut app, IVec2::new(2, 2));
+
+        fire_mutation(&mut app, IVec2::new(1, 1), TileKind::Wall);
+
+        assert_eq!(
+            quad_count(&mut app),
+            1,
+            "only the targeted position's quad should be despawned"
+        );
+    }
+
+    #[test]
+    fn test_mutation_spawns_quad_when_tile_becomes_walkable() {
+        let mut app = make_test_app();
+
+        fire_mutation(&mut app, IVec2::new(3, 4), TileKind::Floor);
+
+        assert_eq!(
+            quad_count(&mut app),
+            1,
+            "a new quad should be spawned when a tile becomes walkable"
+        );
+    }
+
+    #[test]
+    fn test_mutation_no_duplicate_quad_for_existing_walkable_tile() {
+        let mut app = make_test_app();
+        spawn_test_quad(&mut app, IVec2::new(5, 6));
+
+        fire_mutation(&mut app, IVec2::new(5, 6), TileKind::Floor);
+
+        assert_eq!(
+            quad_count(&mut app),
+            1,
+            "no duplicate quad should be spawned for a position that already has one"
+        );
+    }
+
+    #[test]
+    fn test_new_quad_reuses_existing_shared_mesh() {
+        let mut app = make_test_app();
+
+        // Spawn an initial quad with a known mesh handle.
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                unlit: true,
+                ..default()
+            });
+        let initial_mesh_id = mesh.id();
+        app.world_mut().spawn(OverlayQuad {
+            position: IVec2::new(0, 0),
+            mesh,
+            material,
+        });
+
+        // A floor mutation at a different position should reuse the existing mesh.
+        fire_mutation(&mut app, IVec2::new(1, 0), TileKind::Floor);
+
+        let mut q = app.world_mut().query::<&OverlayQuad>();
+        let new_mesh_id = q
+            .iter(app.world())
+            .find(|quad| quad.position == IVec2::new(1, 0))
+            .map(|quad| quad.mesh.id())
+            .expect("a new quad should exist at (1, 0)");
+
+        assert_eq!(
+            new_mesh_id, initial_mesh_id,
+            "mutation-spawned quad should reuse the shared mesh from existing quads"
+        );
+    }
+
+    #[test]
+    fn test_shared_mesh_not_removed_when_other_quads_still_use_it() {
+        let mut app = make_test_app();
+
+        // Spawn two quads that share the same mesh handle.
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)));
+        let mat1 = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                unlit: true,
+                ..default()
+            });
+        let mat2 = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                unlit: true,
+                ..default()
+            });
+        let mesh_id = mesh.id();
+        app.world_mut().spawn(OverlayQuad {
+            position: IVec2::new(0, 0),
+            mesh: mesh.clone(),
+            material: mat1,
+        });
+        app.world_mut().spawn(OverlayQuad {
+            position: IVec2::new(1, 0),
+            mesh,
+            material: mat2,
+        });
+
+        // Despawning one quad via a wall mutation should NOT remove the shared mesh.
+        fire_mutation(&mut app, IVec2::new(0, 0), TileKind::Wall);
+
+        assert!(
+            app.world()
+                .resource::<Assets<Mesh>>()
+                .get(mesh_id)
+                .is_some(),
+            "shared mesh should not be removed while other quads still reference it"
+        );
     }
 }
