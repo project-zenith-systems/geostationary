@@ -820,5 +820,62 @@ mod tests {
             "HandSlot side should be Right"
         );
     }
-}
 
+    /// Verifies that `broadcast_item_event` processes a `PickedUp` action event
+    /// without panicking when all referenced entities have the required [`NetId`]
+    /// and parent components in place.
+    ///
+    /// The actual wire-format delivery to clients requires a live server QUIC
+    /// connection and is covered by integration tests; this test exercises the
+    /// entity-resolution logic and ensures no panics or index-out-of-bounds
+    /// occur when valid data is present.
+    #[test]
+    fn broadcast_item_event_pickedup_resolves_holder_net_id() {
+        use network::{NetId, StreamDef, StreamDirection, StreamRegistry};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<StreamRegistry>();
+
+        // Register stream 3 (things stream) so the StreamSender resource exists.
+        let (sender, _reader) = app
+            .world_mut()
+            .resource_mut::<StreamRegistry>()
+            .register::<ThingsStreamMessage>(StreamDef {
+                tag: 3,
+                name: "things",
+                direction: StreamDirection::ServerToClient,
+            });
+        app.insert_resource(sender);
+
+        // Set up message infrastructure for ItemActionEvent.
+        app.add_message::<ItemActionEvent>();
+
+        // Register the system under test.
+        app.add_systems(Update, broadcast_item_event);
+
+        let creature_net_id = NetId(1);
+        let item_net_id = NetId(2);
+
+        // Spawn creature with a NetId.
+        let creature = app.world_mut().spawn(creature_net_id).id();
+
+        // Spawn hand slot as child of creature (no NetId on hand).
+        let hand = app
+            .world_mut()
+            .spawn((HandSlot { side: HandSide::Right }, ChildOf(creature)))
+            .id();
+
+        // Spawn item with a NetId.
+        let item = app.world_mut().spawn(item_net_id).id();
+
+        // Fire the action event that broadcast_item_event reads.
+        app.world_mut()
+            .write_message(ItemActionEvent::PickedUp { item, hand });
+
+        // The system must run without panicking.  The sender returns
+        // StreamSendError::Closed in tests because no real server is running,
+        // which the system handles gracefully (logs an error and continues).
+        app.update();
+    }
+}
