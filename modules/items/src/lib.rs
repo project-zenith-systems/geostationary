@@ -1,7 +1,9 @@
 use bevy::prelude::*;
-use network::Server;
+use network::{NetId, PlayerEvent, Server, StreamSender};
 use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
-use things::{HandSlot, ItemActionEvent};
+use things::{
+    HandSlot, ItemActionEvent, ItemEvent, NetIdIndex, PendingItemEvents, ThingsStreamMessage,
+};
 
 // ── Components ────────────────────────────────────────────────────────────────
 
@@ -80,6 +82,15 @@ pub struct StashedPhysics {
     pub collider: Collider,
     pub gravity: GravityScale,
 }
+
+/// Tracks which container entity currently holds this item on the client.
+///
+/// Inserted by [`handle_item_event`] when an [`ItemEvent::Stored`] message is
+/// processed, and removed when [`ItemEvent::Taken`] moves the item to a hand.
+/// Allows `Taken` to locate the source container in O(1) rather than scanning
+/// all [`Container`] entities.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct StoredInContainer(pub Entity);
 
 // ── Resources ─────────────────────────────────────────────────────────────────
 
@@ -565,6 +576,271 @@ fn find_hand_slot_containing(
     None
 }
 
+// ── Client-side item event handler ───────────────────────────────────────────
+
+/// Applies [`ItemEvent`] messages that arrived on stream 3 to the local ECS state.
+///
+/// Drains [`PendingItemEvents`] each `Update` tick (populated by
+/// `handle_entity_lifecycle` in `PreUpdate`).  Runs on clients only.
+///
+/// - **PickedUp**: strip physics, insert [`StashedPhysics`], reparent item to
+///   the holder creature's [`HandSlot`], update the hand's [`Container`] slots.
+/// - **Dropped**: restore physics from [`StashedPhysics`], deparent, set world
+///   position, clear the former hand's [`Container`] slot.
+/// - **Stored**: strip physics if present, insert [`StashedPhysics`], deparent,
+///   set [`Visibility::Hidden`], insert item into the target container's slots,
+///   and tag the item with [`StoredInContainer`] for O(1) source-lookup on `Taken`.
+/// - **Taken**: show item, reparent to creature's hand, remove from the source
+///   container (via [`StoredInContainer`]), update the hand's [`Container`] slot.
+fn handle_item_event(
+    mut commands: Commands,
+    mut pending: ResMut<PendingItemEvents>,
+    net_id_index: Res<NetIdIndex>,
+    mut containers: Query<&mut Container>,
+    items_q: Query<
+        (
+            Option<&Collider>,
+            Option<&GravityScale>,
+            Option<&StashedPhysics>,
+            Option<&ChildOf>,
+            Option<&StoredInContainer>,
+        ),
+        With<Item>,
+    >,
+    children: Query<&Children>,
+    hand_slot_q: Query<Entity, With<HandSlot>>,
+) {
+    for event in pending.0.drain(..) {
+        match event {
+            ItemEvent::PickedUp { item, holder } => {
+                let Some(&item_entity) = net_id_index.0.get(&item) else {
+                    warn!("handle_item_event: PickedUp item NetId({}) not found", item.0);
+                    continue;
+                };
+                let Some(&creature_entity) = net_id_index.0.get(&holder) else {
+                    warn!(
+                        "handle_item_event: PickedUp holder NetId({}) not found",
+                        holder.0
+                    );
+                    continue;
+                };
+                let Some(hand_entity) = find_hand_slot_with_space(
+                    creature_entity,
+                    &children,
+                    &hand_slot_q,
+                    &containers,
+                ) else {
+                    warn!(
+                        "handle_item_event: PickedUp holder has no hand with free space"
+                    );
+                    continue;
+                };
+                let Ok((maybe_collider, maybe_gravity, _, _, _)) = items_q.get(item_entity) else {
+                    warn!("handle_item_event: PickedUp item entity has no Item component");
+                    continue;
+                };
+                if let (Some(col), Some(grav)) = (maybe_collider, maybe_gravity) {
+                    commands
+                        .entity(item_entity)
+                        .insert(StashedPhysics {
+                            collider: col.clone(),
+                            gravity: *grav,
+                        })
+                        .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+                }
+                commands
+                    .entity(item_entity)
+                    .insert((Transform::IDENTITY, ChildOf(hand_entity)));
+                if let Ok(mut container) = containers.get_mut(hand_entity) {
+                    container.insert(item_entity);
+                }
+            }
+
+            ItemEvent::Dropped { item, position } => {
+                let Some(&item_entity) = net_id_index.0.get(&item) else {
+                    warn!("handle_item_event: Dropped item NetId({}) not found", item.0);
+                    continue;
+                };
+                let Ok((_, _, maybe_stash, maybe_child_of, _)) = items_q.get(item_entity) else {
+                    warn!("handle_item_event: Dropped item entity has no Item component");
+                    continue;
+                };
+                // Remove item from its hand container slot.
+                if let Some(child_of) = maybe_child_of {
+                    if let Ok(mut container) = containers.get_mut(child_of.parent()) {
+                        container.remove(item_entity);
+                    }
+                }
+                let drop_pos = Vec3::from_array(position);
+                if let Some(stash) = maybe_stash.cloned() {
+                    commands
+                        .entity(item_entity)
+                        .remove::<ChildOf>()
+                        .remove::<StashedPhysics>()
+                        .insert(Transform::from_translation(drop_pos))
+                        .insert((
+                            RigidBody::Dynamic,
+                            stash.collider,
+                            stash.gravity,
+                            LinearVelocity::default(),
+                        ));
+                } else {
+                    commands
+                        .entity(item_entity)
+                        .remove::<ChildOf>()
+                        .insert(Transform::from_translation(drop_pos));
+                }
+            }
+
+            ItemEvent::Stored { item, container } => {
+                let Some(&item_entity) = net_id_index.0.get(&item) else {
+                    warn!("handle_item_event: Stored item NetId({}) not found", item.0);
+                    continue;
+                };
+                let Some(&container_entity) = net_id_index.0.get(&container) else {
+                    warn!(
+                        "handle_item_event: Stored container NetId({}) not found",
+                        container.0
+                    );
+                    continue;
+                };
+                let Ok((maybe_collider, maybe_gravity, _, maybe_child_of, _)) =
+                    items_q.get(item_entity)
+                else {
+                    warn!("handle_item_event: Stored item entity has no Item component");
+                    continue;
+                };
+                // Remove item from its current hand container if held.
+                if let Some(child_of) = maybe_child_of {
+                    if let Ok(mut hand_container) = containers.get_mut(child_of.parent()) {
+                        hand_container.remove(item_entity);
+                    }
+                }
+                // Strip physics if still present (e.g. for items received during initial sync).
+                if let (Some(col), Some(grav)) = (maybe_collider, maybe_gravity) {
+                    commands
+                        .entity(item_entity)
+                        .insert(StashedPhysics {
+                            collider: col.clone(),
+                            gravity: *grav,
+                        })
+                        .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+                }
+                commands
+                    .entity(item_entity)
+                    .remove::<ChildOf>()
+                    .insert((Visibility::Hidden, StoredInContainer(container_entity)));
+                if let Ok(mut target_container) = containers.get_mut(container_entity) {
+                    target_container.insert(item_entity);
+                }
+            }
+
+            ItemEvent::Taken { item, holder } => {
+                let Some(&item_entity) = net_id_index.0.get(&item) else {
+                    warn!("handle_item_event: Taken item NetId({}) not found", item.0);
+                    continue;
+                };
+                let Some(&creature_entity) = net_id_index.0.get(&holder) else {
+                    warn!(
+                        "handle_item_event: Taken holder NetId({}) not found",
+                        holder.0
+                    );
+                    continue;
+                };
+                let Some(hand_entity) = find_hand_slot_with_space(
+                    creature_entity,
+                    &children,
+                    &hand_slot_q,
+                    &containers,
+                ) else {
+                    warn!("handle_item_event: Taken holder has no hand with free space");
+                    continue;
+                };
+                let Ok((maybe_collider, maybe_gravity, _, _, maybe_stored_in)) =
+                    items_q.get(item_entity)
+                else {
+                    warn!("handle_item_event: Taken item entity has no Item component");
+                    continue;
+                };
+                // Strip physics if somehow still present (shouldn't be after Stored,
+                // but guard against unexpected states).
+                if let (Some(col), Some(grav)) = (maybe_collider, maybe_gravity) {
+                    commands
+                        .entity(item_entity)
+                        .insert(StashedPhysics {
+                            collider: col.clone(),
+                            gravity: *grav,
+                        })
+                        .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+                }
+                // Remove from the tracked source container (O(1) via StoredInContainer).
+                if let Some(&StoredInContainer(src_container)) = maybe_stored_in {
+                    if let Ok(mut container) = containers.get_mut(src_container) {
+                        container.remove(item_entity);
+                    }
+                }
+                commands.entity(item_entity).remove::<StoredInContainer>().insert((
+                    Visibility::Inherited,
+                    Transform::IDENTITY,
+                    ChildOf(hand_entity),
+                ));
+                if let Ok(mut hand_container) = containers.get_mut(hand_entity) {
+                    hand_container.insert(item_entity);
+                }
+            }
+        }
+    }
+}
+
+// ── Server-side initial-sync for stored items ─────────────────────────────────
+
+/// Sends [`ItemEvent::Stored`] for every item currently held in a non-hand
+/// container to a newly joined client.
+///
+/// Runs in `PreUpdate` after [`things::ThingsSet::HandleClientJoined`] so that
+/// the client has already received [`ThingsStreamMessage::EntitySpawned`] for
+/// every entity before these events arrive.
+///
+/// Hand-held items are covered by the [`ThingsStreamMessage::ItemEvent(PickedUp)`]
+/// sent in `handle_client_joined` (the things module); this system covers items
+/// that are inside world containers (i.e., entities with [`Container`] that are
+/// NOT [`HandSlot`] entities, and therefore have a [`NetId`] of their own).
+fn broadcast_stored_on_join(
+    mut player_events: MessageReader<PlayerEvent>,
+    containers: Query<(Entity, &Container, &NetId), Without<HandSlot>>,
+    net_ids: Query<&NetId>,
+    stream_sender: Res<StreamSender<ThingsStreamMessage>>,
+) {
+    for event in player_events.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
+        for (container_entity, container, &container_net_id) in containers.iter() {
+            for item_entity in container.slots.iter().filter_map(|s| *s) {
+                let Ok(&item_net_id) = net_ids.get(item_entity) else {
+                    warn!(
+                        "broadcast_stored_on_join: item in container {:?} has no NetId",
+                        container_entity
+                    );
+                    continue;
+                };
+                if let Err(e) = stream_sender.send_to(
+                    *from,
+                    &ThingsStreamMessage::ItemEvent(ItemEvent::Stored {
+                        item: item_net_id,
+                        container: container_net_id,
+                    }),
+                ) {
+                    error!(
+                        "broadcast_stored_on_join: failed to send to ClientId({}): {e}",
+                        from.0
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ── Plugin ────────────────────────────────────────────────────────────────────
 
 /// Plugin that registers all item components, resources, events, and systems.
@@ -593,8 +869,21 @@ impl Plugin for ItemsPlugin {
             Update,
             (
                 init_hand_containers,
-                handle_item_interaction.run_if(resource_exists::<Server>),
-            ),
+                ApplyDeferred,
+                handle_item_event.run_if(resource_exists::<network::Client>),
+            )
+                .chain(),
+        );
+        app.add_systems(
+            Update,
+            handle_item_interaction.run_if(resource_exists::<Server>),
+        );
+        app.add_systems(
+            PreUpdate,
+            broadcast_stored_on_join
+                .run_if(resource_exists::<Server>)
+                .after(things::ThingsSet::HandleClientJoined)
+                .before(things::ThingsSet::SendStreamReady),
         );
     }
 }
@@ -1293,6 +1582,338 @@ mod tests {
         assert!(
             app.world().get::<StashedPhysics>(item).is_none(),
             "StashedPhysics removed after drop"
+        );
+    }
+
+    // ── handle_item_event ─────────────────────────────────────────────────────
+
+    /// Build a minimal app that runs `handle_item_event` and `init_hand_containers`.
+    fn test_app_item_event() -> App {
+        use physics::PhysicsPlugin;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            bevy::asset::AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            bevy::scene::ScenePlugin,
+            PhysicsPlugin,
+            bevy::camera::visibility::VisibilityPlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+            1.0 / 60.0,
+        )));
+        app.register_type::<Item>();
+        app.register_type::<Container>();
+        app.register_type::<HandSlot>();
+        app.init_resource::<PendingItemEvents>();
+        app.init_resource::<NetIdIndex>();
+        app.add_systems(Update, (init_hand_containers, handle_item_event));
+        app.insert_resource(InteractionRange(2.0));
+        app.finish();
+        app
+    }
+
+    /// Spawn a creature with a hand slot and a registered NetId.
+    /// Returns (creature_entity, hand_entity).
+    fn spawn_creature_with_net_id(
+        app: &mut App,
+        net_id: NetId,
+        pos: Vec3,
+    ) -> (Entity, Entity) {
+        let creature = app
+            .world_mut()
+            .spawn((Transform::from_translation(pos),))
+            .id();
+        let hand = app
+            .world_mut()
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                Transform::default(),
+                ChildOf(creature),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<NetIdIndex>()
+            .0
+            .insert(net_id, creature);
+        (creature, hand)
+    }
+
+    /// Spawn an item with physics and a registered NetId.
+    fn spawn_item_with_net_id(app: &mut App, net_id: NetId, pos: Vec3) -> Entity {
+        let item = app
+            .world_mut()
+            .spawn((
+                Item,
+                Transform::from_translation(pos),
+                RigidBody::Dynamic,
+                Collider::sphere(0.3),
+                GravityScale(1.0),
+                LinearVelocity::default(),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<NetIdIndex>()
+            .0
+            .insert(net_id, item);
+        item
+    }
+
+    /// Receiving `ItemEvent::PickedUp` reparents item to the holder's hand,
+    /// strips physics components, inserts `StashedPhysics`, and updates the
+    /// hand container's slots.
+    #[test]
+    fn handle_item_event_pickup_reparents_and_strips_physics() {
+        let mut app = test_app_item_event();
+        let item_net = NetId(10);
+        let holder_net = NetId(1);
+
+        let (_, hand) = spawn_creature_with_net_id(&mut app, holder_net, Vec3::ZERO);
+        let item = spawn_item_with_net_id(&mut app, item_net, Vec3::new(1.0, 0.0, 0.0));
+
+        // One update so init_hand_containers adds Container to the HandSlot.
+        app.update();
+
+        app.world_mut()
+            .resource_mut::<PendingItemEvents>()
+            .0
+            .push(ItemEvent::PickedUp {
+                item: item_net,
+                holder: holder_net,
+            });
+        app.update();
+
+        assert_eq!(
+            app.world().get::<ChildOf>(item).map(|c| c.parent()),
+            Some(hand),
+            "item should be parented to the hand slot"
+        );
+        assert!(
+            app.world().get::<RigidBody>(item).is_none(),
+            "RigidBody should be stripped from held item"
+        );
+        assert!(
+            app.world().get::<StashedPhysics>(item).is_some(),
+            "StashedPhysics should be present after pickup"
+        );
+        assert!(
+            app.world()
+                .get::<Container>(hand)
+                .expect("hand should have Container")
+                .contains(item),
+            "hand Container should track the held item"
+        );
+    }
+
+    /// Receiving `ItemEvent::Dropped` restores physics, deparents the item,
+    /// places it at the given position, removes `StashedPhysics`, and clears
+    /// the hand container slot.
+    #[test]
+    fn handle_item_event_dropped_restores_physics_and_deparents() {
+        let mut app = test_app_item_event();
+        let item_net = NetId(10);
+        let holder_net = NetId(1);
+
+        let (_, hand) = spawn_creature_with_net_id(&mut app, holder_net, Vec3::ZERO);
+        let item = spawn_item_with_net_id(&mut app, item_net, Vec3::new(1.0, 0.0, 0.0));
+
+        // One update so init_hand_containers adds Container to the HandSlot.
+        app.update();
+
+        // First pick up the item.
+        app.world_mut()
+            .resource_mut::<PendingItemEvents>()
+            .0
+            .push(ItemEvent::PickedUp {
+                item: item_net,
+                holder: holder_net,
+            });
+        app.update();
+        assert!(app.world().get::<ChildOf>(item).is_some());
+
+        // Now drop it.
+        let drop_pos = Vec3::new(0.5, 0.0, 0.0);
+        app.world_mut()
+            .resource_mut::<PendingItemEvents>()
+            .0
+            .push(ItemEvent::Dropped {
+                item: item_net,
+                position: drop_pos.into(),
+            });
+        app.update();
+
+        assert!(
+            app.world().get::<ChildOf>(item).is_none(),
+            "item should be deparented after drop"
+        );
+        assert!(
+            app.world().get::<RigidBody>(item).is_some(),
+            "RigidBody should be restored after drop"
+        );
+        assert!(
+            app.world().get::<StashedPhysics>(item).is_none(),
+            "StashedPhysics should be removed after drop"
+        );
+        assert!(
+            !app.world()
+                .get::<Container>(hand)
+                .expect("hand should have Container")
+                .contains(item),
+            "hand Container should no longer track the dropped item"
+        );
+    }
+
+    /// Receiving `ItemEvent::Stored` hides the item, strips physics, inserts
+    /// `StashedPhysics`, updates the target container's slots, and deparents
+    /// the item.
+    #[test]
+    fn handle_item_event_stored_hides_item_and_updates_container() {
+        let mut app = test_app_item_event();
+        let item_net = NetId(10);
+        let container_net = NetId(20);
+
+        // World container (not a HandSlot, so queries Without<HandSlot> apply).
+        let container = app
+            .world_mut()
+            .spawn((
+                Container::with_capacity(2),
+                Transform::from_translation(Vec3::new(3.0, 0.0, 0.0)),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<NetIdIndex>()
+            .0
+            .insert(container_net, container);
+
+        let item = spawn_item_with_net_id(&mut app, item_net, Vec3::new(3.0, 0.0, 0.0));
+        app.update();
+
+        app.world_mut()
+            .resource_mut::<PendingItemEvents>()
+            .0
+            .push(ItemEvent::Stored {
+                item: item_net,
+                container: container_net,
+            });
+        app.update();
+
+        // Item should be hidden.
+        assert_eq!(
+            app.world().get::<Visibility>(item),
+            Some(&Visibility::Hidden),
+            "stored item should be Hidden"
+        );
+        // Physics stripped.
+        assert!(
+            app.world().get::<RigidBody>(item).is_none(),
+            "RigidBody should be stripped when stored"
+        );
+        assert!(
+            app.world().get::<StashedPhysics>(item).is_some(),
+            "StashedPhysics should be inserted when stored"
+        );
+        // StoredInContainer tag inserted.
+        assert_eq!(
+            app.world().get::<StoredInContainer>(item).map(|s| s.0),
+            Some(container),
+            "StoredInContainer should point to the target container"
+        );
+        // Container updated.
+        assert!(
+            app.world()
+                .get::<Container>(container)
+                .unwrap()
+                .contains(item),
+            "target container should track the stored item"
+        );
+    }
+
+    /// Receiving `ItemEvent::Taken` shows the item, reparents it to the
+    /// holder's hand, removes it from its source container, and updates the
+    /// hand container's slots.
+    #[test]
+    fn handle_item_event_taken_shows_item_and_reparents() {
+        let mut app = test_app_item_event();
+        let item_net = NetId(10);
+        let holder_net = NetId(1);
+        let container_net = NetId(20);
+
+        let (_, hand) = spawn_creature_with_net_id(&mut app, holder_net, Vec3::ZERO);
+        let item = spawn_item_with_net_id(&mut app, item_net, Vec3::new(3.0, 0.0, 0.0));
+
+        // World container pre-loaded with the item (as if Stored was already applied).
+        let container = app
+            .world_mut()
+            .spawn((
+                Container {
+                    slots: vec![Some(item)],
+                },
+                Transform::from_translation(Vec3::new(3.0, 0.0, 0.0)),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<NetIdIndex>()
+            .0
+            .insert(container_net, container);
+
+        // Put the item in a stored state: strip physics, hide, tag with StoredInContainer.
+        app.world_mut().entity_mut(item).insert((
+            Visibility::Hidden,
+            StashedPhysics {
+                collider: Collider::sphere(0.3),
+                gravity: GravityScale(1.0),
+            },
+            StoredInContainer(container),
+        ));
+        app.world_mut()
+            .entity_mut(item)
+            .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+
+        app.update();
+
+        app.world_mut()
+            .resource_mut::<PendingItemEvents>()
+            .0
+            .push(ItemEvent::Taken {
+                item: item_net,
+                holder: holder_net,
+            });
+        app.update();
+
+        // Item visible and reparented.
+        assert_eq!(
+            app.world().get::<ChildOf>(item).map(|c| c.parent()),
+            Some(hand),
+            "taken item should be reparented to hand"
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(item),
+            Some(&Visibility::Inherited),
+            "taken item should be Inherited visibility"
+        );
+        // Hand container updated.
+        assert!(
+            app.world()
+                .get::<Container>(hand)
+                .expect("hand should have Container")
+                .contains(item),
+            "hand Container should track the taken item"
+        );
+        // Source container cleared.
+        assert!(
+            !app.world()
+                .get::<Container>(container)
+                .unwrap()
+                .contains(item),
+            "source container should no longer hold the item after Taken"
+        );
+        // StoredInContainer tag removed.
+        assert!(
+            app.world().get::<StoredInContainer>(item).is_none(),
+            "StoredInContainer should be removed after Taken"
         );
     }
 }
