@@ -146,6 +146,10 @@ fn handle_client_events(
                     sync.initial_state_done = true;
                     try_enter_in_game(&sync, &state, &mut next_state);
                 }
+                ServerMessage::Shutdown => {
+                    info!("Server is shutting down");
+                    next_state.set(AppState::MainMenu);
+                }
             },
         }
     }
