@@ -307,12 +307,26 @@ pub fn update_overlay_on_tile_mutation(
             *refcount = refcount.saturating_sub(1);
             if *refcount == 0 {
                 meshes.remove(&mesh_handle);
-                shared_mesh = None;
+                // Only clear the cache when the removed mesh is the one we cached;
+                // if quads somehow reference multiple mesh assets, clearing for a
+                // different mesh would discard a still-valid cached handle.
+                if shared_mesh.as_ref().map(|h| h.id()) == Some(mesh_handle.id()) {
+                    shared_mesh = None;
+                }
             }
             // Remove the per-quad material (each quad owns a unique material handle).
             materials.remove(&material_handle);
             commands.entity(entity).despawn();
             debug!("Despawned overlay quad at {:?} (tile became wall)", position);
+        }
+    }
+
+    // If `shared_mesh` was cleared (the cached mesh was removed) but other quads
+    // still exist, reseed it from any remaining entry in `quad_by_pos` so that the
+    // spawn pass reuses an existing mesh rather than creating a new one.
+    if shared_mesh.is_none() {
+        if let Some((_, mesh_handle, _)) = quad_by_pos.values().next() {
+            shared_mesh = Some(mesh_handle.clone());
         }
     }
 
