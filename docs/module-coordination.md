@@ -24,8 +24,10 @@ The earliest schedule in which game code runs. Bevy's internal bookkeeping
    ready. These systems run after `NetworkSet::Receive` and before
    `NetworkSet::Send`.
 
-3. **`NetworkSet::Send`** — `process_net_commands` dispatches queued
-   `NetCommand` messages to async tasks (host, connect, disconnect).
+3. **`NetworkSet::Send`** — `process_net_commands` dispatches connection
+   lifecycle commands (`NetCommand::Host`, `Connect`, `Disconnect`) to
+   async tasks. This does **not** send game data — module stream writes go
+   directly to async channels and are schedule-independent.
 
 ### StateTransition (between PreUpdate and Update)
 
@@ -37,8 +39,7 @@ on the client.
 
 Steady-state game logic. This is where the bulk of gameplay systems run.
 
-- **Simulation** — physics stepping, interaction dispatch, item handling,
-  atmospherics ticking
+- **Gameplay** — interaction dispatch, item handling, input processing
 - **Visual** — animation playback, particle effects, debug overlays
   (client/listen-server only)
 - **Orchestration** — `track_module_ready` collects `ModuleReadySent`
@@ -46,8 +47,10 @@ Steady-state game logic. This is where the bulk of gameplay systems run.
 
 ### FixedUpdate
 
-Runs at the simulation tick rate, independent of frame rate. Used for
-deterministic simulation logic like gas diffusion and pressure forces.
+Runs at the simulation tick rate, independent of frame rate.
+
+- **Physics** — velocity integration, force application
+- **Atmospherics** — wall sync, gas diffusion, pressure forces
 
 ### PostUpdate
 
@@ -208,10 +211,6 @@ app.add_systems(
 );
 ```
 
-When two modules have no dependency relationship and need ordering between
-them, add the constraint in `shared/server.rs` where both types are
-visible.
-
 ### Adding a New Ordering Constraint
 
 When a new system needs to run in a defined order relative to other modules:
@@ -219,10 +218,6 @@ When a new system needs to run in a defined order relative to other modules:
 1. Declare a `SystemSet` variant in your module if one doesn't already exist.
 2. Add `.before()` or `.after()` constraints referencing the other module's
    set in your plugin's `build()`.
-3. If your module can't depend on the other module's crate, add the
-   constraint in `shared/server.rs` instead.
-4. Prefer `SystemSet` ordering over ad-hoc coordination mechanisms
-   (frame-counting, polling resources, manual event sequencing).
 
 ## Summary of Coordination Mechanisms
 

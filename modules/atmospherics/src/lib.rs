@@ -255,9 +255,8 @@ impl Plugin for AtmosphericsPlugin {
         );
         app.init_resource::<PendingAtmosSyncs>();
         app.init_resource::<AtmosBroadcastTimers>();
-        // send_gas_grid_on_connect runs in PreUpdate so that cross-module ordering
-        // constraints against ThingsSet::HandleClientJoined (configured in the shared
-        // bin) can be expressed within the same schedule.
+        // send_gas_grid_on_connect runs in PreUpdate after NetworkSet::Receive so
+        // PlayerEvent::Joined is readable.
         app.configure_sets(
             PreUpdate,
             AtmosSet::SendOnConnect

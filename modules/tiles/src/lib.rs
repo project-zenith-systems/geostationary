@@ -270,11 +270,10 @@ impl Plugin for TilesPlugin {
                 .run_if(not(resource_exists::<Server>))
                 .after(NetworkSet::Receive),
         );
-        // Runs in PreUpdate so that cross-module ordering constraints against
-        // ThingsSet::HandleClientJoined (configured in the shared bin) can be
-        // expressed within the same schedule.  If the Tilemap resource is not
-        // yet available (e.g. listen-server: setup_world hasn't run yet) the
-        // client is queued in PendingTilesSyncs and retried each frame.
+        // Runs in PreUpdate after NetworkSet::Receive so PlayerEvent::Joined is
+        // readable.  If the Tilemap resource is not yet available (e.g.
+        // listen-server: setup_world hasn't run yet) the client is queued in
+        // PendingTilesSyncs and retried each frame.
         app.init_resource::<PendingTilesSyncs>();
         app.configure_sets(
             PreUpdate,
