@@ -44,6 +44,7 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_scene",
     "bevy_asset",
     "bevy_log",
+    "bevy_ui",
 ] }
 config = { version = "0.15", features = ["ron", "toml"] }
 serde = { version = "1", features = ["derive"] }

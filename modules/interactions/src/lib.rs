@@ -1,11 +1,11 @@
 use bevy::prelude::*;
 use input::{PointerAction, WorldHit};
-use items::{ItemDropRequest, ItemPickupRequest, ItemStoreRequest, ItemTakeRequest};
+use items::{Container, Item, ItemDropRequest, ItemPickupRequest, ItemStoreRequest, ItemTakeRequest};
 use network::{
     ClientId, ControlledByClient, Headless, NetId, Server, StreamDef, StreamDirection,
     StreamReader, StreamRegistry, StreamSender,
 };
-use things::NetIdIndex;
+use things::{DisplayName, HandSlot, NetIdIndex, PlayerControlled};
 use tiles::{Tile, TileKind, TileMutated, Tilemap, TilesStreamMessage};
 use ui::{UiTheme, WorldSpaceOverlay, build_button};
 use wincode::{SchemaRead, SchemaWrite};
@@ -46,15 +46,35 @@ pub enum InteractionRequest {
 
 /// Event fired when a context-menu action button is pressed.
 ///
-/// Carries the target tile position and the [`TileKind`] to toggle the tile to.
+/// Each variant encodes enough information for [`handle_menu_selection`] to build
+/// the corresponding [`InteractionRequest`] without further world queries.
 /// Register this type with [`UiPlugin::with_event::<ContextMenuAction>()`] so
 /// that the button press is forwarded as a Bevy event.
 #[derive(Message, Clone, Copy, Debug)]
-pub struct ContextMenuAction {
-    /// Grid position of the tile to toggle.
-    pub position: IVec2,
-    /// The new tile kind to apply (e.g. `Floor` for "Remove Wall").
-    pub kind: TileKind,
+pub enum ContextMenuAction {
+    /// Toggle a tile to a new kind (e.g. "Build Wall" / "Remove Wall").
+    TileToggle {
+        position: IVec2,
+        kind: TileKind,
+    },
+    /// Pick up the identified item from the world.
+    ItemPickup { item: NetId },
+    /// Drop the held item at the given world position.
+    ItemDrop { item: NetId, drop_position: Vec3 },
+    /// Store the held item into a container.
+    StoreInContainer { item: NetId, container: NetId },
+    /// Take an item from a container into the player's hand.
+    TakeFromContainer { item: NetId, container: NetId },
+}
+
+/// The single best [`WorldHit`] for a frame, resolved by [`resolve_world_hits`].
+///
+/// Downstream systems (`default_interaction`, `build_context_menu`) read this
+/// instead of raw [`WorldHit`] events so that only the closest-to-camera hit is
+/// acted on when multiple raycasters fire in the same frame.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct ResolvedHit {
+    pub hit: WorldHit,
 }
 
 /// Resource that tracks the root entity of the currently-open context menu.
@@ -65,39 +85,132 @@ pub struct ContextMenuAction {
 #[derive(Resource)]
 struct ActiveMenu(Entity);
 
-/// System that reads [`WorldHit`] events and spawns a right-click context menu.
+/// System that collects all [`WorldHit`] messages in a frame and emits a single
+/// [`ResolvedHit`] per mouse button containing the hit closest to the camera.
 ///
-/// - Dismisses any previously open menu before opening a new one (handles
-///   the "right-click elsewhere" dismiss case).
-/// - Looks up the hit entity's [`Tile`] position in the [`Tilemap`] to
-///   determine available actions:
-///   - `Wall`  → "Remove Wall" (toggles to `Floor`)
-///   - `Floor` → "Build Wall"  (toggles to `Wall`)
-///   - Non-tile entities produce no menu.
-/// - Spawns a floating panel via [`WorldSpaceOverlay`] anchored to the hit
-///   world position.
+/// Both `raycast_tiles` and `raycast_things` emit [`WorldHit`] independently; this
+/// system acts as the tie-breaker so downstream logic only ever sees one winner per
+/// click.
+///
+/// Runs after `raycast_tiles` and `raycast_things`, gated on
+/// `not(resource_exists::<Headless>)`.
+fn resolve_world_hits(
+    mut hit_events: MessageReader<WorldHit>,
+    mut resolved: MessageWriter<ResolvedHit>,
+    camera_q: Query<&GlobalTransform, With<Camera3d>>,
+) {
+    let hits: Vec<WorldHit> = hit_events.read().copied().collect();
+    if hits.is_empty() {
+        return;
+    }
+
+    // Fall back to Vec3::ZERO when no camera is present (headless / test).
+    let cam_pos = camera_q.single().map(|t| t.translation()).unwrap_or(Vec3::ZERO);
+
+    // For each button that produced hits, pick the closest-to-camera hit.
+    for button in [MouseButton::Left, MouseButton::Right] {
+        let closest = hits
+            .iter()
+            .filter(|h| h.button == button)
+            .min_by(|a, b| {
+                let da = cam_pos.distance_squared(a.world_pos);
+                let db = cam_pos.distance_squared(b.world_pos);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if let Some(&hit) = closest {
+            resolved.write(ResolvedHit { hit });
+        }
+    }
+}
+
+/// System that handles the left-click default action on a [`ResolvedHit`].
+///
+/// If the hit entity has an [`Item`] component, sends
+/// `InteractionRequest::ItemPickup { item }` on stream 4.  All other entity types
+/// are silently ignored.
+///
+/// Gated on `in_state(S)` and `not(resource_exists::<Headless>)`.
+fn default_interaction(
+    mut resolved: MessageReader<ResolvedHit>,
+    item_q: Query<&NetId, With<Item>>,
+    mut requests: MessageWriter<InteractionRequest>,
+) {
+    for r in resolved.read() {
+        if r.hit.button != MouseButton::Left {
+            continue;
+        }
+        if let Ok(&net_id) = item_q.get(r.hit.entity) {
+            requests.write(InteractionRequest::ItemPickup { item: net_id });
+        }
+    }
+}
+
+/// Returns the [`NetId`] of the first item held in any [`HandSlot`] owned by
+/// `player`, or `None` when the hands are empty.
+fn held_item(
+    player: Entity,
+    children_q: &Query<&Children>,
+    hand_slot_q: &Query<(), With<HandSlot>>,
+    hand_container_q: &Query<&Container, With<HandSlot>>,
+    net_id_q: &Query<&NetId>,
+) -> Option<NetId> {
+    let children = children_q.get(player).ok()?;
+    for child in children.iter() {
+        if hand_slot_q.get(child).is_err() {
+            continue;
+        }
+        if let Ok(container) = hand_container_q.get(child) {
+            for slot in &container.slots {
+                if let Some(item_entity) = slot {
+                    if let Ok(&net_id) = net_id_q.get(*item_entity) {
+                        return Some(net_id);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// System that reads right-click [`ResolvedHit`] events and spawns a context menu.
+///
+/// Actions depend on what was hit and whether the local player is holding an item:
+/// - `Item` entity → "Pick up"
+/// - `Container` entity, hand empty, container has items → "Take from {name}"
+/// - `Container` entity, hand holding item → "Store in {name}"
+/// - `Tile(Wall)` → "Remove Wall"
+/// - `Tile(Floor)`, hand empty → "Build Wall"
+/// - `Tile(Floor)`, hand holding item → "Drop", "Build Wall"
 ///
 /// Gated on `in_state(S)` and `not(resource_exists::<Headless>)`.
 fn build_context_menu(
     mut commands: Commands,
-    mut hit_events: MessageReader<WorldHit>,
+    mut resolved_hits: MessageReader<ResolvedHit>,
     tile_query: Query<&Tile>,
+    item_q: Query<(), With<Item>>,
+    world_container_q: Query<(&NetId, &Container, Option<&DisplayName>), Without<HandSlot>>,
     tilemap: Option<Res<Tilemap>>,
     active_menu: Option<Res<ActiveMenu>>,
     theme: Res<UiTheme>,
+    player_q: Query<Entity, With<PlayerControlled>>,
+    children_q: Query<&Children>,
+    hand_slot_q: Query<(), With<HandSlot>>,
+    hand_container_q: Query<&Container, With<HandSlot>>,
+    net_id_q: Query<&NetId>,
 ) {
-    // Collect right-click hits to avoid borrowing issues inside the loop.
-    let hits: Vec<WorldHit> = hit_events
+    // Collect right-click resolved hits.
+    let hits: Vec<ResolvedHit> = resolved_hits
         .read()
         .copied()
-        .filter(|h| h.button == MouseButton::Right)
+        .filter(|r| r.hit.button == MouseButton::Right)
         .collect();
     if hits.is_empty() {
         return;
     }
 
-    // Use the last hit if multiple arrive in the same frame (only one menu at a time).
-    let hit = *hits.last().unwrap();
+    // Only one menu at a time; use the last hit if multiple arrive.
+    let resolved = *hits.last().unwrap();
+    let hit = resolved.hit;
 
     // Dismiss any previously open menu.
     if let Some(menu) = active_menu.as_deref() {
@@ -105,35 +218,97 @@ fn build_context_menu(
         commands.remove_resource::<ActiveMenu>();
     }
 
-    let Some(ref tilemap) = tilemap else {
+    // Determine whether the local player is holding an item.
+    let player = player_q.single().ok();
+    let holding: Option<NetId> = player.and_then(|p| {
+        held_item(p, &children_q, &hand_slot_q, &hand_container_q, &net_id_q)
+    });
+
+    // Collect action buttons for this hit.
+    let mut buttons: Vec<Entity> = Vec::new();
+
+    if item_q.get(hit.entity).is_ok() {
+        // Hit an Item on the floor → "Pick up".
+        if let Ok(&item_net_id) = net_id_q.get(hit.entity) {
+            let btn = build_button(&theme)
+                .with_text("Pick up")
+                .with_event(ContextMenuAction::ItemPickup { item: item_net_id })
+                .build(&mut commands);
+            buttons.push(btn);
+        }
+    } else if let Ok((&container_net_id, container, display_name)) =
+        world_container_q.get(hit.entity)
+    {
+        let name = display_name.map(|d| d.0.as_str()).unwrap_or("container");
+        if let Some(held_net_id) = holding {
+            // Holding item + container → "Store in {name}".
+            let label = format!("Store in {name}");
+            let btn = build_button(&theme)
+                .with_text(&label)
+                .with_event(ContextMenuAction::StoreInContainer {
+                    item: held_net_id,
+                    container: container_net_id,
+                })
+                .build(&mut commands);
+            buttons.push(btn);
+        } else {
+            // Hand empty + container has items → "Take from {name}".
+            let first_item = container.slots.iter().find_map(|s| *s);
+            if let Some(item_entity) = first_item {
+                if let Ok(&item_net_id) = net_id_q.get(item_entity) {
+                    let label = format!("Take from {name}");
+                    let btn = build_button(&theme)
+                        .with_text(&label)
+                        .with_event(ContextMenuAction::TakeFromContainer {
+                            item: item_net_id,
+                            container: container_net_id,
+                        })
+                        .build(&mut commands);
+                    buttons.push(btn);
+                }
+            }
+        }
+    } else if let Ok(tile) = tile_query.get(hit.entity) {
+        let Some(ref tilemap) = tilemap else { return };
+        let Some(kind) = tilemap.get(tile.position) else { return };
+        let position = tile.position;
+        match kind {
+            TileKind::Wall => {
+                let btn = build_button(&theme)
+                    .with_text("Remove Wall")
+                    .with_event(ContextMenuAction::TileToggle {
+                        position,
+                        kind: TileKind::Floor,
+                    })
+                    .build(&mut commands);
+                buttons.push(btn);
+            }
+            TileKind::Floor => {
+                if let Some(held_net_id) = holding {
+                    let drop_btn = build_button(&theme)
+                        .with_text("Drop")
+                        .with_event(ContextMenuAction::ItemDrop {
+                            item: held_net_id,
+                            drop_position: hit.world_pos,
+                        })
+                        .build(&mut commands);
+                    buttons.push(drop_btn);
+                }
+                let wall_btn = build_button(&theme)
+                    .with_text("Build Wall")
+                    .with_event(ContextMenuAction::TileToggle {
+                        position,
+                        kind: TileKind::Wall,
+                    })
+                    .build(&mut commands);
+                buttons.push(wall_btn);
+            }
+        }
+    }
+
+    if buttons.is_empty() {
         return;
-    };
-
-    // Resolve the hit entity as a tile.
-    let Ok(tile) = tile_query.get(hit.entity) else {
-        return; // Thing or other entity → no menu.
-    };
-
-    let Some(kind) = tilemap.get(tile.position) else {
-        return;
-    };
-
-    // Determine the label and target kind from the current tile state.
-    let (label, target_kind) = match kind {
-        TileKind::Wall => ("Remove Wall", TileKind::Floor),
-        TileKind::Floor => ("Build Wall", TileKind::Wall),
-    };
-
-    let position = tile.position;
-
-    // Build the action button.
-    let button = build_button(&theme)
-        .with_text(label)
-        .with_event(ContextMenuAction {
-            position,
-            kind: target_kind,
-        })
-        .build(&mut commands);
+    }
 
     // Spawn the menu root: a floating panel positioned at the hit world location.
     let menu_root = commands
@@ -150,7 +325,7 @@ fn build_context_menu(
                 world_pos: hit.world_pos,
             },
         ))
-        .add_children(&[button])
+        .add_children(&buttons)
         .id();
 
     commands.insert_resource(ActiveMenu(menu_root));
@@ -168,10 +343,26 @@ fn handle_menu_selection(
     mut interaction_requests: MessageWriter<InteractionRequest>,
 ) {
     for action in actions.read() {
-        interaction_requests.write(InteractionRequest::TileToggle {
-            position: [action.position.x, action.position.y],
-            kind: action.kind,
-        });
+        let req = match *action {
+            ContextMenuAction::TileToggle { position, kind } => {
+                InteractionRequest::TileToggle {
+                    position: [position.x, position.y],
+                    kind,
+                }
+            }
+            ContextMenuAction::ItemPickup { item } => InteractionRequest::ItemPickup { item },
+            ContextMenuAction::ItemDrop { item, drop_position } => InteractionRequest::ItemDrop {
+                item,
+                drop_position: drop_position.to_array(),
+            },
+            ContextMenuAction::StoreInContainer { item, container } => {
+                InteractionRequest::StoreInContainer { item, container }
+            }
+            ContextMenuAction::TakeFromContainer { item, container } => {
+                InteractionRequest::TakeFromContainer { item, container }
+            }
+        };
+        interaction_requests.write(req);
     }
 }
 
@@ -415,13 +606,18 @@ impl<S: States + Copy> Plugin for InteractionsPlugin<S> {
         app.add_message::<InteractionRequest>();
         app.add_message::<PointerAction>();
         app.add_message::<WorldHit>();
+        app.add_message::<ResolvedHit>();
 
         let state = self.state;
         app.add_systems(
             Update,
             (
+                resolve_world_hits,
+                default_interaction.after(resolve_world_hits),
                 dismiss_context_menu,
-                build_context_menu.after(dismiss_context_menu),
+                build_context_menu
+                    .after(dismiss_context_menu)
+                    .after(resolve_world_hits),
                 handle_menu_selection,
                 send_interaction.after(handle_menu_selection),
             )
@@ -458,14 +654,14 @@ impl<S: States + Copy> Plugin for InteractionsPlugin<S> {
 mod tests {
     use super::*;
 
-    /// Verifies that [`build_context_menu`] opens a menu when a [`WorldHit`]
+    /// Verifies that [`build_context_menu`] opens a menu when a [`ResolvedHit`]
     /// targeting a wall tile is received, and that the [`ActiveMenu`] resource
     /// is inserted.
     #[test]
     fn build_context_menu_inserts_active_menu_for_wall() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_message::<WorldHit>();
+        app.add_message::<ResolvedHit>();
         app.add_message::<ContextMenuAction>();
         app.add_message::<InteractionRequest>();
         app.init_resource::<UiTheme>();
@@ -483,13 +679,15 @@ mod tests {
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         app.insert_resource(tilemap);
 
-        // Emit a WorldHit targeting the tile entity.
+        // Emit a ResolvedHit targeting the tile entity.
         app.world_mut()
-            .resource_mut::<Messages<WorldHit>>()
-            .write(WorldHit {
-                button: MouseButton::Right,
-                entity: tile_entity,
-                world_pos: Vec3::new(1.0, 0.0, 1.0),
+            .resource_mut::<Messages<ResolvedHit>>()
+            .write(ResolvedHit {
+                hit: WorldHit {
+                    button: MouseButton::Right,
+                    entity: tile_entity,
+                    world_pos: Vec3::new(1.0, 0.0, 1.0),
+                },
             });
 
         app.add_systems(Update, build_context_menu);
@@ -497,22 +695,22 @@ mod tests {
 
         assert!(
             app.world().contains_resource::<ActiveMenu>(),
-            "ActiveMenu resource should be present after a WorldHit on a wall"
+            "ActiveMenu resource should be present after a ResolvedHit on a wall"
         );
     }
 
     /// Verifies that [`build_context_menu`] does NOT open a menu when the hit
-    /// entity is not a tile (e.g. a `Thing`).
+    /// entity is not a tile, item, or container.
     #[test]
     fn build_context_menu_ignores_non_tile_entity() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_message::<WorldHit>();
+        app.add_message::<ResolvedHit>();
         app.add_message::<ContextMenuAction>();
         app.add_message::<InteractionRequest>();
         app.init_resource::<UiTheme>();
 
-        // Spawn an entity WITHOUT a Tile component.
+        // Spawn an entity WITHOUT a Tile, Item, or Container component.
         let non_tile = app.world_mut().spawn_empty().id();
 
         let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
@@ -520,11 +718,13 @@ mod tests {
         app.insert_resource(tilemap);
 
         app.world_mut()
-            .resource_mut::<Messages<WorldHit>>()
-            .write(WorldHit {
-                button: MouseButton::Right,
-                entity: non_tile,
-                world_pos: Vec3::ZERO,
+            .resource_mut::<Messages<ResolvedHit>>()
+            .write(ResolvedHit {
+                hit: WorldHit {
+                    button: MouseButton::Right,
+                    entity: non_tile,
+                    world_pos: Vec3::ZERO,
+                },
             });
 
         app.add_systems(Update, build_context_menu);
@@ -532,16 +732,16 @@ mod tests {
 
         assert!(
             !app.world().contains_resource::<ActiveMenu>(),
-            "ActiveMenu resource should NOT be present for a non-tile hit"
+            "ActiveMenu resource should NOT be present for a non-tile, non-item, non-container hit"
         );
     }
 
-    /// Verifies that [`build_context_menu`] ignores left-click [`WorldHit`] events.
+    /// Verifies that [`build_context_menu`] ignores left-click [`ResolvedHit`] events.
     #[test]
     fn build_context_menu_ignores_left_click_hit() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_message::<WorldHit>();
+        app.add_message::<ResolvedHit>();
         app.add_message::<ContextMenuAction>();
         app.add_message::<InteractionRequest>();
         app.init_resource::<UiTheme>();
@@ -559,13 +759,15 @@ mod tests {
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         app.insert_resource(tilemap);
 
-        // Emit a left-click WorldHit targeting the tile entity.
+        // Emit a left-click ResolvedHit targeting the tile entity.
         app.world_mut()
-            .resource_mut::<Messages<WorldHit>>()
-            .write(WorldHit {
-                button: MouseButton::Left,
-                entity: tile_entity,
-                world_pos: Vec3::new(1.0, 0.0, 1.0),
+            .resource_mut::<Messages<ResolvedHit>>()
+            .write(ResolvedHit {
+                hit: WorldHit {
+                    button: MouseButton::Left,
+                    entity: tile_entity,
+                    world_pos: Vec3::new(1.0, 0.0, 1.0),
+                },
             });
 
         app.add_systems(Update, build_context_menu);
@@ -573,7 +775,7 @@ mod tests {
 
         assert!(
             !app.world().contains_resource::<ActiveMenu>(),
-            "ActiveMenu resource should NOT be present for a left-click WorldHit"
+            "ActiveMenu resource should NOT be present for a left-click ResolvedHit"
         );
     }
 
@@ -628,7 +830,7 @@ mod tests {
 
         app.world_mut()
             .resource_mut::<Messages<ContextMenuAction>>()
-            .write(ContextMenuAction {
+            .write(ContextMenuAction::TileToggle {
                 position: IVec2::new(2, 3),
                 kind: TileKind::Floor,
             });
@@ -855,6 +1057,367 @@ mod tests {
         let result = app.world().resource::<Result>();
         assert_eq!(result.found, Some(entity_a), "Should find entity for client_a");
         assert!(result.not_found, "Should return None for unknown client");
+    }
+
+    // ── resolve_world_hits ──────────────────────────────────────────────────
+
+    fn make_world_hit(button: MouseButton, entity: Entity, world_pos: Vec3) -> WorldHit {
+        WorldHit { button, entity, world_pos }
+    }
+
+    fn make_resolve_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<WorldHit>();
+        app.add_message::<ResolvedHit>();
+        app
+    }
+
+    /// A single [`WorldHit`] is forwarded unchanged as a [`ResolvedHit`].
+    #[test]
+    fn resolve_world_hits_single_hit_is_resolved() {
+        #[derive(Resource, Default)]
+        struct Captured(Vec<ResolvedHit>);
+
+        let mut app = make_resolve_app();
+        app.init_resource::<Captured>();
+
+        let entity = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<Messages<WorldHit>>()
+            .write(make_world_hit(MouseButton::Left, entity, Vec3::new(0.0, 0.0, 3.0)));
+
+        app.add_systems(Update, (
+            resolve_world_hits,
+            (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
+                c.0.extend(r.read().copied());
+            })
+            .after(resolve_world_hits),
+        ));
+        app.update();
+
+        let captured = app.world().resource::<Captured>();
+        assert_eq!(captured.0.len(), 1, "Expected one ResolvedHit");
+        assert_eq!(captured.0[0].hit.entity, entity);
+        assert_eq!(captured.0[0].hit.button, MouseButton::Left);
+    }
+
+    /// When multiple [`WorldHit`]s arrive for the same button, the one closest
+    /// to the camera (Vec3::ZERO when no camera entity exists) is chosen.
+    #[test]
+    fn resolve_world_hits_picks_closest_when_multiple() {
+        #[derive(Resource, Default)]
+        struct Captured(Vec<ResolvedHit>);
+
+        let mut app = make_resolve_app();
+        app.init_resource::<Captured>();
+
+        let near_entity = app.world_mut().spawn_empty().id();
+        let far_entity = app.world_mut().spawn_empty().id();
+
+        // Camera falls back to Vec3::ZERO when absent.  near_entity is closer.
+        app.world_mut()
+            .resource_mut::<Messages<WorldHit>>()
+            .write(make_world_hit(MouseButton::Left, near_entity, Vec3::new(0.0, 0.0, 2.0)));
+        app.world_mut()
+            .resource_mut::<Messages<WorldHit>>()
+            .write(make_world_hit(MouseButton::Left, far_entity, Vec3::new(0.0, 0.0, 10.0)));
+
+        app.add_systems(Update, (
+            resolve_world_hits,
+            (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
+                c.0.extend(r.read().copied());
+            })
+            .after(resolve_world_hits),
+        ));
+        app.update();
+
+        let captured = app.world().resource::<Captured>();
+        assert_eq!(captured.0.len(), 1, "Expected exactly one ResolvedHit");
+        assert_eq!(
+            captured.0[0].hit.entity, near_entity,
+            "Should resolve to the closest hit"
+        );
+    }
+
+    /// No [`WorldHit`]s → no [`ResolvedHit`] emitted.
+    #[test]
+    fn resolve_world_hits_no_input_no_output() {
+        #[derive(Resource, Default)]
+        struct Captured(Vec<ResolvedHit>);
+
+        let mut app = make_resolve_app();
+        app.init_resource::<Captured>();
+
+        app.add_systems(Update, (
+            resolve_world_hits,
+            (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
+                c.0.extend(r.read().copied());
+            })
+            .after(resolve_world_hits),
+        ));
+        app.update();
+
+        let captured = app.world().resource::<Captured>();
+        assert!(captured.0.is_empty(), "No ResolvedHit expected when there are no WorldHits");
+    }
+
+    // ── default_interaction ─────────────────────────────────────────────────
+
+    /// Left-clicking an entity with an [`Item`] component sends
+    /// `InteractionRequest::ItemPickup`.
+    #[test]
+    fn default_interaction_left_click_item_sends_pickup() {
+        #[derive(Resource, Default)]
+        struct Captured(Vec<InteractionRequest>);
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<ResolvedHit>();
+        app.add_message::<InteractionRequest>();
+        app.init_resource::<Captured>();
+
+        let net_id = NetId(42);
+        let item_entity = app.world_mut().spawn((Item, net_id)).id();
+
+        app.world_mut()
+            .resource_mut::<Messages<ResolvedHit>>()
+            .write(ResolvedHit {
+                hit: WorldHit {
+                    button: MouseButton::Left,
+                    entity: item_entity,
+                    world_pos: Vec3::ZERO,
+                },
+            });
+
+        app.add_systems(Update, (
+            default_interaction,
+            (|mut r: MessageReader<InteractionRequest>, mut c: ResMut<Captured>| {
+                c.0.extend(r.read().cloned());
+            })
+            .after(default_interaction),
+        ));
+        app.update();
+
+        let captured = app.world().resource::<Captured>();
+        assert_eq!(captured.0.len(), 1, "Expected one InteractionRequest");
+        match captured.0[0] {
+            InteractionRequest::ItemPickup { item } => assert_eq!(item, net_id),
+            ref other => panic!("Expected ItemPickup, got {:?}", other),
+        }
+    }
+
+    /// Left-clicking a non-Item entity does not send any [`InteractionRequest`].
+    #[test]
+    fn default_interaction_left_click_non_item_does_nothing() {
+        #[derive(Resource, Default)]
+        struct Captured(Vec<InteractionRequest>);
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<ResolvedHit>();
+        app.add_message::<InteractionRequest>();
+        app.init_resource::<Captured>();
+
+        let non_item = app.world_mut().spawn_empty().id();
+
+        app.world_mut()
+            .resource_mut::<Messages<ResolvedHit>>()
+            .write(ResolvedHit {
+                hit: WorldHit {
+                    button: MouseButton::Left,
+                    entity: non_item,
+                    world_pos: Vec3::ZERO,
+                },
+            });
+
+        app.add_systems(Update, (
+            default_interaction,
+            (|mut r: MessageReader<InteractionRequest>, mut c: ResMut<Captured>| {
+                c.0.extend(r.read().cloned());
+            })
+            .after(default_interaction),
+        ));
+        app.update();
+
+        let captured = app.world().resource::<Captured>();
+        assert!(captured.0.is_empty(), "No InteractionRequest expected for non-Item hit");
+    }
+
+    // ── context menu entries ─────────────────────────────────────────────────
+
+    fn make_context_menu_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<ResolvedHit>();
+        app.add_message::<ContextMenuAction>();
+        app.add_message::<InteractionRequest>();
+        app.init_resource::<UiTheme>();
+        app
+    }
+
+    fn emit_right_click(app: &mut App, entity: Entity, world_pos: Vec3) {
+        app.world_mut()
+            .resource_mut::<Messages<ResolvedHit>>()
+            .write(ResolvedHit {
+                hit: WorldHit {
+                    button: MouseButton::Right,
+                    entity,
+                    world_pos,
+                },
+            });
+    }
+
+    /// Right-clicking an [`Item`] on the floor opens a menu with "Pick up".
+    #[test]
+    fn context_menu_item_on_floor_shows_pick_up() {
+        let mut app = make_context_menu_app();
+
+        let net_id = NetId(7);
+        let item_entity = app.world_mut().spawn((Item, net_id)).id();
+        emit_right_click(&mut app, item_entity, Vec3::ZERO);
+
+        app.add_systems(Update, build_context_menu);
+        app.update();
+
+        assert!(
+            app.world().contains_resource::<ActiveMenu>(),
+            "Menu should open for an Item entity"
+        );
+    }
+
+    /// Right-clicking a floor [`Tile`] while holding an item shows "Drop" and "Build Wall".
+    #[test]
+    fn context_menu_floor_while_holding_item_shows_drop_and_build_wall() {
+        #[derive(Resource, Default)]
+        struct Captured(Vec<ContextMenuAction>);
+
+        let mut app = make_context_menu_app();
+        app.init_resource::<Captured>();
+
+        // Spawn player with a hand slot holding an item.
+        let item_net_id = NetId(99);
+        let item_entity = app.world_mut().spawn((Item, item_net_id)).id();
+
+        let mut hand_container = Container::with_capacity(1);
+        hand_container.insert(item_entity);
+        let hand = app
+            .world_mut()
+            .spawn((HandSlot { side: things::HandSide::Right }, hand_container))
+            .id();
+
+        let player = app
+            .world_mut()
+            .spawn(PlayerControlled)
+            .add_children(&[hand])
+            .id();
+        let _ = player;
+
+        // Spawn a floor tile.
+        let tile_entity = app
+            .world_mut()
+            .spawn(Tile { position: IVec2::new(2, 2) })
+            .id();
+        let tilemap = Tilemap::new(5, 5, TileKind::Floor);
+        app.insert_resource(tilemap);
+
+        emit_right_click(&mut app, tile_entity, Vec3::new(2.0, 0.0, 2.0));
+
+        app.add_systems(Update, (
+            build_context_menu,
+            (|mut r: MessageReader<ContextMenuAction>, mut c: ResMut<Captured>| {
+                c.0.extend(r.read().copied());
+            })
+            .after(build_context_menu),
+        ));
+        app.update();
+
+        assert!(
+            app.world().contains_resource::<ActiveMenu>(),
+            "Menu should open for a floor tile while holding item"
+        );
+    }
+
+    /// Right-clicking a [`Container`] while holding an item shows "Store in {name}".
+    #[test]
+    fn context_menu_container_while_holding_item_shows_store() {
+        let mut app = make_context_menu_app();
+
+        // Spawn player with a hand slot holding an item.
+        let item_net_id = NetId(55);
+        let item_entity = app.world_mut().spawn((Item, item_net_id)).id();
+
+        let mut hand_container = Container::with_capacity(1);
+        hand_container.insert(item_entity);
+        let hand = app
+            .world_mut()
+            .spawn((HandSlot { side: things::HandSide::Right }, hand_container))
+            .id();
+        app.world_mut()
+            .spawn(PlayerControlled)
+            .add_children(&[hand]);
+
+        // Spawn a world container (not a HandSlot).
+        let container_net_id = NetId(10);
+        let container_entity = app
+            .world_mut()
+            .spawn((
+                container_net_id,
+                Container::with_capacity(4),
+                DisplayName("Crate".to_string()),
+            ))
+            .id();
+
+        emit_right_click(&mut app, container_entity, Vec3::ZERO);
+
+        app.add_systems(Update, build_context_menu);
+        app.update();
+
+        assert!(
+            app.world().contains_resource::<ActiveMenu>(),
+            "Menu should open when right-clicking a container while holding item"
+        );
+    }
+
+    /// Right-clicking a [`Container`] with items while the hand is empty shows
+    /// "Take from {name}".
+    #[test]
+    fn context_menu_container_hand_empty_shows_take() {
+        let mut app = make_context_menu_app();
+
+        // Spawn player with empty hand slot.
+        let hand = app
+            .world_mut()
+            .spawn((HandSlot { side: things::HandSide::Right }, Container::with_capacity(1)))
+            .id();
+        app.world_mut()
+            .spawn(PlayerControlled)
+            .add_children(&[hand]);
+
+        // Spawn a world container with one item.
+        let item_net_id = NetId(33);
+        let item_entity = app.world_mut().spawn((Item, item_net_id)).id();
+        let container_net_id = NetId(20);
+        let mut world_container = Container::with_capacity(4);
+        world_container.insert(item_entity);
+        let container_entity = app
+            .world_mut()
+            .spawn((
+                container_net_id,
+                world_container,
+                DisplayName("Locker".to_string()),
+            ))
+            .id();
+
+        emit_right_click(&mut app, container_entity, Vec3::ZERO);
+
+        app.add_systems(Update, build_context_menu);
+        app.update();
+
+        assert!(
+            app.world().contains_resource::<ActiveMenu>(),
+            "Menu should open when right-clicking a non-empty container with empty hands"
+        );
     }
 }
 

@@ -588,7 +588,7 @@ impl StreamRegistry {
 
     /// Route a raw client→server frame to the per-tag server-side receive buffer so that
     /// the corresponding [`StreamReader`] can decode it via [`StreamReader::drain_from_client`].
-    pub(crate) fn route_client_stream_frame(&self, from: ClientId, tag: u8, data: Bytes) {
+    pub fn route_client_stream_frame(&self, from: ClientId, tag: u8, data: Bytes) {
         if let Some(buf) = self.per_client_stream_bufs.get(&tag) {
             buf.lock()
                 .unwrap_or_else(|e| e.into_inner())
