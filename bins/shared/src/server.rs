@@ -26,6 +26,18 @@ impl Plugin for ServerPlugin {
             Update,
             track_module_ready.run_if(resource_exists::<Server>),
         );
+        // Cross-module ordering: world-state streams (tiles, atmos) must send their
+        // initial burst before things sends entity spawns.  This ensures the client
+        // receives tilemap and gas-grid data before any EntitySpawned messages,
+        // matching the logical dependency order on the client side.
+        app.configure_sets(
+            PreUpdate,
+            (
+                tiles::TilesSet::SendOnConnect,
+                atmospherics::AtmosSet::SendOnConnect,
+            )
+                .before(things::ThingsSet::HandleClientJoined),
+        );
     }
 }
 
