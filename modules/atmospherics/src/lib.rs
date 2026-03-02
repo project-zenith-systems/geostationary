@@ -4,7 +4,7 @@ use network::{
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{ConstantForce, RigidBody};
-use tiles::Tilemap;
+use tiles::{TileMutated, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
@@ -209,6 +209,7 @@ impl Plugin for AtmosphericsPlugin {
         app.register_type::<GasGrid>();
         app.init_resource::<AtmosDebugOverlay>();
         app.init_resource::<AtmosSimPaused>();
+        app.add_message::<TileMutated>();
         app.add_systems(
             FixedUpdate,
             (wall_sync_system, diffusion_step_system, apply_pressure_forces)
@@ -232,6 +233,15 @@ impl Plugin for AtmosphericsPlugin {
                 debug_overlay::update_overlay_colors,
             )
                 .chain()
+                .run_if(not(resource_exists::<Headless>)),
+        );
+        // `update_overlay_on_tile_mutation` reads `TileMutated` events that may be
+        // written by `handle_tile_toggle` during the same `Update` schedule. Running in
+        // `PostUpdate` guarantees the reader always executes after all `Update`-schedule
+        // writers, regardless of intra-Update system ordering.
+        app.add_systems(
+            PostUpdate,
+            debug_overlay::update_overlay_on_tile_mutation
                 .run_if(not(resource_exists::<Headless>)),
         );
         app.add_systems(
