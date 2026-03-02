@@ -135,25 +135,6 @@ pub enum TilesStreamMessage {
     },
 }
 
-/// Client→server request to toggle a tile at the given position (stream 4).
-///
-/// **Temporary:** This dedicated stream will be superseded by a general-purpose
-/// interactions stream in a later plan iteration. Do not rely on stream 4 being
-/// tile-specific long-term.
-#[derive(Debug, Clone, SchemaRead, SchemaWrite)]
-pub struct TileToggle {
-    pub position: [i32; 2],
-    pub kind: TileKind,
-}
-
-/// Bevy event fired by the interactions module when the player requests a tile mutation.
-/// Consumed by [`execute_tile_toggle`] to send [`TileToggle`] on stream 4.
-#[derive(Message, Debug, Clone, Copy)]
-pub struct TileToggleRequest {
-    pub position: IVec2,
-    pub kind: TileKind,
-}
-
 /// Bevy event fired when a tile mutation arrives from the server (or is applied locally
 /// on a listen-server). Consumed by [`apply_tile_mutation`] to update the visual
 /// representation incrementally.
@@ -165,9 +146,6 @@ pub struct TileMutated {
 
 /// Stream tag for the server→client tiles stream (stream 1).
 pub const TILES_STREAM_TAG: u8 = 1;
-
-/// Stream tag for the client→server tile-toggle stream (stream 4).
-pub const TILE_TOGGLE_STREAM_TAG: u8 = 4;
 
 /// Decode a [`TilesStreamMessage`] from raw stream-frame bytes.
 pub fn decode_tiles_message(bytes: &[u8]) -> Result<TilesStreamMessage, String> {
@@ -242,10 +220,9 @@ impl Plugin for TilesPlugin {
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
 
-        app.add_message::<TileToggleRequest>();
         app.add_message::<TileMutated>();
 
-        // Register messages that raycast_tiles / execute_tile_toggle read/write
+        // Register messages that raycast_tiles read/write
         // so the resources exist even when InputPlugin is not added (e.g. headless tests).
         app.add_message::<PointerAction>();
         app.add_message::<WorldHit>();
@@ -255,14 +232,12 @@ impl Plugin for TilesPlugin {
             // Tile mesh spawning and visual mutation are visual-only; skip in headless server mode.
             app.init_resource::<TileMeshes>();
             app.add_systems(Update, spawn_tile_meshes);
-            // On a listen-server, TileMutated events are written by handle_tile_toggle
-            // (which runs in the same Update schedule).  Ordering after it ensures those
-            // events are visible in the same frame.
+            // On a listen-server, TileMutated events are written by dispatch_interaction
+            // (interactions module, Update schedule).  Running apply_tile_mutation in PostUpdate
+            // guarantees it executes after dispatch_interaction has written the events.
             app.add_systems(
-                Update,
-                apply_tile_mutation
-                    .run_if(resource_exists::<Server>)
-                    .after(handle_tile_toggle),
+                PostUpdate,
+                apply_tile_mutation.run_if(resource_exists::<Server>),
             );
             // On a dedicated client, TileMutated events come from handle_tiles_stream
             // (PreUpdate), so no intra-Update ordering is needed.
@@ -272,7 +247,7 @@ impl Plugin for TilesPlugin {
             );
             app.add_systems(
                 Update,
-                (raycast_tiles, execute_tile_toggle),
+                raycast_tiles,
             );
         }
 
@@ -291,12 +266,6 @@ impl Plugin for TilesPlugin {
             Update,
             send_tilemap_on_connect.run_if(resource_exists::<Server>),
         );
-        app.add_systems(
-            Update,
-            handle_tile_toggle
-                .run_if(resource_exists::<Server>)
-                .after(send_tilemap_on_connect),
-        );
 
         // Register streams. Requires NetworkPlugin to be added first.
         let mut registry = app.world_mut().get_resource_mut::<StreamRegistry>().expect(
@@ -310,18 +279,8 @@ impl Plugin for TilesPlugin {
             name: "tiles",
             direction: StreamDirection::ServerToClient,
         });
-        let (toggle_sender, toggle_reader): (
-            StreamSender<TileToggle>,
-            StreamReader<TileToggle>,
-        ) = registry.register(StreamDef {
-            tag: TILE_TOGGLE_STREAM_TAG,
-            name: "tile_toggle",
-            direction: StreamDirection::ClientToServer,
-        });
         app.insert_resource(sender);
         app.insert_resource(reader);
-        app.insert_resource(toggle_sender);
-        app.insert_resource(toggle_reader);
     }
 }
 
@@ -576,96 +535,13 @@ fn raycast_tiles(
     }
 }
 
-/// System that reads [`TileToggleRequest`] events and sends a [`TileToggle`] message
-/// to the server on stream 4 (client→server).
-///
-/// Runs in `Update`, gated on absence of [`Headless`].
-fn execute_tile_toggle(
-    mut requests: MessageReader<TileToggleRequest>,
-    sender: Option<Res<StreamSender<TileToggle>>>,
-) {
-    let Some(ref s) = sender else {
-        // Drain the event queue even when disconnected so they don't accumulate.
-        for _ in requests.read() {}
-        return;
-    };
-    for req in requests.read() {
-        if let Err(e) = s.send(&TileToggle {
-            position: [req.position.x, req.position.y],
-            kind: req.kind,
-        }) {
-            error!("Failed to send TileToggle to server: {}", e);
-        }
-    }
-}
-
-/// Server-side system that reads [`TileToggle`] messages from stream 4, validates each
-/// request (in-bounds, tile currently differs from the requested kind), applies the
-/// mutation via [`Tilemap::set`], then broadcasts [`TilesStreamMessage::TileMutated`]
-/// to all clients on stream 1.  Also fires a local [`TileMutated`] Bevy event so the
-/// listen-server's own [`apply_tile_mutation`] system can update its visuals.
-///
-/// Runs in `Update`, gated on [`Server`] resource.
-fn handle_tile_toggle(
-    mut reader: ResMut<StreamReader<TileToggle>>,
-    mut tilemap: Option<ResMut<Tilemap>>,
-    sender: Option<Res<StreamSender<TilesStreamMessage>>>,
-    mut mutation_events: MessageWriter<TileMutated>,
-) {
-    for (from, toggle) in reader.drain_from_client() {
-        let position = IVec2::new(toggle.position[0], toggle.position[1]);
-
-        let Some(ref mut tm) = tilemap else {
-            warn!("handle_tile_toggle: Tilemap resource not available");
-            continue;
-        };
-
-        // Validate: position must be within the tilemap bounds.
-        let Some(current) = tm.get(position) else {
-            warn!(
-                "TileToggle from {:?}: position {:?} is out of bounds",
-                from, position
-            );
-            continue;
-        };
-
-        // Validate: requested kind must differ from the current tile.
-        if current == toggle.kind {
-            warn!(
-                "TileToggle from {:?}: tile at {:?} is already {:?}",
-                from, position, toggle.kind
-            );
-            continue;
-        }
-
-        tm.set(position, toggle.kind);
-
-        // Fire local Bevy event so the listen-server updates its own visuals.
-        mutation_events.write(TileMutated { position, kind: toggle.kind });
-
-        // Broadcast the mutation to all connected clients on stream 1.
-        let Some(ref ts) = sender else {
-            error!("handle_tile_toggle: tiles stream sender not available");
-            continue;
-        };
-        if let Err(e) = ts.broadcast(&TilesStreamMessage::TileMutated {
-            position: toggle.position,
-            kind: toggle.kind,
-        }) {
-            error!("Failed to broadcast TileMutated: {}", e);
-        }
-    }
-}
-
 /// Client-side system that handles [`TileMutated`] events (fired by both
-/// [`handle_tiles_stream`] and, on listen-servers, by [`handle_tile_toggle`]).
+/// [`handle_tiles_stream`] and, on listen-servers, by `dispatch_interaction` in the
+/// interactions module).
 ///
 /// Despawns the existing tile entity at the affected grid position and spawns a new
 /// one with the updated mesh, material, and collider via [`spawn_tile_entity`].
 /// This provides incremental rendering — only the changed tile is rebuilt.
-///
-/// On a listen-server, runs after [`handle_tile_toggle`] (same frame visibility).
-/// On a dedicated client, runs unconditionally (events arrive from PreUpdate).
 fn apply_tile_mutation(
     mut commands: Commands,
     mut events: MessageReader<TileMutated>,
@@ -858,19 +734,6 @@ mod tests {
         };
         let result = Tilemap::try_from(msg);
         assert!(result.is_err(), "TileMutated should not convert to a Tilemap");
-    }
-
-    #[test]
-    fn test_tile_toggle_roundtrip() {
-        // TileToggle must survive a wincode encode→decode cycle.
-        let original = TileToggle {
-            position: [3, 7],
-            kind: TileKind::Wall,
-        };
-        let bytes = wincode::serialize(&original).expect("encode should succeed");
-        let restored: TileToggle = wincode::deserialize(&bytes).expect("decode should succeed");
-        assert_eq!(restored.position, original.position);
-        assert_eq!(restored.kind, TileKind::Wall);
     }
 
     #[test]
