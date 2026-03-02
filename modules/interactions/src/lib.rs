@@ -92,8 +92,8 @@ struct ActiveMenu(Entity);
 /// system acts as the tie-breaker so downstream logic only ever sees one winner per
 /// click.
 ///
-/// Runs after `raycast_tiles` and `raycast_things`, gated on
-/// `not(resource_exists::<Headless>)`.
+/// This system should be scheduled to run after the raycast systems and is typically
+/// gated on `not(resource_exists::<Headless>)` by the plugin that registers it.
 fn resolve_world_hits(
     mut hit_events: MessageReader<WorldHit>,
     mut resolved: MessageWriter<ResolvedHit>,
@@ -150,15 +150,11 @@ fn default_interaction(
 fn held_item(
     player: Entity,
     children_q: &Query<&Children>,
-    hand_slot_q: &Query<(), With<HandSlot>>,
     hand_container_q: &Query<&Container, With<HandSlot>>,
     net_id_q: &Query<&NetId>,
 ) -> Option<NetId> {
     let children = children_q.get(player).ok()?;
     for child in children.iter() {
-        if hand_slot_q.get(child).is_err() {
-            continue;
-        }
         if let Ok(container) = hand_container_q.get(child) {
             for slot in &container.slots {
                 if let Some(item_entity) = slot {
@@ -194,7 +190,6 @@ fn build_context_menu(
     theme: Res<UiTheme>,
     player_q: Query<Entity, With<PlayerControlled>>,
     children_q: Query<&Children>,
-    hand_slot_q: Query<(), With<HandSlot>>,
     hand_container_q: Query<&Container, With<HandSlot>>,
     net_id_q: Query<&NetId>,
 ) {
@@ -221,7 +216,7 @@ fn build_context_menu(
     // Determine whether the local player is holding an item.
     let player = player_q.single().ok();
     let holding: Option<NetId> = player.and_then(|p| {
-        held_item(p, &children_q, &hand_slot_q, &hand_container_q, &net_id_q)
+        held_item(p, &children_q, &hand_container_q, &net_id_q)
     });
 
     // Collect action buttons for this hit.
@@ -619,7 +614,9 @@ impl<S: States + Copy> Plugin for InteractionsPlugin<S> {
                     .after(dismiss_context_menu)
                     .after(resolve_world_hits),
                 handle_menu_selection,
-                send_interaction.after(handle_menu_selection),
+                send_interaction
+                    .after(default_interaction)
+                    .after(handle_menu_selection),
             )
                 .run_if(in_state(state))
                 .run_if(not(resource_exists::<Headless>)),
@@ -1289,11 +1286,7 @@ mod tests {
     /// Right-clicking a floor [`Tile`] while holding an item shows "Drop" and "Build Wall".
     #[test]
     fn context_menu_floor_while_holding_item_shows_drop_and_build_wall() {
-        #[derive(Resource, Default)]
-        struct Captured(Vec<ContextMenuAction>);
-
         let mut app = make_context_menu_app();
-        app.init_resource::<Captured>();
 
         // Spawn player with a hand slot holding an item.
         let item_net_id = NetId(99);
@@ -1323,19 +1316,22 @@ mod tests {
 
         emit_right_click(&mut app, tile_entity, Vec3::new(2.0, 0.0, 2.0));
 
-        app.add_systems(Update, (
-            build_context_menu,
-            (|mut r: MessageReader<ContextMenuAction>, mut c: ResMut<Captured>| {
-                c.0.extend(r.read().copied());
-            })
-            .after(build_context_menu),
-        ));
+        app.add_systems(Update, build_context_menu);
         app.update();
 
         assert!(
             app.world().contains_resource::<ActiveMenu>(),
             "Menu should open for a floor tile while holding item"
         );
+
+        // The menu root should have exactly 2 button children: "Drop" and "Build Wall".
+        let menu_entity = app.world().resource::<ActiveMenu>().0;
+        let child_count = app
+            .world()
+            .get::<Children>(menu_entity)
+            .map(|c| c.len())
+            .unwrap_or(0);
+        assert_eq!(child_count, 2, "Expected two buttons (Drop + Build Wall) in the context menu");
     }
 
     /// Right-clicking a [`Container`] while holding an item shows "Store in {name}".
