@@ -262,79 +262,89 @@ pub fn update_overlay_on_tile_mutation(
         final_states.insert(event.position, event.kind);
     }
 
-    // Seed the shared mesh handle from any pre-existing quad.  We cache it in a
-    // local variable so that multiple walkable events in the same frame all reuse
-    // the same mesh handle even though Commands-deferred spawns are not yet visible
-    // to the `existing_quads` query.
-    let mut shared_mesh: Option<Handle<Mesh>> = existing_quads
-        .iter()
-        .next()
-        .map(|(_, q)| q.mesh.clone());
-
-    // Precompute per-mesh refcount from the query snapshot. Commands despawns are
-    // deferred, so `existing_quads` will still include entities scheduled for
-    // despawn during this loop. By tracking removals locally we can correctly
-    // detect when the last reference to the shared mesh has been released even
-    // when multiple wall-mutation events arrive in the same frame.
+    // Build a position-keyed lookup from the query snapshot for O(1) access.
+    // Also seeds the shared mesh handle from any pre-existing quad and builds the
+    // per-mesh refcount used for mesh cleanup.
+    let mut quad_by_pos: std::collections::HashMap<IVec2, (Entity, Handle<Mesh>, Handle<StandardMaterial>)> =
+        std::collections::HashMap::new();
     let mut mesh_refcounts: std::collections::HashMap<bevy::asset::AssetId<Mesh>, usize> =
         std::collections::HashMap::new();
-    for (_, quad) in existing_quads.iter() {
+    let mut shared_mesh: Option<Handle<Mesh>> = None;
+    for (entity, quad) in existing_quads.iter() {
+        quad_by_pos.insert(quad.position, (entity, quad.mesh.clone(), quad.material.clone()));
         *mesh_refcounts.entry(quad.mesh.id()).or_insert(0) += 1;
+        if shared_mesh.is_none() {
+            shared_mesh = Some(quad.mesh.clone());
+        }
     }
 
+    // Partition final tile states so that all wall/despawn actions are processed
+    // before any walkable/spawn actions. HashMap iteration order is non-deterministic,
+    // so without this separation a walkable event could be handled first (spawning a
+    // new quad that reuses the shared mesh), then a wall event could decrement the
+    // refcount to 0 and call `meshes.remove`, leaving the new quad with an invalid
+    // mesh handle.
+    let mut wall_positions: Vec<IVec2> = Vec::new();
+    let mut walkable_positions: Vec<IVec2> = Vec::new();
     for (position, kind) in final_states {
         if kind.is_walkable() {
-            // Tile became walkable — spawn an overlay quad if one doesn't already exist.
-            let already_exists = existing_quads.iter().any(|(_, q)| q.position == position);
-            if !already_exists {
-                let world_x = position.x as f32;
-                let world_z = position.y as f32;
-                // Reuse the cached shared mesh handle, or create one (and cache it for
-                // all subsequent spawns in this invocation).
-                let mesh = shared_mesh
-                    .get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5))))
-                    .clone();
-                let material = materials.add(StandardMaterial {
-                    base_color: Color::srgba(0.0, 1.0, 0.0, 0.5),
-                    alpha_mode: AlphaMode::Blend,
-                    unlit: true,
-                    ..default()
-                });
-                commands.spawn((
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_xyz(world_x, 0.01, world_z),
-                    OverlayQuad {
-                        position,
-                        mesh,
-                        material,
-                    },
-                ));
-                debug!("Spawned overlay quad at {:?} (tile became walkable)", position);
-            }
+            walkable_positions.push(position);
         } else {
-            // Tile became a wall — despawn the overlay quad at this position (if any).
-            for (entity, quad) in existing_quads.iter() {
-                if quad.position == position {
-                    // Decrement the local refcount for this mesh. If it reaches 0 this
-                    // is the last quad referencing the shared mesh, so remove the asset
-                    // and clear the cached handle. Using the local counter (rather than
-                    // re-querying existing_quads) correctly handles multiple wall-mutation
-                    // events in the same frame because deferred Commands do not shrink
-                    // existing_quads until the next flush.
-                    let refcount = mesh_refcounts.entry(quad.mesh.id()).or_insert(0);
-                    *refcount = refcount.saturating_sub(1);
-                    if *refcount == 0 {
-                        meshes.remove(&quad.mesh);
-                        shared_mesh = None;
-                    }
-                    // Remove the per-quad material (each quad owns a unique material handle).
-                    materials.remove(&quad.material);
-                    commands.entity(entity).despawn();
-                    debug!("Despawned overlay quad at {:?} (tile became wall)", position);
-                    break;
-                }
+            wall_positions.push(position);
+        }
+    }
+
+    // First pass: despawn quads for tiles that became walls.
+    for position in wall_positions {
+        if let Some((entity, mesh_handle, material_handle)) = quad_by_pos.remove(&position) {
+            // Decrement the local refcount for this mesh. If it reaches 0 this
+            // is the last quad referencing the shared mesh, so remove the asset
+            // and clear the cached handle. Using the local counter (rather than
+            // re-querying existing_quads) correctly handles multiple wall-mutation
+            // events in the same frame because deferred Commands do not shrink
+            // existing_quads until the next flush.
+            let refcount = mesh_refcounts.entry(mesh_handle.id()).or_insert(0);
+            *refcount = refcount.saturating_sub(1);
+            if *refcount == 0 {
+                meshes.remove(&mesh_handle);
+                shared_mesh = None;
             }
+            // Remove the per-quad material (each quad owns a unique material handle).
+            materials.remove(&material_handle);
+            commands.entity(entity).despawn();
+            debug!("Despawned overlay quad at {:?} (tile became wall)", position);
+        }
+    }
+
+    // Second pass: spawn quads for tiles that became walkable, now that all
+    // mesh-removal decisions have been made and `shared_mesh` reflects the
+    // post-despawn state.
+    for position in walkable_positions {
+        if !quad_by_pos.contains_key(&position) {
+            let world_x = position.x as f32;
+            let world_z = position.y as f32;
+            // Reuse the cached shared mesh handle, or create one (and cache it for
+            // all subsequent spawns in this invocation).
+            let mesh = shared_mesh
+                .get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5))))
+                .clone();
+            let material = materials.add(StandardMaterial {
+                base_color: Color::srgba(0.0, 1.0, 0.0, 0.5),
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                ..default()
+            });
+            commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::from_xyz(world_x, 0.01, world_z),
+                OverlayQuad {
+                    position,
+                    mesh,
+                    material,
+                },
+            ));
+            debug!("Spawned overlay quad at {:?} (tile became walkable)", position);
         }
     }
 }
