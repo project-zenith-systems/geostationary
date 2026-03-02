@@ -249,6 +249,11 @@ pub fn update_overlay_on_tile_mutation(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if !overlay.0 {
+        // Drain tile mutation events even when the overlay is disabled so that
+        // the underlying message buffer does not accumulate stale messages.
+        for _ in tile_events.read() {
+            // Intentionally discard events while overlay is off.
+        }
         return;
     }
 
