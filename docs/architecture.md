@@ -157,6 +157,12 @@ Most modules will not need external dependencies beyond Bevy itself.
 Where an external crate is needed, it should sit as low in the stack as
 practical so the layers above don't need to know about it.
 
+## Cross-Cutting References
+
+- [Module Coordination](module-coordination.md) — game-loop timeline,
+  `SystemSet` ordering convention, readiness signalling, and how to add new
+  module streams or ordering constraints.
+
 ## Layer Index
 
 Detailed documentation for each layer:
