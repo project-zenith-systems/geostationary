@@ -16,34 +16,13 @@ The earliest schedule in which game code runs. Bevy's internal bookkeeping
 (time, events, etc.) has already executed.
 
 1. **`NetworkSet::Receive`** — `drain_server_events` and `drain_client_events`
-   pull messages from async channels into Bevy messages. On the client,
-   `StreamReady` sentinels received in this batch are *deferred* (buffered in
-   `StreamRegistry`) and emitted at the **start of the next frame's**
-   `drain_client_events` call, guaranteeing at least one full frame of
-   processing before downstream systems see the ready signal.
+   pull messages from async channels into Bevy messages.
 
-2. **Module on-connect sends** — Server-side systems that send initial data
-   bursts to newly joined clients. These are ordered after
-   `NetworkSet::Receive` (so `PlayerEvent::Joined` is readable) and before
-   `NetworkSet::Send`. The canonical execution order within this window is
-   declared via `SystemSet` constraints (see [Ordering Convention](#ordering-convention)
-   below):
-
-   ```
-   TilesSet::SendOnConnect          ─┐
-   AtmosSet::SendOnConnect           ├─ before ──▶ ThingsSet::HandleClientJoined
-                                     │
-   ThingsSet::HandleClientJoined    ─┘
-        │
-        ▼
-   items::broadcast_stored_on_join   (after HandleClientJoined, before SendStreamReady)
-        │
-        ▼
-   ThingsSet::SendStreamReady        (after HandleClientJoined)
-        │
-        ▼
-   souls::bind_soul                  (after HandleClientJoined)
-   ```
+2. **Module on-connect sends** — Server-side systems that react to
+   `PlayerEvent::Joined` by sending initial data to newly joined clients.
+   Each module independently listens for the event and sends its data when
+   ready. These systems run after `NetworkSet::Receive` and before
+   `NetworkSet::Send`.
 
 3. **`NetworkSet::Send`** — `process_net_commands` dispatches queued
    `NetCommand` messages to async tasks (host, connect, disconnect).
@@ -56,41 +35,107 @@ on the client.
 
 ### Update
 
-Steady-state game logic: physics input, simulation ticks, interaction
-dispatch, UI, and periodic broadcasts.
+Steady-state game logic. This is where the bulk of gameplay systems run.
 
-- `broadcast_state` and `broadcast_item_event` (things, server)
-- `broadcast_gas_grid` (atmospherics, server — periodic snapshots/deltas)
-- `handle_item_interaction` (items, server)
-- `track_module_ready` (shared/server — collects `ModuleReadySent` events)
-- Client-side: `handle_item_event`, `send_input`, debug overlays
+- **Simulation** — physics stepping, interaction dispatch, item handling,
+  atmospherics ticking
+- **Visual** — animation playback, particle effects, debug overlays
+  (client/listen-server only)
+- **Orchestration** — `track_module_ready` collects `ModuleReadySent`
+  events and sends `InitialStateDone` when all streams are ready
 
 ### FixedUpdate
 
-Runs at the simulation tick rate, independent of frame rate.
-
-- `wall_sync_system` → `diffusion_step_system` → `apply_pressure_forces`
-  (atmospherics, server)
-- `wall_sync_system` → `diffusion_step_system` (atmospherics, client)
+Runs at the simulation tick rate, independent of frame rate. Used for
+deterministic simulation logic like gas diffusion and pressure forces.
 
 ### PostUpdate
 
-Post-processing that must run after all `Update` systems.
+Runs after all `Update` systems have finished. Use this for work that
+depends on the final state of the frame.
 
-- `apply_tile_mutation` (tiles, listen-server only — after
-  `dispatch_interaction` writes `TileMutated` events in `Update`)
+- **Network broadcasts** — periodic state sync (entity positions, gas grid
+  snapshots, item events) should happen here to ensure all `Update` systems
+  have committed their changes before the state is serialised and sent
+- **Deferred mutations** — `apply_tile_mutation` (listen-server only)
+
+> **Rationale:** Sending network messages in `PostUpdate` guarantees that
+> every system has had a chance to modify the world state during `Update`
+> before it is synced to clients. This avoids sending stale or
+> partially-updated data.
+
+## Server-Only and Client-Only Systems
+
+The network layer inserts marker resources that identify the role of the
+current application instance. Systems use these as run conditions to ensure
+they only execute in the appropriate context.
+
+| Resource    | Present When                            |
+|-------------|-----------------------------------------|
+| `Server`    | Hosting (dedicated server or listen-server) |
+| `Client`    | Connected to a server (client or listen-server) |
+| `Headless`  | Dedicated server mode (no rendering)    |
+
+Note: On a listen-server, both `Server` and `Client` are present.
+
+### Run Condition Patterns
+
+```rust
+// Server-only: authoritative simulation, broadcasting state
+app.add_systems(Update, broadcast_state.run_if(resource_exists::<Server>));
+
+// Client-only: receiving replicated state, sending input
+app.add_systems(Update, send_input.run_if(resource_exists::<Client>));
+
+// Visual-only: rendering, VFX, animation — skip on headless servers
+app.add_systems(Update, spawn_meshes.run_if(not(resource_exists::<Headless>)));
+
+// Client-side receiving (not on a dedicated server that doesn't connect to itself)
+app.add_systems(PreUpdate, handle_entity_lifecycle.run_if(resource_exists::<Client>));
+```
+
+### When to Use Each
+
+- **`resource_exists::<Server>`** — Systems that run authoritative logic:
+  handling player joins, processing interactions, broadcasting state. These
+  run on dedicated servers and listen-servers.
+
+- **`resource_exists::<Client>`** — Systems that process replicated data or
+  send client input. These run on clients and listen-servers.
+
+- **`not(resource_exists::<Headless>)`** — Systems that require rendering
+  or windowing: spawning meshes, playing animations, showing debug overlays.
+  These skip on headless dedicated servers but run on clients and
+  listen-servers (which have a window).
+
+### Module Scope
+
+Some modules are entirely server-side or client-side by nature:
+
+- **Server-only modules** gate all their systems on `Server`. Example:
+  interaction dispatch, physics authority, atmos simulation stepping.
+- **Client-only modules** gate on `Client` or `not(Headless)`. Example:
+  input capture, camera control, UI rendering.
+- **Shared modules** register both server and client systems, gating each
+  appropriately. Example: `things` registers `broadcast_state` for `Server`
+  and `handle_entity_lifecycle` for `Client`.
 
 ## Readiness Convention: "Module X Is Ready"
 
 Every registered server→client module stream follows the same protocol:
 
 1. **Initial burst.** On `PlayerEvent::Joined`, the module's on-connect
-   system sends all catch-up data for the joining client on its stream
+   system sends catch-up data for the joining client on its stream
    (e.g. `TilemapData`, `GasGridData`, `EntitySpawned` + `ItemEvent`).
+   The initial burst **may span multiple frames** — modules must not assume
+   all data is sent in a single frame. For large worlds, data may be
+   streamed in chunks across several frames before the module signals
+   readiness.
 
-2. **`StreamReady` sentinel.** After the burst, the module calls
-   `StreamSender::send_stream_ready_to(client)` to send a special
-   sentinel frame on the wire.
+2. **`StreamReady` guard.** Once the module has finished sending all of its
+   initial data (which may have taken several frames), it calls
+   `StreamSender::send_stream_ready_to(client)` to send a guard frame on
+   the wire marking the end of the initial burst.
 
 3. **`ModuleReadySent` event.** The module emits `ModuleReadySent { client }`
    so the orchestration layer can track progress.
@@ -101,17 +146,15 @@ Every registered server→client module stream follows the same protocol:
    it sends `ServerMessage::InitialStateDone` on the control stream.
 
 5. **Client barrier.** The client's `PendingSync` tracks both
-   `InitialStateDone` and per-stream `StreamReady` sentinels. The
-   transition to `AppState::InGame` fires only once both conditions are
-   satisfied.
+   `InitialStateDone` and per-stream `StreamReady` guards. The transition
+   to `AppState::InGame` fires only once both conditions are satisfied.
 
-### StreamReady Deferral (Client-Side)
-
-When `drain_client_events` encounters a `StreamReady` sentinel in the same
-batch as the stream data it marks complete, the sentinel is **deferred** to
-the next frame. This ensures module systems have had a full frame to process
-the initial-burst data before any downstream system observes the ready
-signal. The deferral is transparent — modules do not need to account for it.
+> **Important:** Do not assume that a module's initial burst completes in
+> one frame. The `StreamReady` guard is the only reliable signal that a
+> module has finished sending its initial data. Both the server
+> orchestration (`ModuleReadySent` counting) and the client barrier
+> (`PendingSync`) are designed to work correctly regardless of how many
+> frames the initial burst spans.
 
 ### Adding a New Module Stream
 
@@ -123,21 +166,17 @@ initial-sync barrier:
 2. Implement an on-connect system gated on `resource_exists::<Server>` that
    listens for `PlayerEvent::Joined`, sends the initial data, then calls
    `send_stream_ready_to` and emits `ModuleReadySent`.
-3. Place the system in an appropriately named `SystemSet` variant (see
-   below) and configure it in `PreUpdate` between `NetworkSet::Receive` and
+3. Place the system in `PreUpdate` between `NetworkSet::Receive` and
    `NetworkSet::Send`.
 4. If the required resource may not exist on the first frame (e.g.
    listen-server startup), queue the client and retry, following the
    `PendingTilesSyncs` / `PendingAtmosSyncs` pattern.
-5. If ordering relative to other modules' on-connect systems matters,
-   declare the constraint in `shared/server.rs` where all module types are
-   visible.
 
 ## Ordering Convention
 
 ### SystemSets
 
-Cross-module ordering is expressed through named `SystemSet` enums. Each
+Ordering between systems is expressed through named `SystemSet` enums. Each
 module that exposes ordering points declares a public enum with descriptive
 variants. This decouples ordering from private function names and makes
 constraints visible in code.
@@ -146,59 +185,44 @@ constraints visible in code.
 |-----------------|--------------------------------|---------|
 | `network`       | `NetworkSet::Receive`          | Drains async events into Bevy messages |
 | `network`       | `NetworkSet::Send`             | Dispatches outbound commands |
-| `tiles`         | `TilesSet::SendOnConnect`      | Tilemap snapshot + StreamReady to joining client |
-| `atmospherics`  | `AtmosSet::SendOnConnect`      | Gas grid snapshot + StreamReady to joining client |
+| `tiles`         | `TilesSet::SendOnConnect`      | Tilemap snapshot + StreamReady guard to joining client |
+| `atmospherics`  | `AtmosSet::SendOnConnect`      | Gas grid snapshot + StreamReady guard to joining client |
 | `things`        | `ThingsSet::HandleClientJoined`| Entity-spawn catch-up for joining client |
-| `things`        | `ThingsSet::SendStreamReady`   | Stream 3 StreamReady sentinel (after all catch-up) |
+| `things`        | `ThingsSet::SendStreamReady`   | Stream 3 StreamReady guard (after all catch-up) |
 
 ### Where Constraints Live
 
-- **Intra-module constraints** are declared in the module's own plugin
-  `build()`. Example: `ThingsSet::SendStreamReady.after(ThingsSet::HandleClientJoined)`.
+Each module declares its own ordering constraints in its plugin `build()`.
+If a module needs to run after another module's set, it adds the constraint
+itself — this keeps ordering decisions co-located with the systems they
+affect.
 
-- **Cross-module constraints** are declared in `shared/server.rs`
-  (`ServerPlugin::build`), the only crate that depends on all module crates.
-  Example: `TilesSet::SendOnConnect.before(ThingsSet::HandleClientJoined)`.
-
-- **Layer-dependency constraints** follow the architecture's downward-only
-  dependency rule. A higher-layer module may `.after()` a lower-layer set
-  directly since it already depends on that crate.
-  Example: `items::broadcast_stored_on_join.after(things::ThingsSet::HandleClientJoined)`.
-
-### Current On-Connect Ordering Graph
-
+```rust
+// In items/src/lib.rs — items depends on things, so it can reference ThingsSet directly
+app.add_systems(
+    PreUpdate,
+    broadcast_stored_on_join
+        .run_if(resource_exists::<Server>)
+        .after(things::ThingsSet::HandleClientJoined)
+        .before(things::ThingsSet::SendStreamReady),
+);
 ```
-NetworkSet::Receive
-        │
-        ▼
-TilesSet::SendOnConnect  ──────┐
-AtmosSet::SendOnConnect  ──────┤ (world-state streams, unordered with each other)
-        │                      │
-        ▼                      │
-ThingsSet::HandleClientJoined ◀┘
-        │
-        ├──▶ items::broadcast_stored_on_join
-        │
-        ▼
-ThingsSet::SendStreamReady
-        │
-        ├──▶ souls::bind_soul
-        │
-        ▼
-NetworkSet::Send
-```
+
+When two modules have no dependency relationship and need ordering between
+them, add the constraint in `shared/server.rs` where both types are
+visible.
 
 ### Adding a New Ordering Constraint
 
-1. If your module's on-connect system must run before or after another
-   module's, express this as `.before(OtherSet::Variant)` or
-   `.after(OtherSet::Variant)`.
-2. If the other module is in a lower layer (your crate already depends on
-   it), add the constraint directly in your plugin's `build()`.
-3. If neither module depends on the other, add the constraint in
-   `shared/server.rs` where both types are visible.
-4. Never invent a new coordination mechanism (ad-hoc events, frame-counting,
-   polling resources) when a `SystemSet` ordering constraint will do.
+When a new system needs to run in a defined order relative to other modules:
+
+1. Declare a `SystemSet` variant in your module if one doesn't already exist.
+2. Add `.before()` or `.after()` constraints referencing the other module's
+   set in your plugin's `build()`.
+3. If your module can't depend on the other module's crate, add the
+   constraint in `shared/server.rs` instead.
+4. Prefer `SystemSet` ordering over ad-hoc coordination mechanisms
+   (frame-counting, polling resources, manual event sequencing).
 
 ## Summary of Coordination Mechanisms
 
@@ -206,7 +230,7 @@ NetworkSet::Send
 |-----------|-------|----------|
 | `SystemSet` ordering | PreUpdate (server) | Deterministic ordering of on-connect sends |
 | `ModuleReadySent` event | PreUpdate/Update | Per-module "initial burst complete" signal |
-| `StreamReady` sentinel | Wire protocol | Per-stream "data burst complete" marker (client-side) |
-| `StreamReady` deferral | Client PreUpdate | Ensures one processing frame before ready signal |
+| `StreamReady` guard | Wire protocol | Per-stream "data burst complete" marker (client-side) |
 | `PendingSync` barrier | Client PreUpdate | Gate for `AppState::InGame` transition |
 | `PendingXSyncs` queues | Server PreUpdate | Retry queue when resource not yet available |
+| `resource_exists` run conditions | All schedules | Server-only / client-only / visual-only gating |
