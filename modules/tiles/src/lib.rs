@@ -7,6 +7,19 @@ use network::{
 use physics::{Collider, RigidBody};
 use wincode::{SchemaRead, SchemaWrite};
 
+/// System set for the tiles module's server-side lifecycle systems.
+/// Other modules can use this for explicit ordering relative to tiles systems.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TilesSet {
+    /// Sends the full tilemap snapshot and [`StreamReady`] sentinel to a joining client.
+    ///
+    /// Runs in `PreUpdate` so that ordering constraints against other modules'
+    /// on-connect sends (e.g. [`things::ThingsSet::HandleClientJoined`]) can be
+    /// expressed within the same schedule.  If the [`Tilemap`] resource is not yet
+    /// available the client is queued in [`PendingTilesSyncs`] and retried each frame.
+    SendOnConnect,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, SchemaRead, SchemaWrite)]
 #[reflect(Debug, PartialEq)]
 pub enum TileKind {
@@ -257,14 +270,22 @@ impl Plugin for TilesPlugin {
                 .run_if(not(resource_exists::<Server>))
                 .after(NetworkSet::Receive),
         );
-        // Runs in Update (not PreUpdate) so that StateTransition has already
-        // processed OnEnter(InGame) → setup_world → Tilemap inserted.
-        // ClientJoined messages written in PreUpdate are still readable here
-        // thanks to double-buffered message semantics.
+        // Runs in PreUpdate after NetworkSet::Receive so PlayerEvent::Joined is
+        // readable.  If the Tilemap resource is not yet available (e.g.
+        // listen-server: setup_world hasn't run yet) the client is queued in
+        // PendingTilesSyncs and retried each frame.
         app.init_resource::<PendingTilesSyncs>();
+        app.configure_sets(
+            PreUpdate,
+            TilesSet::SendOnConnect
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send),
+        );
         app.add_systems(
-            Update,
-            send_tilemap_on_connect.run_if(resource_exists::<Server>),
+            PreUpdate,
+            send_tilemap_on_connect
+                .run_if(resource_exists::<Server>)
+                .in_set(TilesSet::SendOnConnect),
         );
 
         // Register streams. Requires NetworkPlugin to be added first.
