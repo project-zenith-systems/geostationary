@@ -271,6 +271,17 @@ pub fn update_overlay_on_tile_mutation(
         .next()
         .map(|(_, q)| q.mesh.clone());
 
+    // Precompute per-mesh refcount from the query snapshot. Commands despawns are
+    // deferred, so `existing_quads` will still include entities scheduled for
+    // despawn during this loop. By tracking removals locally we can correctly
+    // detect when the last reference to the shared mesh has been released even
+    // when multiple wall-mutation events arrive in the same frame.
+    let mut mesh_refcounts: std::collections::HashMap<bevy::asset::AssetId<Mesh>, usize> =
+        std::collections::HashMap::new();
+    for (_, quad) in existing_quads.iter() {
+        *mesh_refcounts.entry(quad.mesh.id()).or_insert(0) += 1;
+    }
+
     for (position, kind) in final_states {
         if kind.is_walkable() {
             // Tile became walkable — spawn an overlay quad if one doesn't already exist.
@@ -305,15 +316,15 @@ pub fn update_overlay_on_tile_mutation(
             // Tile became a wall — despawn the overlay quad at this position (if any).
             for (entity, quad) in existing_quads.iter() {
                 if quad.position == position {
-                    // If this is the last overlay quad using this mesh, remove the shared
-                    // mesh asset as well and clear the cached handle so subsequent events
-                    // in this batch will create a fresh mesh.
-                    let is_last_for_mesh = existing_quads
-                        .iter()
-                        .filter(|(_, q)| q.mesh.id() == quad.mesh.id())
-                        .count()
-                        == 1;
-                    if is_last_for_mesh {
+                    // Decrement the local refcount for this mesh. If it reaches 0 this
+                    // is the last quad referencing the shared mesh, so remove the asset
+                    // and clear the cached handle. Using the local counter (rather than
+                    // re-querying existing_quads) correctly handles multiple wall-mutation
+                    // events in the same frame because deferred Commands do not shrink
+                    // existing_quads until the next flush.
+                    let refcount = mesh_refcounts.entry(quad.mesh.id()).or_insert(0);
+                    *refcount = refcount.saturating_sub(1);
+                    if *refcount == 0 {
                         meshes.remove(&quad.mesh);
                         shared_mesh = None;
                     }
@@ -681,6 +692,52 @@ mod tests {
                 .get(mesh_id)
                 .is_none(),
             "shared mesh should be removed when the last quad referencing it is despawned"
+        );
+    }
+
+    #[test]
+    fn test_all_quads_despawned_same_frame_removes_shared_mesh() {
+        let mut app = make_test_app();
+
+        // First, spawn two walkable tiles in the same frame so they share one mesh.
+        fire_mutations(
+            &mut app,
+            [
+                (IVec2::new(0, 0), TileKind::Floor),
+                (IVec2::new(1, 0), TileKind::Floor),
+            ],
+        );
+
+        assert_eq!(
+            quad_count(&mut app),
+            2,
+            "both walkable mutations should produce quads before despawn"
+        );
+
+        // All quads spawned in the same frame share one mesh; record its id.
+        let mut q = app.world_mut().query::<&OverlayQuad>();
+        let mesh_id = q
+            .iter(app.world())
+            .next()
+            .expect("at least one quad should exist")
+            .mesh
+            .id();
+
+        // Send wall mutations for both positions in the same frame.
+        fire_mutations(
+            &mut app,
+            [
+                (IVec2::new(0, 0), TileKind::Wall),
+                (IVec2::new(1, 0), TileKind::Wall),
+            ],
+        );
+
+        assert!(
+            app.world()
+                .resource::<Assets<Mesh>>()
+                .get(mesh_id)
+                .is_none(),
+            "shared mesh should be removed when all quads referencing it are despawned in the same frame"
         );
     }
 }

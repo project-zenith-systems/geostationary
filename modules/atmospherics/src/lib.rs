@@ -229,11 +229,19 @@ impl Plugin for AtmosphericsPlugin {
                 pause_toggle_input,
                 debug_overlay::toggle_overlay,
                 debug_overlay::spawn_overlay_quads,
-                debug_overlay::update_overlay_on_tile_mutation,
                 debug_overlay::despawn_overlay_quads,
                 debug_overlay::update_overlay_colors,
             )
                 .chain()
+                .run_if(not(resource_exists::<Headless>)),
+        );
+        // `update_overlay_on_tile_mutation` reads `TileMutated` events that may be
+        // written by `handle_tile_toggle` during the same `Update` schedule. Running in
+        // `PostUpdate` guarantees the reader always executes after all `Update`-schedule
+        // writers, regardless of intra-Update system ordering.
+        app.add_systems(
+            PostUpdate,
+            debug_overlay::update_overlay_on_tile_mutation
                 .run_if(not(resource_exists::<Headless>)),
         );
         app.add_systems(
