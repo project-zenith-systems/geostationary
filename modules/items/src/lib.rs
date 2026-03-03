@@ -45,8 +45,12 @@ impl Container {
     }
 
     /// Insert `entity` into the first free slot.  Returns the slot index on
-    /// success, or `None` if the container is full.
+    /// success, or `None` if the container is full or the entity is already
+    /// present.
     pub fn insert(&mut self, entity: Entity) -> Option<usize> {
+        if self.slots.iter().any(|s| *s == Some(entity)) {
+            return None;
+        }
         for (i, slot) in self.slots.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(entity);
@@ -673,24 +677,25 @@ fn handle_item_event(
                     }
                 }
                 let drop_pos = Vec3::from_array(position);
-                if let Some(stash) = maybe_stash.cloned() {
-                    commands
-                        .entity(item_entity)
-                        .remove::<ChildOf>()
-                        .remove::<StashedPhysics>()
-                        .insert(Transform::from_translation(drop_pos))
-                        .insert((
-                            RigidBody::Dynamic,
-                            stash.collider,
-                            stash.gravity,
-                            LinearVelocity::default(),
-                        ));
-                } else {
-                    commands
-                        .entity(item_entity)
-                        .remove::<ChildOf>()
-                        .insert(Transform::from_translation(drop_pos));
-                }
+                let Some(stash) = maybe_stash.cloned() else {
+                    warn!(
+                        "handle_item_event: Dropped item {:?} has no StashedPhysics — \
+                         server should never send Drop for a non-physical item",
+                        item_entity
+                    );
+                    continue;
+                };
+                commands
+                    .entity(item_entity)
+                    .remove::<ChildOf>()
+                    .remove::<StashedPhysics>()
+                    .insert(Transform::from_translation(drop_pos))
+                    .insert((
+                        RigidBody::Dynamic,
+                        stash.collider,
+                        stash.gravity,
+                        LinearVelocity::default(),
+                    ));
             }
 
             ItemEvent::Stored { item, container } => {

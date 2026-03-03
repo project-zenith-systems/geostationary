@@ -104,8 +104,11 @@ fn resolve_world_hits(
         return;
     }
 
-    // Fall back to Vec3::ZERO when no camera is present (headless / test).
-    let cam_pos = camera_q.single().map(|t| t.translation()).unwrap_or(Vec3::ZERO);
+    let Ok(cam_tf) = camera_q.single() else {
+        warn!("resolve_world_hits: expected exactly one Camera3d, found {}", camera_q.iter().count());
+        return;
+    };
+    let cam_pos = cam_tf.translation();
 
     // For each button that produced hits, pick the closest-to-camera hit.
     for button in [MouseButton::Left, MouseButton::Right] {
@@ -230,6 +233,8 @@ fn build_context_menu(
                 .with_event(ContextMenuAction::ItemPickup { item: item_net_id })
                 .build(&mut commands);
             buttons.push(btn);
+        } else {
+            warn!("build_context_menu: Item entity {:?} has no NetId", hit.entity);
         }
     } else if let Ok((&container_net_id, container, display_name)) =
         world_container_q.get(hit.entity)
@@ -480,13 +485,14 @@ fn dispatch_interaction(
                 }
             }
 
+            // All item variants require NetIdIndex and an actor.
             InteractionRequest::ItemPickup { item: item_id } => {
                 let Some(ref idx) = net_id_index else {
-                    warn!("dispatch_interaction ItemPickup: NetIdIndex not available");
+                    warn!("dispatch_interaction: NetIdIndex not available for item request");
                     continue;
                 };
                 let Some(&item) = idx.0.get(&item_id) else {
-                    warn!("dispatch_interaction ItemPickup: unknown item NetId {:?}", item_id);
+                    warn!("dispatch_interaction ItemPickup: unknown NetId {:?}", item_id);
                     continue;
                 };
                 let Some(actor) = resolve_actor(&actor_query, from) else {
@@ -498,11 +504,11 @@ fn dispatch_interaction(
 
             InteractionRequest::ItemDrop { item: item_id, drop_position } => {
                 let Some(ref idx) = net_id_index else {
-                    warn!("dispatch_interaction ItemDrop: NetIdIndex not available");
+                    warn!("dispatch_interaction: NetIdIndex not available for item request");
                     continue;
                 };
                 let Some(&item) = idx.0.get(&item_id) else {
-                    warn!("dispatch_interaction ItemDrop: unknown item NetId {:?}", item_id);
+                    warn!("dispatch_interaction ItemDrop: unknown NetId {:?}", item_id);
                     continue;
                 };
                 let Some(actor) = resolve_actor(&actor_query, from) else {
@@ -518,7 +524,7 @@ fn dispatch_interaction(
 
             InteractionRequest::StoreInContainer { item: item_id, container: container_id } => {
                 let Some(ref idx) = net_id_index else {
-                    warn!("dispatch_interaction StoreInContainer: NetIdIndex not available");
+                    warn!("dispatch_interaction: NetIdIndex not available for item request");
                     continue;
                 };
                 let Some(&item) = idx.0.get(&item_id) else {
@@ -538,7 +544,7 @@ fn dispatch_interaction(
 
             InteractionRequest::TakeFromContainer { item: item_id, container: container_id } => {
                 let Some(ref idx) = net_id_index else {
-                    warn!("dispatch_interaction TakeFromContainer: NetIdIndex not available");
+                    warn!("dispatch_interaction: NetIdIndex not available for item request");
                     continue;
                 };
                 let Some(&item) = idx.0.get(&item_id) else {
@@ -613,7 +619,7 @@ impl<S: States + Copy> Plugin for InteractionsPlugin<S> {
                 build_context_menu
                     .after(dismiss_context_menu)
                     .after(resolve_world_hits),
-                handle_menu_selection,
+                handle_menu_selection.after(build_context_menu),
                 send_interaction
                     .after(default_interaction)
                     .after(handle_menu_selection),
@@ -1067,6 +1073,8 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_message::<WorldHit>();
         app.add_message::<ResolvedHit>();
+        // Spawn a Camera3d at the origin so resolve_world_hits can query it.
+        app.world_mut().spawn((Camera3d::default(), GlobalTransform::IDENTITY));
         app
     }
 
@@ -1100,7 +1108,7 @@ mod tests {
     }
 
     /// When multiple [`WorldHit`]s arrive for the same button, the one closest
-    /// to the camera (Vec3::ZERO when no camera entity exists) is chosen.
+    /// to the camera is chosen.
     #[test]
     fn resolve_world_hits_picks_closest_when_multiple() {
         #[derive(Resource, Default)]
@@ -1112,7 +1120,7 @@ mod tests {
         let near_entity = app.world_mut().spawn_empty().id();
         let far_entity = app.world_mut().spawn_empty().id();
 
-        // Camera falls back to Vec3::ZERO when absent.  near_entity is closer.
+        // Camera is at the origin; near_entity is closer.
         app.world_mut()
             .resource_mut::<Messages<WorldHit>>()
             .write(make_world_hit(MouseButton::Left, near_entity, Vec3::new(0.0, 0.0, 2.0)));
