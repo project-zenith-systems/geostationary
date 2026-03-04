@@ -28,7 +28,7 @@ modules handle their own layers via the `MapLayer` trait.
 #[derive(Serialize, Deserialize)]
 pub struct MapFile {
     pub version: u32,
-    pub layers: HashMap<String, ron::Value>,
+    pub layers: BTreeMap<String, ron::Value>,
 }
 ```
 
@@ -131,8 +131,8 @@ indices and `chunk_size` — there are no explicit width/height fields.
 #[derive(Serialize, Deserialize)]
 pub struct TilesLayerData {
     pub chunk_size: u32,
-    pub keys: HashMap<u16, TileDef>,
-    pub chunks: HashMap<(i32, i32), String>,  // base64-encoded
+    pub keys: BTreeMap<u16, TileDef>,
+    pub chunks: BTreeMap<(i32, i32), String>,  // base64-encoded
 }
 
 #[derive(Serialize, Deserialize)]
@@ -208,8 +208,8 @@ pub struct SpawnPoint {
 
 ```ron
 "spawns": [
-    (position: (5.0, 0.0, 3.0), template: "toolbox", contents: ["can"]),
-    (position: (4.0, 0.0, 3.0), template: "can"),
+    (position: [5.0, 0.0, 3.0], template: "toolbox", contents: ["can"]),
+    (position: [4.0, 0.0, 3.0], template: "can"),
 ],
 ```
 
