@@ -7,7 +7,7 @@ use network::{
     NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
     StreamSender, NETWORK_UPDATE_INTERVAL,
 };
-use physics::{Collider, LinearVelocity, RigidBody, SpatialQuery, SpatialQueryFilter};
+use physics::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
 use serde::{Deserialize, Serialize};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -15,8 +15,14 @@ use wincode::{SchemaRead, SchemaWrite};
 /// Other modules can use this for explicit ordering relative to things systems.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ThingsSet {
-    /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages and [`StreamReady`] to a joining client.
+    /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages to a joining client.
     HandleClientJoined,
+    /// Sends the [`StreamReady`] sentinel for stream 3 to a joining client.
+    ///
+    /// Runs after [`HandleClientJoined`] so that other modules can insert their
+    /// own catch-up messages (e.g. `ItemEvent::Stored`) between the entity-spawn
+    /// burst and the ready signal.
+    SendStreamReady,
 }
 
 /// Marker component for non-grid-bound world objects.
@@ -37,6 +43,27 @@ struct LastBroadcast {
     position: Vec3,
     velocity: Vec3,
 }
+
+/// Which hand a [`HandSlot`] anchor belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+pub enum HandSide {
+    Left,
+    Right,
+}
+
+/// Child entity anchor marking where a held item attaches.
+///
+/// Spawned as a child of every creature entity by the kind 0 [`ThingRegistry`]
+/// template. The items module will later add a `Container { capacity: 1 }` to
+/// this child once that component is defined.
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
+pub struct HandSlot {
+    pub side: HandSide,
+}
+
+/// Creature-local (local-space) offset from the creature origin to the hand anchor position.
+pub const HAND_OFFSET: Vec3 = Vec3::new(0.4, 0.5, 0.0);
 
 /// Marker component for the entity controlled by the local player.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
@@ -190,6 +217,8 @@ impl<S: States + Copy> ThingsPlugin<S> {
 impl<S: States + Copy> Plugin for ThingsPlugin<S> {
     fn build(&self, app: &mut App) {
         app.register_type::<Thing>();
+        app.register_type::<HandSide>();
+        app.register_type::<HandSlot>();
         app.register_type::<PlayerControlled>();
         app.register_type::<InputDirection>();
         app.register_type::<DisplayName>();
@@ -212,6 +241,13 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
         app.insert_resource(reader);
 
         let state = self.state;
+        app.configure_sets(
+            PreUpdate,
+            ThingsSet::SendStreamReady
+                .after(ThingsSet::HandleClientJoined)
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send),
+        );
         app.add_systems(
             PreUpdate,
             (
@@ -220,11 +256,17 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
                 handle_client_joined
                     .run_if(resource_exists::<Server>)
                     .in_set(ThingsSet::HandleClientJoined),
+                send_stream_ready_on_join
+                    .run_if(resource_exists::<Server>)
+                    .in_set(ThingsSet::SendStreamReady),
             )
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send),
         );
-        app.add_systems(Update, broadcast_state.run_if(resource_exists::<Server>));
+        app.add_systems(
+            Update,
+            broadcast_state.run_if(resource_exists::<Server>),
+        );
 
         // Register the messages raycast_things reads/writes so the resources
         // exist even when InputPlugin is not added (e.g. headless server mode).
@@ -242,33 +284,22 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
 fn on_spawn_thing(
     on: On<SpawnThing>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     registry: Res<ThingRegistry>,
 ) {
     let event = on.event();
+    debug!(
+        "on_spawn_thing: kind={} entity={:?} pos={:?}",
+        event.kind, event.entity, event.position
+    );
 
-    let mut entity = commands.entity(event.entity);
-    entity.insert((
+    // Insert only the shared base components. Collider, mesh, and material
+    // are the template's responsibility — no defaults are applied here.
+    commands.entity(event.entity).insert((
         Transform::from_translation(event.position),
-        RigidBody::Dynamic,
         LinearVelocity::default(),
-        Collider::capsule(0.3, 1.0),
         Thing { kind: event.kind },
         LastBroadcast::default(),
     ));
-
-    // Insert visual components only when the renderer (PbrPlugin) is available.
-    // In headless server mode, Assets<StandardMaterial> is not registered.
-    if let Some(ref mut materials) = materials {
-        entity.insert((
-            Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(0.8, 0.5, 0.2),
-                ..default()
-            })),
-        ));
-    }
 
     if let Some(builder) = registry.templates.get(&event.kind) {
         builder(event.entity, event, &mut commands);
@@ -378,11 +409,15 @@ fn handle_entity_lifecycle(
 /// Handles server-side catch-up on client join for stream 3.
 ///
 /// Sends catch-up [`ThingsStreamMessage::EntitySpawned`] messages for all currently
-/// tracked entities to the joining client, then sends the [`StreamReady`] sentinel for stream 3
-/// so the client can count toward its initial-sync barrier.
+/// tracked entities to the joining client.
 ///
-/// Creature spawning and the EntitySpawned broadcast for the new player entity are handled
-/// by the `souls` module's `bind_soul` system.
+/// The [`StreamReady`] sentinel is sent separately by [`send_stream_ready_on_join`]
+/// in [`ThingsSet::SendStreamReady`], which runs after both this system *and* any
+/// other module catch-up systems (e.g. `broadcast_held_on_join` and
+/// `broadcast_stored_on_join` in `items`).
+///
+/// Creature spawning and the EntitySpawned broadcast for the new player entity are
+/// handled by the `souls` module's `bind_soul` system.
 fn handle_client_joined(
     mut messages: MessageReader<PlayerEvent>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
@@ -390,11 +425,10 @@ fn handle_client_joined(
         &NetId,
         Option<&ControlledByClient>,
         &Transform,
-        &LinearVelocity,
+        Option<&LinearVelocity>,
         Option<&DisplayName>,
         &Thing,
     )>,
-    mut module_ready: MessageWriter<ModuleReadySent>,
 ) {
     for event in messages.read() {
         let PlayerEvent::Joined { id: from, .. } = event else {
@@ -402,17 +436,22 @@ fn handle_client_joined(
         };
 
         // Catch-up: send EntitySpawned on stream 3 for every existing Thing entity.
-        for (net_id, opt_controlled_by, transform, velocity, opt_name, thing) in entities.iter() {
+        for (net_id, opt_controlled_by, transform, opt_velocity, opt_name, thing) in
+            entities.iter()
+        {
             let owner = opt_controlled_by
                 .map(|c| c.0)
                 .filter(|&owner_id| owner_id == *from);
+            let vel = opt_velocity
+                .map(|lv| [lv.x, lv.y, lv.z])
+                .unwrap_or([0.0, 0.0, 0.0]);
             if let Err(e) = stream_sender.send_to(
                 *from,
                 &ThingsStreamMessage::EntitySpawned {
                     net_id: *net_id,
                     kind: thing.kind,
                     position: transform.translation.into(),
-                    velocity: [velocity.x, velocity.y, velocity.z],
+                    velocity: vel,
                     owner,
                     name: opt_name.map(|n| n.0.clone()),
                 },
@@ -423,9 +462,26 @@ fn handle_client_joined(
                 );
             }
         }
+    }
+}
 
-        // Signal that the initial burst for stream 3 is complete.
-        // The new player entity's EntitySpawned is broadcast by the souls module after this.
+/// Sends the [`StreamReady`] sentinel for stream 3 to every client that joined
+/// this frame.
+///
+/// Runs in [`ThingsSet::SendStreamReady`], which is ordered after
+/// [`ThingsSet::HandleClientJoined`].  This guarantees that all initial-burst
+/// messages — including any catch-up frames inserted by other modules between the
+/// two sets (e.g. `broadcast_stored_on_join` in `items`) — have been enqueued
+/// before the client sees the ready signal.
+fn send_stream_ready_on_join(
+    mut messages: MessageReader<PlayerEvent>,
+    stream_sender: Res<StreamSender<ThingsStreamMessage>>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
+) {
+    for event in messages.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
         if let Err(e) = stream_sender.send_stream_ready_to(*from) {
             error!(
                 "Failed to send StreamReady for things stream to ClientId({}): {e}",
@@ -450,7 +506,10 @@ fn broadcast_state(
     time: Res<Time>,
     mut timer: ResMut<StateBroadcastTimer>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
-    mut entities: Query<(&NetId, &Transform, Option<&LinearVelocity>, &mut LastBroadcast)>,
+    mut entities: Query<
+        (&NetId, &Transform, Option<&LinearVelocity>, &mut LastBroadcast),
+        Without<ChildOf>,
+    >,
 ) {
     if !timer.0.tick(time.delta()).just_finished() {
         return;
@@ -489,8 +548,8 @@ fn broadcast_state(
     }
 }
 
-/// Listens for right-click [`PointerAction`] events, raycasts against entity colliders
-/// via [`SpatialQuery`], and emits [`WorldHit`] for the nearest hit thing entity.
+/// Listens for left-click and right-click [`PointerAction`] events, raycasts against entity
+/// colliders via [`SpatialQuery`], and emits [`WorldHit`] for the nearest hit thing entity.
 fn raycast_things(
     mut pointer_action_reader: MessageReader<PointerAction>,
     spatial_query: SpatialQuery,
@@ -503,7 +562,7 @@ fn raycast_things(
     };
 
     for action in pointer_action_reader.read() {
-        if action.button != MouseButton::Right {
+        if !matches!(action.button, MouseButton::Left | MouseButton::Right) {
             continue;
         }
 
@@ -521,6 +580,7 @@ fn raycast_things(
             if things.get(hit.entity).is_ok() {
                 let world_pos = ray.origin + *ray.direction * hit.distance;
                 hit_writer.write(WorldHit {
+                    button: action.button,
                     entity: hit.entity,
                     world_pos,
                 });
@@ -529,3 +589,59 @@ fn raycast_things(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that when a kind-0 SpawnThing event is triggered with a builder
+    /// that spawns a HandSlot child (as CreaturesPlugin does), the creature entity
+    /// ends up with a child entity carrying HandSlot { side: Right }.
+    #[test]
+    fn spawn_thing_kind_0_produces_hand_slot_child() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ThingRegistry>();
+        app.add_observer(on_spawn_thing);
+
+        // Register a kind-0 builder that mirrors what CreaturesPlugin registers:
+        // spawn a HandSlot child on the creature entity.
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(0, |entity, _event, commands| {
+                commands.entity(entity).with_children(|parent| {
+                    parent.spawn((
+                        HandSlot {
+                            side: HandSide::Right,
+                        },
+                        Transform::from_translation(HAND_OFFSET),
+                    ));
+                });
+            });
+
+        let creature = app.world_mut().spawn_empty().id();
+        app.world_mut().trigger(SpawnThing {
+            entity: creature,
+            kind: 0,
+            position: Vec3::ZERO,
+        });
+        app.update();
+
+        let children = app
+            .world()
+            .entity(creature)
+            .get::<Children>()
+            .expect("creature should have at least one child after SpawnThing");
+
+        let hand_slot_child = children
+            .iter()
+            .find_map(|child| app.world().get::<HandSlot>(child));
+
+        let slot = hand_slot_child.expect("creature should have a HandSlot child entity");
+        assert_eq!(
+            slot.side,
+            HandSide::Right,
+            "HandSlot side should be Right"
+        );
+    }
+
+}

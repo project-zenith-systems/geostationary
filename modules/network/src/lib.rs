@@ -588,7 +588,12 @@ impl StreamRegistry {
 
     /// Route a raw client→server frame to the per-tag server-side receive buffer so that
     /// the corresponding [`StreamReader`] can decode it via [`StreamReader::drain_from_client`].
-    pub(crate) fn route_client_stream_frame(&self, from: ClientId, tag: u8, data: Bytes) {
+    ///
+    /// This is a low-level helper intended primarily for internal testing and tooling.
+    /// Normal consumers of this crate should not call it directly, as doing so can bypass
+    /// the usual server-event routing path and break higher-level invariants.
+    #[doc(hidden)]
+    pub fn route_client_stream_frame(&self, from: ClientId, tag: u8, data: Bytes) {
         if let Some(buf) = self.per_client_stream_bufs.get(&tag) {
             buf.lock()
                 .unwrap_or_else(|e| e.into_inner())

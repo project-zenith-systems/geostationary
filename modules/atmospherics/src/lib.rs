@@ -13,6 +13,19 @@ pub use gas_grid::{GasCell, GasGrid, DEFAULT_DIFFUSION_RATE};
 mod debug_overlay;
 pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
 
+/// System set for the atmospherics module's server-side lifecycle systems.
+/// Other modules can use this for explicit ordering relative to atmospherics systems.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AtmosSet {
+    /// Sends the full gas grid snapshot and [`StreamReady`] sentinel to a joining client.
+    ///
+    /// Runs in `PreUpdate` so that ordering constraints against other modules'
+    /// on-connect sends (e.g. [`things::ThingsSet::HandleClientJoined`]) can be
+    /// expressed within the same schedule.  If the [`GasGrid`] resource is not yet
+    /// available the client is queued in [`PendingAtmosSyncs`] and retried each frame.
+    SendOnConnect,
+}
+
 /// Resource that controls whether the atmospherics simulation is paused.
 /// When true, `diffusion_step_system` skips advancing the gas grid.
 /// Toggle with F5.
@@ -252,13 +265,23 @@ impl Plugin for AtmosphericsPlugin {
         );
         app.init_resource::<PendingAtmosSyncs>();
         app.init_resource::<AtmosBroadcastTimers>();
+        // send_gas_grid_on_connect runs in PreUpdate after NetworkSet::Receive so
+        // PlayerEvent::Joined is readable.
+        app.configure_sets(
+            PreUpdate,
+            AtmosSet::SendOnConnect
+                .after(NetworkSet::Receive)
+                .before(NetworkSet::Send),
+        );
+        app.add_systems(
+            PreUpdate,
+            send_gas_grid_on_connect
+                .run_if(resource_exists::<Server>)
+                .in_set(AtmosSet::SendOnConnect),
+        );
         app.add_systems(
             Update,
-            (
-                send_gas_grid_on_connect,
-                broadcast_gas_grid,
-            )
-                .run_if(resource_exists::<Server>),
+            broadcast_gas_grid.run_if(resource_exists::<Server>),
         );
 
         // Register stream 2 (server→client atmospherics stream). Requires NetworkPlugin to be added first.
@@ -306,7 +329,7 @@ fn handle_atmos_updates(
                 passable,
             } => match GasGrid::from_moles_vec(width, height, gas_moles, passable) {
                 Ok(new_grid) => {
-                    info!("Received gas grid {}×{} from server", width, height);
+                    debug!("Received gas grid {}×{} from server", width, height);
                     pending = Some(new_grid);
                 }
                 Err(e) => error!("Invalid gas grid data on stream {ATMOS_STREAM_TAG}: {e}"),

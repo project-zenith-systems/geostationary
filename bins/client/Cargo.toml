@@ -1,5 +1,5 @@
 [package]
-name = "geostationary"
+name = "client"
 version = "0.1.0"
 edition = "2024"
 
@@ -18,4 +18,5 @@ ui = { path = "../../modules/ui" }
 camera = { path = "../../modules/camera" }
 input = { path = "../../modules/input" }
 interactions = { path = "../../modules/interactions" }
+items = { path = "../../modules/items" }
 player = { path = "../../modules/player" }
