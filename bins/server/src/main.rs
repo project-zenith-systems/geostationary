@@ -1,8 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy::app::AppExit;
-use bevy::log::{Level, LogPlugin};
+use bevy::log::LogPlugin;
 use bevy::prelude::*;
+use interactions::InteractionsPlugin;
 use network::{Headless, NetCommand, NetServerSender, NetworkPlugin, ServerMessage};
 use physics::PhysicsPlugin;
 use shared::config::AppConfig;

@@ -1,8 +1,9 @@
 # How to Write a Plan
 
 This document codifies the conventions used for planning in Geostationary.
-A **plan** is a vertical cut through the layer stack — the minimum viable
-implementation of a feature that proves the architecture works end-to-end.
+A **plan** is a vertical cut through the layer stack — a focused implementation
+of a feature that proves the architecture works end-to-end. Plans scope down
+by deferring features, not by cutting corners on what they do build.
 
 ## Document location
 
@@ -85,6 +86,15 @@ initial plan.>
    post-mortem records what shipped, what deviated from the plan, what
    went wrong, and what to do differently. Future plans reference
    past post-mortems.
+
+7. **Build to last, not to replace.** A plan delivers the minimum viable
+   feature, but "minimum" means minimum *scope*, not minimum *quality*.
+   The code and data formats a plan introduces should be durable — designed
+   to accommodate the next two or three plans in the arc without structural
+   rewrites. If a format, abstraction, or interface will clearly need to be
+   torn out and rebuilt when the next plan lands, that's a sign the current
+   plan's design is too narrow. Scope down by deferring features, not by
+   choosing brittle foundations.
 
 ## Spikes
 
