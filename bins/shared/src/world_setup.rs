@@ -3,14 +3,11 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use items::{Container, StashedPhysics};
 use network::Server;
-use physics::{Collider, GravityScale, LinearVelocity, Restitution, RigidBody};
-use things::ThingRegistry;
+use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
 use tiles::Tilemap;
 
 use crate::app_state::AppState;
 use crate::config::AppConfig;
-
-pub const BALL_RADIUS: f32 = 0.3;
 
 /// System that sets up the world when entering InGame state (server only).
 pub fn setup_world(
@@ -100,18 +97,6 @@ pub struct WorldSetupPlugin;
 
 impl Plugin for WorldSetupPlugin {
     fn build(&self, app: &mut App) {
-        // Register ball as thing kind 1 with physics-only components.
-        // Client binaries can override this registration to add mesh + material.
-        app.world_mut()
-            .resource_mut::<ThingRegistry>()
-            .register(1, |entity, _event, commands| {
-                commands.entity(entity).insert((
-                    Collider::sphere(BALL_RADIUS),
-                    GravityScale(1.0),
-                    Restitution::new(0.8),
-                ));
-            });
-
         // Run setup_world as soon as Server exists and Tilemap hasn't been created yet.
         // This decouples world creation from the InGame state transition, which is
         // necessary on a listen-server: the client sync barrier requires tiles/atmos

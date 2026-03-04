@@ -1,4 +1,4 @@
-use bevy::log::{Level, LogPlugin};
+use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use interactions::InteractionsPlugin;
 use network::{Headless, NetCommand, NetworkPlugin};
@@ -8,19 +8,8 @@ use items::{InteractionRange, ItemsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
 
-fn parse_log_level(s: &str) -> Level {
-    match s.to_lowercase().as_str() {
-        "trace" => Level::TRACE,
-        "debug" => Level::DEBUG,
-        "warn" | "warning" => Level::WARN,
-        "error" => Level::ERROR,
-        _ => Level::INFO,
-    }
-}
-
 fn main() {
     let app_config = shared::config::load_config();
-    let log_level = parse_log_level(&app_config.debug.log_level);
 
     let mut app = App::new();
     app.insert_resource(app_config.clone());
@@ -28,10 +17,7 @@ fn main() {
     // Dedicated headless server: minimal plugin set for physics + networking.
     // No window or rendering. Mesh/scene asset support is retained for physics.
     app.add_plugins(MinimalPlugins)
-        .add_plugins(LogPlugin {
-            level: log_level,
-            ..default()
-        })
+        .add_plugins(LogPlugin::from(&app_config))
         .add_plugins(bevy::transform::TransformPlugin)
         .add_plugins(bevy::asset::AssetPlugin::default())
         .add_plugins(bevy::mesh::MeshPlugin)
@@ -48,6 +34,7 @@ fn main() {
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(souls::SoulsPlugin)
         .add_plugins(shared::world_setup::WorldSetupPlugin)
+        .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(shared::server::ServerPlugin)
         .add_plugins(ItemsPlugin)
         .add_plugins(InteractionsPlugin::<shared::app_state::AppState>::in_state(

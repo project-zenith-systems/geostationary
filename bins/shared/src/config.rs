@@ -1,5 +1,5 @@
-use bevy::log::warn;
-use bevy::prelude::Resource;
+use bevy::log::{warn, Level};
+use bevy::prelude::{default, Resource};
 use serde::Deserialize;
 
 use ::config::{Config, Environment, File, FileFormat};
@@ -14,6 +14,24 @@ pub struct AppConfig {
     pub atmospherics: AtmosphericsConfig,
     pub souls: SoulsConfig,
     pub items: ItemsConfig,
+}
+
+impl From<&AppConfig> for bevy::log::LogPlugin {
+    fn from(config: &AppConfig) -> Self {
+        Self {
+            level: parse_log_level(&config.debug.log_level),
+            ..default()
+        }
+    }
+}
+fn parse_log_level(s: &str) -> Level {
+    match s.to_lowercase().as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "warn" | "warning" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::INFO,
+    }
 }
 
 impl Default for AppConfig {

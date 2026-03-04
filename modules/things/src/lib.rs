@@ -348,6 +348,10 @@ fn on_spawn_thing(
     registry: Res<ThingRegistry>,
 ) {
     let event = on.event();
+    debug!(
+        "on_spawn_thing: kind={} entity={:?} pos={:?}",
+        event.kind, event.entity, event.position
+    );
 
     // Insert only the shared base components. Collider, mesh, and material
     // are the template's responsibility — no defaults are applied here.
