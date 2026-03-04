@@ -332,12 +332,18 @@ fn handle_item_interaction(
 
         let stash = stash.clone();
 
-        // Restore physics, deparent, place at drop position.
+        // Restore physics, deparent, place slightly above the drop position
+        // so the item doesn't clip into the ground and get ejected by physics.
+        let spawn_pos = req.drop_position + Vec3::Y * 0.5;
+        info!(
+            "ItemDrop: item {:?} → spawn_pos {:?} (req.drop_position {:?})",
+            req.item, spawn_pos, req.drop_position
+        );
         commands
             .entity(req.item)
             .remove::<ChildOf>()
             .remove::<StashedPhysics>()
-            .insert(Transform::from_translation(req.drop_position))
+            .insert(Transform::from_translation(spawn_pos))
             .insert((
                 RigidBody::Dynamic,
                 stash.collider,
@@ -352,7 +358,7 @@ fn handle_item_interaction(
 
         action_events.write(ItemActionEvent::Dropped {
             item: req.item,
-            position: req.drop_position,
+            position: spawn_pos,
         });
     }
 

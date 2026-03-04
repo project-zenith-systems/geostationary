@@ -73,32 +73,88 @@ fn main() {
         .insert_resource(InteractionRange(app_config.items.interaction_range))
         .init_state::<AppState>();
 
-    // Pre-load ball assets once at startup so every spawned ball reuses the same handles.
+    // Pre-load visual assets once at startup so every spawned thing reuses the same handles.
     // This must come after ThingsPlugin + WorldSetupPlugin so ThingRegistry exists.
-    let ball_mesh = app
-        .world_mut()
-        .resource_mut::<Assets<Mesh>>()
-        .add(Sphere::new(BALL_RADIUS));
-    let ball_mat = app
-        .world_mut()
-        .resource_mut::<Assets<StandardMaterial>>()
-        .add(StandardMaterial {
-            base_color: Color::srgb(BALL_COLOR.0, BALL_COLOR.1, BALL_COLOR.2),
-            ..default()
-        });
+    let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+    let creature_mesh = meshes.add(Capsule3d::new(0.3, 1.0));
+    let ball_mesh = meshes.add(Sphere::new(BALL_RADIUS));
+    let can_mesh = meshes.add(Cylinder::new(0.15, 0.1));
+    let toolbox_mesh = meshes.add(Cuboid::new(0.6, 0.3, 0.4));
 
-    // Override the shared physics-only ball registration with mesh + material + physics.
-    app.world_mut()
-        .resource_mut::<ThingRegistry>()
-        .register(1, move |entity, _event, commands| {
-            commands.entity(entity).insert((
-                Mesh3d(ball_mesh.clone()),
-                MeshMaterial3d(ball_mat.clone()),
-                physics::Collider::sphere(BALL_RADIUS),
-                physics::GravityScale(1.0),
-                physics::Restitution::new(0.8),
+    let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+    let creature_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.8, 0.5, 0.2),
+        ..default()
+    });
+    let ball_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(BALL_COLOR.0, BALL_COLOR.1, BALL_COLOR.2),
+        ..default()
+    });
+    let can_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.7, 0.7, 0.75),
+        metallic: 0.8,
+        ..default()
+    });
+    let toolbox_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.8, 0.2, 0.2),
+        ..default()
+    });
+
+    // Override shared physics-only registrations with mesh + material.
+    // Each template is responsible for its own collider, RigidBody, and visual.
+    let mut registry = app.world_mut().resource_mut::<ThingRegistry>();
+    registry.register(0, move |entity, _event, commands| {
+        commands.entity(entity).insert((
+            Mesh3d(creature_mesh.clone()),
+            MeshMaterial3d(creature_mat.clone()),
+            creatures::Creature,
+            creatures::MovementSpeed::default(),
+            things::InputDirection::default(),
+            physics::RigidBody::Dynamic,
+            physics::Collider::capsule(0.3, 1.0),
+            physics::LockedAxes::ROTATION_LOCKED.lock_translation_y(),
+            physics::GravityScale(0.0),
+        ));
+        commands.entity(entity).with_children(|parent| {
+            parent.spawn((
+                things::HandSlot { side: things::HandSide::Right },
+                Transform::from_translation(things::HAND_OFFSET),
             ));
         });
+    });
+    registry.register(1, move |entity, _event, commands| {
+        commands.entity(entity).insert((
+            Mesh3d(ball_mesh.clone()),
+            MeshMaterial3d(ball_mat.clone()),
+            physics::Collider::sphere(BALL_RADIUS),
+            physics::RigidBody::Dynamic,
+            physics::GravityScale(1.0),
+            physics::Restitution::new(0.8),
+        ));
+    });
+    registry.register(2, move |entity, _event, commands| {
+        commands.entity(entity).insert((
+            Mesh3d(can_mesh.clone()),
+            MeshMaterial3d(can_mat.clone()),
+            physics::Collider::cylinder(0.15, 0.1),
+            physics::RigidBody::Dynamic,
+            physics::GravityScale(1.0),
+            items::Item,
+            Name::new("Can"),
+        ));
+    });
+    registry.register(3, move |entity, _event, commands| {
+        commands.entity(entity).insert((
+            Mesh3d(toolbox_mesh.clone()),
+            MeshMaterial3d(toolbox_mat.clone()),
+            physics::Collider::cuboid(0.3, 0.15, 0.2),
+            physics::RigidBody::Dynamic,
+            physics::GravityScale(1.0),
+            items::Item,
+            Name::new("Toolbox"),
+            items::Container::with_capacity(6),
+        ));
+    });
 
     app.run();
 }

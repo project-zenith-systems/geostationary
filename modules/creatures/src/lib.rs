@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use physics::{GravityScale, LinearVelocity, LockedAxes};
+use physics::{Collider, GravityScale, LinearVelocity, LockedAxes, RigidBody};
 use things::{HandSide, HandSlot, InputDirection, ThingRegistry, HAND_OFFSET};
 
 /// Marker component for creatures - entities that can move and act in the world.
@@ -39,6 +39,8 @@ impl Plugin for CreaturesPlugin {
                     Creature,
                     MovementSpeed::default(),
                     InputDirection::default(),
+                    RigidBody::Dynamic,
+                    Collider::capsule(0.3, 1.0),
                     LockedAxes::ROTATION_LOCKED.lock_translation_y(),
                     GravityScale(0.0),
                 ));

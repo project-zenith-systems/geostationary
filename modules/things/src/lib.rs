@@ -7,7 +7,7 @@ use network::{
     NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
     StreamSender, NETWORK_UPDATE_INTERVAL,
 };
-use physics::{Collider, LinearVelocity, RigidBody, SpatialQuery, SpatialQueryFilter};
+use physics::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
 use serde::{Deserialize, Serialize};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -345,33 +345,18 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
 fn on_spawn_thing(
     on: On<SpawnThing>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     registry: Res<ThingRegistry>,
 ) {
     let event = on.event();
 
-    let mut entity = commands.entity(event.entity);
-    entity.insert((
+    // Insert only the shared base components. Collider, mesh, and material
+    // are the template's responsibility — no defaults are applied here.
+    commands.entity(event.entity).insert((
         Transform::from_translation(event.position),
-        RigidBody::Dynamic,
         LinearVelocity::default(),
-        Collider::capsule(0.3, 1.0),
         Thing { kind: event.kind },
         LastBroadcast::default(),
     ));
-
-    // Insert visual components only when the renderer (PbrPlugin) is available.
-    // In headless server mode, Assets<StandardMaterial> is not registered.
-    if let Some(ref mut materials) = materials {
-        entity.insert((
-            Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(0.8, 0.5, 0.2),
-                ..default()
-            })),
-        ));
-    }
 
     if let Some(builder) = registry.templates.get(&event.kind) {
         builder(event.entity, event, &mut commands);
@@ -818,8 +803,6 @@ mod tests {
     fn spawn_thing_kind_0_produces_hand_slot_child() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        // on_spawn_thing requires Assets<Mesh>; insert a bare resource to satisfy it.
-        app.insert_resource(Assets::<Mesh>::default());
         app.init_resource::<ThingRegistry>();
         app.add_observer(on_spawn_thing);
 

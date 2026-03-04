@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use input::{PointerAction, WorldHit};
-use items::{Container, Item, ItemDropRequest, ItemPickupRequest, ItemStoreRequest, ItemTakeRequest};
+use items::{Container, InteractionRange, Item, ItemDropRequest, ItemPickupRequest, ItemStoreRequest, ItemTakeRequest};
 use network::{
     ClientId, ControlledByClient, Headless, NetId, Server, StreamDef, StreamDirection,
     StreamReader, StreamRegistry, StreamSender,
@@ -191,10 +191,11 @@ fn build_context_menu(
     tilemap: Option<Res<Tilemap>>,
     active_menu: Option<Res<ActiveMenu>>,
     theme: Res<UiTheme>,
-    player_q: Query<Entity, With<PlayerControlled>>,
+    player_q: Query<(Entity, &GlobalTransform), With<PlayerControlled>>,
     children_q: Query<&Children>,
     hand_container_q: Query<&Container, With<HandSlot>>,
     net_id_q: Query<&NetId>,
+    interaction_range: Res<InteractionRange>,
 ) {
     // Collect right-click resolved hits.
     let hits: Vec<ResolvedHit> = resolved_hits
@@ -216,55 +217,66 @@ fn build_context_menu(
         commands.remove_resource::<ActiveMenu>();
     }
 
-    // Determine whether the local player is holding an item.
+    // Determine whether the local player is holding an item and their position.
     let player = player_q.single().ok();
-    let holding: Option<NetId> = player.and_then(|p| {
+    let (player_entity, player_pos) = match player {
+        Some((e, gt)) => (Some(e), Some(gt.translation())),
+        None => (None, None),
+    };
+    let holding: Option<NetId> = player_entity.and_then(|p| {
         held_item(p, &children_q, &hand_container_q, &net_id_q)
     });
+    let in_range = player_pos
+        .map(|pos| pos.distance(hit.world_pos) <= interaction_range.0)
+        .unwrap_or(false);
 
     // Collect action buttons for this hit.
     let mut buttons: Vec<Entity> = Vec::new();
 
     if item_q.get(hit.entity).is_ok() {
-        // Hit an Item on the floor → "Pick up".
-        if let Ok(&item_net_id) = net_id_q.get(hit.entity) {
-            let btn = build_button(&theme)
-                .with_text("Pick up")
-                .with_event(ContextMenuAction::ItemPickup { item: item_net_id })
-                .build(&mut commands);
-            buttons.push(btn);
-        } else {
-            warn!("build_context_menu: Item entity {:?} has no NetId", hit.entity);
+        // Hit an Item on the floor → "Pick up" (if in range).
+        if in_range {
+            if let Ok(&item_net_id) = net_id_q.get(hit.entity) {
+                let btn = build_button(&theme)
+                    .with_text("Pick up")
+                    .with_event(ContextMenuAction::ItemPickup { item: item_net_id })
+                    .build(&mut commands);
+                buttons.push(btn);
+            } else {
+                warn!("build_context_menu: Item entity {:?} has no NetId", hit.entity);
+            }
         }
     } else if let Ok((&container_net_id, container, display_name)) =
         world_container_q.get(hit.entity)
     {
-        let name = display_name.map(|d| d.0.as_str()).unwrap_or("container");
-        if let Some(held_net_id) = holding {
-            // Holding item + container → "Store in {name}".
-            let label = format!("Store in {name}");
-            let btn = build_button(&theme)
-                .with_text(&label)
-                .with_event(ContextMenuAction::StoreInContainer {
-                    item: held_net_id,
-                    container: container_net_id,
-                })
-                .build(&mut commands);
-            buttons.push(btn);
-        } else {
-            // Hand empty + container has items → "Take from {name}".
-            let first_item = container.slots.iter().find_map(|s| *s);
-            if let Some(item_entity) = first_item {
-                if let Ok(&item_net_id) = net_id_q.get(item_entity) {
-                    let label = format!("Take from {name}");
-                    let btn = build_button(&theme)
-                        .with_text(&label)
-                        .with_event(ContextMenuAction::TakeFromContainer {
-                            item: item_net_id,
-                            container: container_net_id,
-                        })
-                        .build(&mut commands);
-                    buttons.push(btn);
+        if in_range {
+            let name = display_name.map(|d| d.0.as_str()).unwrap_or("container");
+            if let Some(held_net_id) = holding {
+                // Holding item + container → "Store in {name}".
+                let label = format!("Store in {name}");
+                let btn = build_button(&theme)
+                    .with_text(&label)
+                    .with_event(ContextMenuAction::StoreInContainer {
+                        item: held_net_id,
+                        container: container_net_id,
+                    })
+                    .build(&mut commands);
+                buttons.push(btn);
+            } else {
+                // Hand empty + container has items → "Take from {name}".
+                let first_item = container.slots.iter().find_map(|s| *s);
+                if let Some(item_entity) = first_item {
+                    if let Ok(&item_net_id) = net_id_q.get(item_entity) {
+                        let label = format!("Take from {name}");
+                        let btn = build_button(&theme)
+                            .with_text(&label)
+                            .with_event(ContextMenuAction::TakeFromContainer {
+                                item: item_net_id,
+                                container: container_net_id,
+                            })
+                            .build(&mut commands);
+                        buttons.push(btn);
+                    }
                 }
             }
         }
@@ -285,14 +297,16 @@ fn build_context_menu(
             }
             TileKind::Floor => {
                 if let Some(held_net_id) = holding {
-                    let drop_btn = build_button(&theme)
-                        .with_text("Drop")
-                        .with_event(ContextMenuAction::ItemDrop {
-                            item: held_net_id,
-                            drop_position: hit.world_pos,
-                        })
-                        .build(&mut commands);
-                    buttons.push(drop_btn);
+                    if in_range {
+                        let drop_btn = build_button(&theme)
+                            .with_text("Drop")
+                            .with_event(ContextMenuAction::ItemDrop {
+                                item: held_net_id,
+                                drop_position: hit.world_pos,
+                            })
+                            .build(&mut commands);
+                        buttons.push(drop_btn);
+                    }
                 }
                 let wall_btn = build_button(&theme)
                     .with_text("Build Wall")
@@ -515,10 +529,12 @@ fn dispatch_interaction(
                     warn!("dispatch_interaction ItemDrop: no actor for client {:?}", from);
                     continue;
                 };
+                let pos = Vec3::from_array(drop_position);
+                info!("dispatch_interaction ItemDrop: item {:?} drop_position {:?}", item, pos);
                 drop_req.write(ItemDropRequest {
                     actor,
                     item,
-                    drop_position: Vec3::from_array(drop_position),
+                    drop_position: pos,
                 });
             }
 
@@ -668,6 +684,7 @@ mod tests {
         app.add_message::<ContextMenuAction>();
         app.add_message::<InteractionRequest>();
         app.init_resource::<UiTheme>();
+        app.init_resource::<InteractionRange>();
 
         // Spawn a wall tile entity.
         let tile_entity = app
@@ -712,6 +729,7 @@ mod tests {
         app.add_message::<ContextMenuAction>();
         app.add_message::<InteractionRequest>();
         app.init_resource::<UiTheme>();
+        app.init_resource::<InteractionRange>();
 
         // Spawn an entity WITHOUT a Tile, Item, or Container component.
         let non_tile = app.world_mut().spawn_empty().id();
@@ -748,6 +766,7 @@ mod tests {
         app.add_message::<ContextMenuAction>();
         app.add_message::<InteractionRequest>();
         app.init_resource::<UiTheme>();
+        app.init_resource::<InteractionRange>();
 
         // Spawn a wall tile entity.
         let tile_entity = app
@@ -1258,6 +1277,7 @@ mod tests {
         app.add_message::<ContextMenuAction>();
         app.add_message::<InteractionRequest>();
         app.init_resource::<UiTheme>();
+        app.init_resource::<InteractionRange>();
         app
     }
 
@@ -1277,6 +1297,9 @@ mod tests {
     #[test]
     fn context_menu_item_on_floor_shows_pick_up() {
         let mut app = make_context_menu_app();
+
+        // Player at the origin — within range of the item.
+        app.world_mut().spawn((PlayerControlled, GlobalTransform::IDENTITY));
 
         let net_id = NetId(7);
         let item_entity = app.world_mut().spawn((Item, net_id)).id();
@@ -1309,20 +1332,20 @@ mod tests {
 
         let player = app
             .world_mut()
-            .spawn(PlayerControlled)
+            .spawn((PlayerControlled, GlobalTransform::IDENTITY))
             .add_children(&[hand])
             .id();
         let _ = player;
 
-        // Spawn a floor tile.
+        // Spawn a floor tile within interaction range of the player at origin.
         let tile_entity = app
             .world_mut()
-            .spawn(Tile { position: IVec2::new(2, 2) })
+            .spawn(Tile { position: IVec2::new(1, 0) })
             .id();
         let tilemap = Tilemap::new(5, 5, TileKind::Floor);
         app.insert_resource(tilemap);
 
-        emit_right_click(&mut app, tile_entity, Vec3::new(2.0, 0.0, 2.0));
+        emit_right_click(&mut app, tile_entity, Vec3::new(1.0, 0.0, 0.0));
 
         app.add_systems(Update, build_context_menu);
         app.update();
@@ -1358,7 +1381,7 @@ mod tests {
             .spawn((HandSlot { side: things::HandSide::Right }, hand_container))
             .id();
         app.world_mut()
-            .spawn(PlayerControlled)
+            .spawn((PlayerControlled, GlobalTransform::IDENTITY))
             .add_children(&[hand]);
 
         // Spawn a world container (not a HandSlot).
@@ -1395,7 +1418,7 @@ mod tests {
             .spawn((HandSlot { side: things::HandSide::Right }, Container::with_capacity(1)))
             .id();
         app.world_mut()
-            .spawn(PlayerControlled)
+            .spawn((PlayerControlled, GlobalTransform::IDENTITY))
             .add_children(&[hand]);
 
         // Spawn a world container with one item.
