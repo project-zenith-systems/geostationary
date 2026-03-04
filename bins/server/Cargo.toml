@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = { workspace = true }
+ctrlc = "3.5.2"
 
 shared = { path = "../shared" }
 network = { path = "../../modules/network" }

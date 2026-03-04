@@ -3261,6 +3261,7 @@ dependencies = [
  "atmospherics",
  "bevy",
  "creatures",
+ "ctrlc",
  "interactions",
  "items",
  "network",

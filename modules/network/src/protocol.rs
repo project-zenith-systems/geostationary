@@ -45,6 +45,8 @@ pub enum ServerMessage {
     /// The client considers initial sync complete when both this message and all expected
     /// `StreamReady` sentinels have been received.
     InitialStateDone,
+    /// Signals that the server is shutting down gracefully. Clients should disconnect.
+    Shutdown,
 }
 
 /// Messages sent from clients to server.
