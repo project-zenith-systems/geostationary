@@ -1,5 +1,6 @@
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
+use editor::EditorPlugin;
 use input::InputPlugin;
 use interactions::{ContextMenuAction, InteractionsPlugin};
 use items::{InteractionRange, ItemsPlugin};
@@ -12,6 +13,7 @@ use tiles::TilesPlugin;
 use ui::UiPlugin;
 
 mod client;
+mod editor;
 mod main_menu;
 
 fn main() {
@@ -47,6 +49,7 @@ fn main() {
         .add_plugins(souls::SoulsPlugin)
         .add_plugins(player::PlayerPlugin)
         .add_plugins(camera::CameraPlugin::<AppState>::in_state(AppState::InGame))
+        .add_plugins(EditorPlugin)
         .add_plugins(shared::world_setup::WorldSetupPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(client::ClientPlugin)

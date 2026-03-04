@@ -32,6 +32,7 @@ pub enum MenuEvent {
     Settings,
     Play,
     Join,
+    Editor,
     Quit,
 }
 
@@ -95,6 +96,7 @@ fn menu_message_reader(
     mut messages: MessageReader<MenuEvent>,
     mut exit: MessageWriter<AppExit>,
     mut net_commands: MessageWriter<NetCommand>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     let Ok(menu_root_entity) = query.single() else {
         return;
@@ -127,6 +129,10 @@ fn menu_message_reader(
                     &mut commands,
                     theme.as_ref(),
                 ))
+            }
+            MenuEvent::Editor => {
+                next_state.set(AppState::Editor);
+                MenuEventResult::CloseMenu
             }
             MenuEvent::Quit => {
                 exit.write(AppExit::Success);
