@@ -389,10 +389,6 @@ fn handle_item_interaction(
         // Restore physics, deparent, place slightly above the drop position
         // so the item doesn't clip into the ground and get ejected by physics.
         let spawn_pos = req.drop_position + Vec3::Y * 0.5;
-        info!(
-            "ItemDrop: item {:?} → spawn_pos {:?} (req.drop_position {:?})",
-            req.item, spawn_pos, req.drop_position
-        );
         commands
             .entity(req.item)
             .remove::<ChildOf>()

@@ -319,7 +319,7 @@ fn handle_atmos_updates(
                 passable,
             } => match GasGrid::from_moles_vec(width, height, gas_moles, passable) {
                 Ok(new_grid) => {
-                    info!("Received gas grid {}×{} from server", width, height);
+                    debug!("Received gas grid {}×{} from server", width, height);
                     pending = Some(new_grid);
                 }
                 Err(e) => error!("Invalid gas grid data on stream {ATMOS_STREAM_TAG}: {e}"),

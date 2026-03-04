@@ -530,7 +530,6 @@ fn dispatch_interaction(
                     continue;
                 };
                 let pos = Vec3::from_array(drop_position);
-                info!("dispatch_interaction ItemDrop: item {:?} drop_position {:?}", item, pos);
                 drop_req.write(ItemDropRequest {
                     actor,
                     item,
