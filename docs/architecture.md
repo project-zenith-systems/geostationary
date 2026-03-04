@@ -119,7 +119,7 @@ change infrequently and are validated at compile time.
 
 | Layer | Name         | Role |
 |-------|--------------|------|
-| L0    | System       | System backends: network, physics, input, animation, UI, audio |
+| L0    | System       | System backends: network, physics, input, animation, UI, audio, world |
 | L1    | Foundation   | World primitives: things, tiles, bootstrapping |
 | L2    | Structural   | World structure: items, structures, atmos, gravity, abilities |
 | L3    | Core         | Simulation: creatures, construction, chemistry, electronics, station, shuttles |
@@ -187,7 +187,7 @@ Detailed documentation for each layer:
   L3  Core         ───  Creatures, construction, chemistry, electronics, ...
   L2  Structural   ───  Items, structures, atmos, gravity, abilities
   L1  Foundation   ───  Things, tiles, main menu bootstrap
-  L0  System       ───  Network, physics, input, animation, UI, audio
+  L0  System       ───  Network, physics, input, animation, UI, audio, world
 ```
 
 *Dashed lines (╌) denote scripted layers. Solid lines (─) denote compiled layers.*
