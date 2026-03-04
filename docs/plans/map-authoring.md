@@ -63,12 +63,12 @@ documented in [docs/map-format.md](../map-format.md).
 | Layer | Module | Plan scope |
 |-------|--------|------------|
 | L0 | **`world` (new)** | `MapFile`, `MapLayer` trait, `MapLayerRegistry`, lifecycle messages (`WorldLoading`/`WorldReady`/`WorldTeardown`), file I/O, load-on-startup system |
-| L0 | `ui` | Editor palette panels, save/load buttons |
 | L1 | `tiles` | Implements `MapLayer("tiles")`: key-dict + base64 chunk encode/decode, builds `Tilemap` on load. Removes `test_room()` |
+| L1 | `main_menu` | Adds "Editor" button and routes to `AppState::Editor`; wires `--editor` CLI flag |
 | L1 | `things` | Implements `MapLayer("spawns")`: spawn points with template names, drives `ThingRegistry` on load |
 | L2 | `items` | No changes — item components added by existing template system |
 | L6 | `camera` | Editor camera: orthographic top-down, pan/zoom |
-| — | `bins/client/editor` | `AppState::Editor`, tile painting, palettes, spawn placement, save/load |
+| — | `bins/client/src/editor` | `AppState::Editor`, tile painting, palette UI, spawn placement, save/load |
 
 ### Not in this plan
 
@@ -148,16 +148,7 @@ The `world` module requires `ron` as a direct dependency for `ron::Value`.
 Currently `ron` enters the workspace via the `config` crate — it should be
 added as an explicit workspace dependency.
 
-## Spike: Editor app state and camera (30 min)
-
-1. Can `AppState::Editor` coexist with `MainMenu` / `InGame` without
-   breaking `DespawnOnExit` cleanup?
-2. Does orthographic camera + XZ-plane raycasting work for grid cell
-   selection?
-3. Can tile entities from the game's rendering path be reused in the editor,
-   or does the editor need its own spawn logic?
-
-## Spike: MapLayer trait and ron::Value dispatch (30 min)
+## Spike 1: MapLayer trait and ron::Value dispatch (30 min)
 
 1. Can `ron::Value` be deserialized into a concrete type in a second pass?
    (Parse `MapFile` with `HashMap<String, ron::Value>`, then deserialize
@@ -170,6 +161,17 @@ added as an explicit workspace dependency.
    the editor, or do they need separate serialization logic?
 5. Is atmosphere best kept in `TileDef` (benefits from key deduplication) or
    as a separate overlay grid layer owned by the atmos module?
+
+## Spike 2: Editor app state and camera (30 min)
+
+Depends on Spike 1 (plan may change based on MapLayer findings).
+
+1. Can `AppState::Editor` coexist with `MainMenu` / `InGame` without
+   breaking `DespawnOnExit` cleanup?
+2. Does orthographic camera + XZ-plane raycasting work for grid cell
+   selection?
+3. Can tile entities from the game's rendering path be reused in the editor,
+   or does the editor need its own spawn logic?
 
 ## Post-mortem
 

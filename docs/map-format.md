@@ -96,10 +96,18 @@ SS13's DMM/TGM format and **chunk-based storage** mirroring SS14.
 
 ### Chunk model
 
-Chunks are square, fixed-size sections of the grid indexed by their origin
-coordinate `(chunk_x, chunk_y)`. Each chunk stores `chunk_size²` tile keys
-as base64-encoded u16 values (little-endian). Map dimensions are derived
-from the chunk origins and chunk size — no explicit width/height fields.
+Chunks are square, fixed-size sections of the grid indexed by integer chunk
+coordinates `(chunk_x, chunk_y)`. These are **chunk indices**, not tile
+coordinates: each chunk covers local tile positions `(x, y)` where
+`0 <= x < chunk_size` and `0 <= y < chunk_size`. Global tile coordinates
+are derived as:
+
+- `global_x = chunk_x * chunk_size + x`
+- `global_y = chunk_y * chunk_size + y`
+
+Each chunk stores `chunk_size²` tile keys as base64-encoded u16 values
+(little-endian). Map dimensions in tiles are derived from the set of chunk
+indices and `chunk_size` — there are no explicit width/height fields.
 
 ### On-disk format
 
@@ -141,6 +149,17 @@ pub enum Atmo { Pressurised, Vacuum }
 **Chunk decode:** `base64::decode(chunk)` → `chunks(2)` →
 `u16::from_le_bytes` → look up in `keys` HashMap. Tile at local position
 `(x, y)` within a chunk is at byte offset `(y * chunk_size + x) * 2`.
+
+**Validation:** A conforming loader must validate decoded chunk data:
+
+- The base64 decode must succeed.
+- The decoded byte length must be even (each tile key is a u16).
+- The decoded byte length must equal `chunk_size * chunk_size * 2` exactly.
+- Every decoded u16 key must exist in the `keys` dictionary.
+
+On any validation failure, the loader must treat the tiles layer as corrupt
+and return an error for the map load — not silently substitute defaults or
+partially decode.
 
 **Key assignment:** The editor assigns keys automatically at save time. It
 scans all tiles, groups identical configurations, assigns sequential u16 IDs
