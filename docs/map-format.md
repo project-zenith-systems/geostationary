@@ -54,7 +54,7 @@ pub trait MapLayer: Send + Sync + 'static {
     fn save(&self, world: &World) -> ron::Value;
 
     /// Deserialize a RON value and apply it to the world on load
-    fn load(&self, data: &ron::Value, world: &mut World);
+    fn load(&self, data: &ron::Value, world: &mut World) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 ```
 
@@ -147,7 +147,7 @@ pub enum Atmo { Pressurised, Vacuum }
 ```
 
 **Chunk decode:** `base64::decode(chunk)` → `chunks(2)` →
-`u16::from_le_bytes` → look up in `keys` HashMap. Tile at local position
+`u16::from_le_bytes` → look up in the `keys` map. Tile at local position
 `(x, y)` within a chunk is at byte offset `(y * chunk_size + x) * 2`.
 
 **Validation:** A conforming loader must validate decoded chunk data:

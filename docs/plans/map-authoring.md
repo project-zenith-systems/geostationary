@@ -151,7 +151,7 @@ added as an explicit workspace dependency.
 ## Spike 1: MapLayer trait and ron::Value dispatch (30 min)
 
 1. Can `ron::Value` be deserialized into a concrete type in a second pass?
-   (Parse `MapFile` with `HashMap<String, ron::Value>`, then deserialize
+   (Parse `MapFile` with `BTreeMap<String, ron::Value>`, then deserialize
    individual values into `TilesLayerData` or `Vec<SpawnPoint>`.)
 2. Does `ron::Value` round-trip with fidelity for unknown layers?
 3. What context does `MapLayer::load()` need — `&mut Commands`, `&mut World`,

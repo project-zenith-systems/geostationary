@@ -4,7 +4,7 @@ Time-box: 30 minutes. Answer the questions in the plan's spike section before
 committing to the MapLayer design.
 
 1. Can `ron::Value` be deserialized into a concrete type in a second pass?
-   (Parse `MapFile` with `HashMap<String, ron::Value>`, then deserialize
+   (Parse `MapFile` with `BTreeMap<String, ron::Value>`, then deserialize
    individual values into `TilesLayerData` or `Vec<SpawnPoint>`.)
 2. Does `ron::Value` round-trip with fidelity for unknown layers?
 3. What context does `MapLayer::load()` need — `&mut Commands`, `&mut World`,
@@ -50,7 +50,7 @@ Files created:
 - `modules/world/src/loader.rs` — `load_map` system: reads `.station.ron`, dispatches layers to registered `MapLayer` implementations
 
 Concrete changes:
-- `MapFile { version: u32, layers: HashMap<String, ron::Value> }` serializes/deserializes RON
+- `MapFile { version: u32, layers: BTreeMap<String, ron::Value> }` serializes/deserializes RON
 - `MapLayerRegistry` stores `Box<dyn MapLayer>` keyed by layer name
 - `load_map` iterates layers, calls `MapLayer::load()` for known keys, preserves unknown layers as raw `ron::Value`
 - `WorldPlugin` reads the map file path from config and triggers loading on startup
