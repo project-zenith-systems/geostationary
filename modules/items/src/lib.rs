@@ -1,9 +1,12 @@
 use bevy::prelude::*;
-use network::{NetId, PlayerEvent, Server, StreamSender};
-use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
-use things::{
-    HandSlot, ItemActionEvent, ItemEvent, NetIdIndex, PendingItemEvents, ThingsStreamMessage,
+use network::{
+    Client, ModuleReadySent, NetId, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection,
+    StreamReader, StreamRegistry, StreamSender,
 };
+use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
+use serde::{Deserialize, Serialize};
+use things::{HandSlot, NetIdIndex, ThingsSet};
+use wincode::{SchemaRead, SchemaWrite};
 
 // ── Components ────────────────────────────────────────────────────────────────
 
@@ -152,6 +155,58 @@ pub struct ItemTakeRequest {
     pub item: Entity,
     /// The container that currently holds the item.
     pub container: Entity,
+}
+
+// ── Item action / wire events ─────────────────────────────────────────────────
+
+/// Bevy message fired after each successful item operation on the server.
+///
+/// The `broadcast_item_event` system reads these and replicates them to all
+/// connected clients on stream 5.
+#[derive(Message, Clone, Debug)]
+pub enum ItemActionEvent {
+    /// An item was picked up and placed into a hand slot.
+    PickedUp { item: Entity, hand: Entity },
+    /// An item was dropped from a hand slot at the given world position.
+    Dropped { item: Entity, position: Vec3 },
+    /// An item was moved from a hand slot into a container.
+    Stored { item: Entity, container: Entity },
+    /// An item was taken from a container into a hand slot.
+    Taken { item: Entity, hand: Entity },
+}
+
+/// Wire-format item event sent on stream 5 from server to all clients.
+///
+/// Each variant corresponds to a successful item operation performed by the
+/// server-side `handle_item_interaction` system.  The client-side
+/// `handle_item_event` system applies the matching state change locally.
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub enum ItemEvent {
+    /// Item was picked up into a hand slot.
+    /// `holder` is the [`NetId`] of the creature that picked it up.
+    PickedUp { item: NetId, holder: NetId },
+    /// Item was dropped at a world position.
+    Dropped { item: NetId, position: [f32; 3] },
+    /// Item was moved from a hand into a non-hand container.
+    /// `container` is the [`NetId`] of the target container entity.
+    Stored { item: NetId, container: NetId },
+    /// Item was taken from a non-hand container into a hand slot.
+    /// `holder` is the [`NetId`] of the creature that took it.
+    Taken { item: NetId, holder: NetId },
+}
+
+/// Intermediate buffer that `handle_items_lifecycle` fills with decoded
+/// [`ItemEvent`] messages and `handle_item_event` drains each Update tick.
+#[derive(Resource, Default)]
+pub struct PendingItemEvents(pub Vec<ItemEvent>);
+
+/// Stream 5 wire format: server→client messages for the items module.
+pub const ITEMS_STREAM_TAG: u8 = 5;
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub enum ItemsStreamMessage {
+    /// An item operation occurred; clients apply the corresponding state change.
+    ItemEvent(ItemEvent),
 }
 
 // ── Systems ───────────────────────────────────────────────────────────────────
@@ -588,10 +643,10 @@ fn find_hand_slot_containing(
 
 // ── Client-side item event handler ───────────────────────────────────────────
 
-/// Applies [`ItemEvent`] messages that arrived on stream 3 to the local ECS state.
+/// Applies [`ItemEvent`] messages that arrived on stream 5 to the local ECS state.
 ///
 /// Drains [`PendingItemEvents`] each `Update` tick (populated by
-/// `handle_entity_lifecycle` in `PreUpdate`).  Runs on clients only.
+/// `handle_items_lifecycle` in `PreUpdate`).  Runs on clients only.
 ///
 /// - **PickedUp**: strip physics, insert [`StashedPhysics`], reparent item to
 ///   the holder creature's [`HandSlot`], update the hand's [`Container`] slots.
@@ -803,24 +858,184 @@ fn handle_item_event(
     }
 }
 
-// ── Server-side initial-sync for stored items ─────────────────────────────────
+// ── Client-side stream receiver ───────────────────────────────────────────────
+
+/// Drains incoming [`ItemsStreamMessage`] frames from stream 5 and buffers them
+/// in [`PendingItemEvents`] for `handle_item_event` to process in `Update`.
+fn handle_items_lifecycle(
+    mut reader: ResMut<StreamReader<ItemsStreamMessage>>,
+    mut pending: ResMut<PendingItemEvents>,
+    server: Option<Res<Server>>,
+) {
+    // On a listen-server the item state is already authoritative; applying
+    // replicated events again would double-apply operations.
+    if server.is_some() {
+        return;
+    }
+    for msg in reader.drain() {
+        match msg {
+            ItemsStreamMessage::ItemEvent(ie) => {
+                pending.0.push(ie);
+            }
+        }
+    }
+}
+
+// ── Server-side broadcast ─────────────────────────────────────────────────────
+
+/// Reads [`ItemActionEvent`] messages (fired by `handle_item_interaction`),
+/// resolves entity references to [`NetId`]s, and broadcasts the corresponding
+/// [`ItemEvent`] on stream 5 to all connected clients.
+fn broadcast_item_event(
+    mut action_events: MessageReader<ItemActionEvent>,
+    stream_sender: Res<StreamSender<ItemsStreamMessage>>,
+    net_ids: Query<&NetId>,
+    child_of_q: Query<&ChildOf>,
+) {
+    for event in action_events.read() {
+        let msg = match event {
+            ItemActionEvent::PickedUp { item, hand } => {
+                let Ok(&item_net_id) = net_ids.get(*item) else {
+                    warn!("broadcast_item_event: PickedUp item {:?} has no NetId", item);
+                    continue;
+                };
+                // holder = creature entity (parent of the HandSlot)
+                let Ok(hand_child_of) = child_of_q.get(*hand) else {
+                    warn!(
+                        "broadcast_item_event: PickedUp hand {:?} has no parent",
+                        hand
+                    );
+                    continue;
+                };
+                let Ok(&holder_net_id) = net_ids.get(hand_child_of.parent()) else {
+                    warn!("broadcast_item_event: PickedUp holder has no NetId");
+                    continue;
+                };
+                ItemsStreamMessage::ItemEvent(ItemEvent::PickedUp {
+                    item: item_net_id,
+                    holder: holder_net_id,
+                })
+            }
+            ItemActionEvent::Dropped { item, position } => {
+                let Ok(&item_net_id) = net_ids.get(*item) else {
+                    warn!("broadcast_item_event: Dropped item {:?} has no NetId", item);
+                    continue;
+                };
+                ItemsStreamMessage::ItemEvent(ItemEvent::Dropped {
+                    item: item_net_id,
+                    position: (*position).into(),
+                })
+            }
+            ItemActionEvent::Stored { item, container } => {
+                let Ok(&item_net_id) = net_ids.get(*item) else {
+                    warn!("broadcast_item_event: Stored item {:?} has no NetId", item);
+                    continue;
+                };
+                let Ok(&container_net_id) = net_ids.get(*container) else {
+                    warn!(
+                        "broadcast_item_event: Stored container {:?} has no NetId — skipping",
+                        container
+                    );
+                    continue;
+                };
+                ItemsStreamMessage::ItemEvent(ItemEvent::Stored {
+                    item: item_net_id,
+                    container: container_net_id,
+                })
+            }
+            ItemActionEvent::Taken { item, hand } => {
+                let Ok(&item_net_id) = net_ids.get(*item) else {
+                    warn!("broadcast_item_event: Taken item {:?} has no NetId", item);
+                    continue;
+                };
+                // holder = creature entity (parent of the HandSlot)
+                let Ok(hand_child_of) = child_of_q.get(*hand) else {
+                    warn!(
+                        "broadcast_item_event: Taken hand {:?} has no parent",
+                        hand
+                    );
+                    continue;
+                };
+                let Ok(&holder_net_id) = net_ids.get(hand_child_of.parent()) else {
+                    warn!("broadcast_item_event: Taken holder has no NetId");
+                    continue;
+                };
+                ItemsStreamMessage::ItemEvent(ItemEvent::Taken {
+                    item: item_net_id,
+                    holder: holder_net_id,
+                })
+            }
+        };
+        if let Err(e) = stream_sender.broadcast(&msg) {
+            error!("broadcast_item_event: failed to broadcast: {e}");
+        }
+    }
+}
+
+// ── Server-side initial-sync ──────────────────────────────────────────────────
+
+/// Sends [`ItemEvent::PickedUp`] for every item currently held in a hand slot
+/// to a newly joined client.
+///
+/// Runs in `PreUpdate` after [`ThingsSet::HandleClientJoined`] so the client
+/// has already received `EntitySpawned` for every entity before these events.
+fn broadcast_held_on_join(
+    mut player_events: MessageReader<PlayerEvent>,
+    held_items_q: Query<(&NetId, &ChildOf)>,
+    hand_slot_q: Query<(), With<HandSlot>>,
+    hand_parent_q: Query<&ChildOf, With<HandSlot>>,
+    creature_net_id_q: Query<&NetId, Without<HandSlot>>,
+    stream_sender: Res<StreamSender<ItemsStreamMessage>>,
+) {
+    for event in player_events.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
+        for (&item_net_id, child_of) in held_items_q.iter() {
+            let hand_entity = child_of.parent();
+            // Confirm parent is a HandSlot.
+            if hand_slot_q.get(hand_entity).is_err() {
+                continue;
+            }
+            // Find the creature entity (parent of the HandSlot).
+            let Ok(hand_child_of) = hand_parent_q.get(hand_entity) else {
+                continue;
+            };
+            let creature_entity = hand_child_of.parent();
+            let Ok(&holder_net_id) = creature_net_id_q.get(creature_entity) else {
+                continue;
+            };
+            if let Err(e) = stream_sender.send_to(
+                *from,
+                &ItemsStreamMessage::ItemEvent(ItemEvent::PickedUp {
+                    item: item_net_id,
+                    holder: holder_net_id,
+                }),
+            ) {
+                error!(
+                    "Failed to send PickedUp catch-up to ClientId({}): {e}",
+                    from.0
+                );
+            }
+        }
+    }
+}
 
 /// Sends [`ItemEvent::Stored`] for every item currently held in a non-hand
 /// container to a newly joined client.
 ///
-/// Runs in `PreUpdate` after [`things::ThingsSet::HandleClientJoined`] so that
-/// the client has already received [`ThingsStreamMessage::EntitySpawned`] for
-/// every entity before these events arrive.
+/// Runs in `PreUpdate` after [`ThingsSet::HandleClientJoined`] so that
+/// the client has already received `EntitySpawned` for every entity before
+/// these events arrive.
 ///
-/// Hand-held items are covered by the [`ThingsStreamMessage::ItemEvent(PickedUp)`]
-/// sent in `handle_client_joined` (the things module); this system covers items
-/// that are inside world containers (i.e., entities with [`Container`] that are
+/// Hand-held items are covered by [`broadcast_held_on_join`]; this system
+/// covers items inside world containers (entities with [`Container`] that are
 /// NOT [`HandSlot`] entities, and therefore have a [`NetId`] of their own).
 fn broadcast_stored_on_join(
     mut player_events: MessageReader<PlayerEvent>,
     containers: Query<(Entity, &Container, &NetId), Without<HandSlot>>,
     net_ids: Query<&NetId>,
-    stream_sender: Res<StreamSender<ThingsStreamMessage>>,
+    stream_sender: Res<StreamSender<ItemsStreamMessage>>,
 ) {
     for event in player_events.read() {
         let PlayerEvent::Joined { id: from, .. } = event else {
@@ -837,7 +1052,7 @@ fn broadcast_stored_on_join(
                 };
                 if let Err(e) = stream_sender.send_to(
                     *from,
-                    &ThingsStreamMessage::ItemEvent(ItemEvent::Stored {
+                    &ItemsStreamMessage::ItemEvent(ItemEvent::Stored {
                         item: item_net_id,
                         container: container_net_id,
                     }),
@@ -848,6 +1063,28 @@ fn broadcast_stored_on_join(
                     );
                 }
             }
+        }
+    }
+}
+
+/// Sends the [`StreamReady`] sentinel for stream 5 to every client that joined
+/// this frame, after all item catch-up data has been enqueued.
+fn send_items_stream_ready_on_join(
+    mut messages: MessageReader<PlayerEvent>,
+    stream_sender: Res<StreamSender<ItemsStreamMessage>>,
+    mut module_ready: MessageWriter<ModuleReadySent>,
+) {
+    for event in messages.read() {
+        let PlayerEvent::Joined { id: from, .. } = event else {
+            continue;
+        };
+        if let Err(e) = stream_sender.send_stream_ready_to(*from) {
+            error!(
+                "Failed to send StreamReady for items stream to ClientId({}): {e}",
+                from.0
+            );
+        } else {
+            module_ready.write(ModuleReadySent { client: *from });
         }
     }
 }
@@ -873,28 +1110,56 @@ impl Plugin for ItemsPlugin {
         app.add_message::<ItemDropRequest>();
         app.add_message::<ItemStoreRequest>();
         app.add_message::<ItemTakeRequest>();
+        app.add_message::<ItemActionEvent>();
 
         app.init_resource::<InteractionRange>();
+        app.init_resource::<PendingItemEvents>();
 
+        // Register stream 5 (server→client) with StreamRegistry.
+        let (sender, reader) = app
+            .world_mut()
+            .get_resource_mut::<StreamRegistry>()
+            .expect("ItemsPlugin requires NetworkPlugin to be added before it (StreamRegistry not found)")
+            .register::<ItemsStreamMessage>(StreamDef {
+                tag: ITEMS_STREAM_TAG,
+                name: "items",
+                direction: StreamDirection::ServerToClient,
+            });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
+
+        app.add_systems(
+            PreUpdate,
+            handle_items_lifecycle
+                .run_if(resource_exists::<Client>)
+                .after(NetworkSet::Receive),
+        );
         app.add_systems(
             Update,
             (
                 init_hand_containers,
                 ApplyDeferred,
-                handle_item_event.run_if(resource_exists::<network::Client>),
+                handle_item_event.run_if(resource_exists::<Client>),
             )
                 .chain(),
         );
         app.add_systems(
             Update,
-            handle_item_interaction.run_if(resource_exists::<Server>),
+            (
+                handle_item_interaction.run_if(resource_exists::<Server>),
+                broadcast_item_event.run_if(resource_exists::<Server>),
+            ),
         );
         app.add_systems(
             PreUpdate,
-            broadcast_stored_on_join
+            (
+                (broadcast_held_on_join, broadcast_stored_on_join),
+                send_items_stream_ready_on_join,
+            )
+                .chain()
                 .run_if(resource_exists::<Server>)
-                .after(things::ThingsSet::HandleClientJoined)
-                .before(things::ThingsSet::SendStreamReady),
+                .after(ThingsSet::HandleClientJoined)
+                .before(ThingsSet::SendStreamReady),
         );
     }
 }
@@ -1926,5 +2191,56 @@ mod tests {
             app.world().get::<StoredInContainer>(item).is_none(),
             "StoredInContainer should be removed after Taken"
         );
+    }
+
+    // ── broadcast_item_event ─────────────────────────────────────────────────
+
+    /// Verifies that `broadcast_item_event` processes a `PickedUp` action event
+    /// without panicking when all referenced entities have the required [`NetId`]
+    /// and parent components in place.
+    #[test]
+    fn broadcast_item_event_pickedup_resolves_holder_net_id() {
+        use network::{NetId, StreamDef, StreamDirection, StreamRegistry};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<StreamRegistry>();
+
+        // Register stream 5 (items stream) so the StreamSender resource exists.
+        let (sender, _reader) = app
+            .world_mut()
+            .resource_mut::<StreamRegistry>()
+            .register::<ItemsStreamMessage>(StreamDef {
+                tag: ITEMS_STREAM_TAG,
+                name: "items",
+                direction: StreamDirection::ServerToClient,
+            });
+        app.insert_resource(sender);
+
+        app.add_message::<ItemActionEvent>();
+        app.add_systems(Update, broadcast_item_event);
+
+        let creature_net_id = NetId(1);
+        let item_net_id = NetId(2);
+
+        let creature = app.world_mut().spawn(creature_net_id).id();
+        let hand = app
+            .world_mut()
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                ChildOf(creature),
+            ))
+            .id();
+        let item = app.world_mut().spawn(item_net_id).id();
+
+        app.world_mut()
+            .write_message(ItemActionEvent::PickedUp { item, hand });
+
+        // The system must run without panicking. The sender returns
+        // StreamSendError::Closed in tests because no real server is running,
+        // which the system handles gracefully (logs an error and continues).
+        app.update();
     }
 }

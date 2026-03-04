@@ -20,13 +20,13 @@ modules/      — gameplay crates (network, physics, tiles, things, etc.)
 
 ```sh
 # Client (full game)
-cargo run -p geostationary
+cargo run -p client
 
 # Dedicated server (headless)
-cargo run -p geostationary-server
+cargo run -p headless
 
 # Check server compiles
-cargo check -p geostationary-server
+cargo check -p headless
 
 # Run all tests
 cargo test --workspace

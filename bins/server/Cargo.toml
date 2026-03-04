@@ -1,5 +1,5 @@
 [package]
-name = "geostationary-server"
+name = "headless"
 version = "0.1.0"
 edition = "2024"
 

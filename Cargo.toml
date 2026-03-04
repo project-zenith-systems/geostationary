@@ -18,7 +18,7 @@ members = [
     "modules/interactions",
     "modules/items",
 ]
-default-members = ["bins/client"]
+default-members = ["bins/server"]
 
 [profile.dev]
 opt-level = 1

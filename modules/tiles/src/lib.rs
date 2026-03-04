@@ -241,8 +241,12 @@ impl Plugin for TilesPlugin {
         app.add_message::<WorldHit>();
 
         let headless = app.world().contains_resource::<Headless>();
-        if !headless {
-            // Tile mesh spawning and visual mutation are visual-only; skip in headless server mode.
+        if headless {
+            // Headless server: spawn tile colliders (no meshes) so physics
+            // entities don't fall through the floor.
+            app.add_systems(Update, spawn_tile_colliders);
+        } else {
+            // Visual client / listen-server: spawn full tile entities with meshes + colliders.
             app.init_resource::<TileMeshes>();
             app.add_systems(Update, spawn_tile_meshes);
             // On a listen-server, TileMutated events are written by dispatch_interaction
@@ -396,6 +400,48 @@ fn spawn_tile_meshes(
     // Spawn tile entities for the full initial tilemap.
     for (pos, kind) in tilemap.iter() {
         spawn_tile_entity(&mut commands, pos, kind, &tile_meshes);
+    }
+}
+
+/// Headless-server variant of [`spawn_tile_meshes`]: spawns tile colliders
+/// (no meshes or materials) so physics entities have a floor to stand on.
+fn spawn_tile_colliders(
+    mut commands: Commands,
+    tilemap: Option<Res<Tilemap>>,
+    existing_tiles: Query<Entity, With<Tile>>,
+) {
+    let Some(tilemap) = tilemap else {
+        for entity in &existing_tiles {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+
+    if !existing_tiles.is_empty() {
+        return;
+    }
+
+    for (pos, kind) in tilemap.iter() {
+        let world_x = pos.x as f32;
+        let world_z = pos.y as f32;
+        match kind {
+            TileKind::Floor => {
+                commands.spawn((
+                    Transform::from_xyz(world_x, -0.05, world_z),
+                    Tile { position: pos },
+                    RigidBody::Static,
+                    Collider::cuboid(1.0, 0.1, 1.0),
+                ));
+            }
+            TileKind::Wall => {
+                commands.spawn((
+                    Transform::from_xyz(world_x, 0.5, world_z),
+                    Tile { position: pos },
+                    RigidBody::Static,
+                    Collider::cuboid(1.0, 1.0, 1.0),
+                ));
+            }
+        }
     }
 }
 
