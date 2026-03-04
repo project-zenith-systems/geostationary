@@ -115,8 +115,9 @@ components — write a spike task before the main work begins.
 4. If the spike invalidates a design section, update the plan document before
    starting implementation tasks. The plan is a living document — it should
    reflect what you now know, not what you guessed before the spike.
-5. Delete the spike code. It served its purpose. Clean implementation starts
-   from the updated plan.
+5. Keep the spike code — its test assertions serve as regression tests for
+   the pattern it validated. Clean implementation builds on the spike, not
+   from scratch.
 
 ### Why this matters
 

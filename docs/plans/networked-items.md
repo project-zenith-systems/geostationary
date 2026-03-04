@@ -572,4 +572,167 @@ One spike precedes implementation:
 
 ## Post-mortem
 
-_(To be filled in after the plan ships.)_
+### Outcome
+
+The plan shipped everything it promised across PRs #186–#200 plus several
+follow-up commits on the plan branch. Items spawn in the world, can be picked
+up (left-click default action or context menu), dropped at a clicked position,
+stored into containers, and taken from containers. All interactions are
+server-authoritative with range validation. Every client sees the same state.
+The toolbox spawns pre-loaded with a can, pickup/drop reparents under the
+hand anchor with physics stashing, and pressure forces push loose items through
+breaches. All 13 "what done looks like" outcomes are satisfied. One spike
+preceded implementation (reparenting + physics removal in Avian) and confirmed
+the design before any production code depended on it.
+
+### What shipped beyond the plan
+
+| Addition | Why |
+|----------|-----|
+| `StoredInContainer(Entity)` component on stored items | O(1 lookup for which container holds an item, avoiding a linear scan of all `Container.slots` when taking or validating. Not in the plan but emerged naturally from the store/take implementation. |
+| `ItemEvent` on its own stream (stream 5) instead of stream 3 | The plan specified `ItemEvent` as part of `ThingsStreamMessage` on stream 3. Implementation moved item events to a dedicated stream 5 owned by the `items` module. This keeps the items module self-contained — it registers, writes, and reads its own stream without modifying `things`. Cleaner module boundaries. |
+| `TemplatesPlugin` consolidation | Thing template registrations (creature, ball, can, toolbox) were scattered across `world_setup.rs`. PR #1f4f52c consolidated them into a shared `TemplatesPlugin` so templates are registered once and reused by both server and client. Not planned but reduced duplication. |
+| `ItemsConfig` instead of `InteractionConfig` | The plan called the config section `InteractionConfig`. The implementation named it `ItemsConfig` under `[items]` in config.toml, which better reflects that the range is item-specific. The interactions module reads it via the `InteractionRange` resource inserted by items. |
+| `broadcast_held_on_join` and `broadcast_stored_on_join` | The plan described initial sync via replaying `ItemEvent` messages after `EntitySpawned`, but didn't name dedicated systems. Two explicit systems handle catch-up: one for held items, one for stored items. Clearer than a single monolithic sync function. |
+| `SystemSet` adoption and module coordination doc (PR #200) | The plan didn't call for formalising system ordering beyond the layer participation table. PR #200 introduced `SystemSet` enums per module and wrote `docs/module-coordination.md` as a standing reference. This was prompted by ordering bugs during integration. |
+| Split into separate client and server binaries (PR #192) | The plan assumed a single binary with headless mode. PR #192 split into `geostationary-client` and `geostationary-server` crates, clarifying which plugins load where. Unplanned but reduced confusion about which systems run in which context. |
+
+### Deviations from plan
+
+- **`ItemEvent` lives in `items` module (stream 5), not `things` module
+  (stream 3).** The plan placed `ItemEvent` variants inside
+  `ThingsStreamMessage` on stream 3 with `broadcast_item_event` and
+  `handle_item_event` in the things module. The implementation correctly
+  recognised that items should own their own stream and event types. This
+  is a better module boundary — things doesn't need to know about item
+  semantics.
+
+- **`ItemsConfig` instead of `InteractionConfig`.** The plan specified an
+  `InteractionConfig` section in `AppConfig` with `interaction_range`. The
+  implementation uses `ItemsConfig` under `[items]`, and the items module
+  inserts an `InteractionRange` resource. The interactions module reads
+  `InteractionRange` rather than owning the config. This is correct — the
+  range is an items-layer concern, not an interactions-layer concern.
+
+- **Template-owned physics and meshes.** The plan described item spawning
+  in `world_setup.rs` with inline component insertion. The implementation
+  moved mesh, collider, and physics setup into `ThingRegistry` templates
+  so that both server and client spawn items with the same properties. The
+  client uses template-inserted meshes from `EntitySpawned` handling
+  rather than separate client-side spawn logic.
+
+- **No `ConstantForce` removal in pickup.** The plan listed `ConstantForce`
+  as one of the physics components removed during pickup. The
+  implementation correctly omits it — `ConstantForce` is managed by
+  atmospherics and may not be present on all items. The stash only
+  preserves `Collider` and `GravityScale`, which are the item-owned
+  physics data.
+
+### Hurdles
+
+1. **Item drop position race with physics.** Dropped items appeared at the
+   hand offset instead of the clicked world position. The `Transform` was
+   set correctly, but deparenting from `HandSlot` and restoring
+   `RigidBody::Dynamic` caused Avian to read the stale parent-relative
+   transform before the world-space position propagated. Fixed by ensuring
+   the transform is set after deparenting and physics restoration happens
+   in the correct order. **Lesson:** When deparenting and restoring physics
+   in the same frame, set the world-space transform after removing the
+   parent relationship, not before.
+
+2. **Headless server missing physics plugin.** The server binary didn't
+   include the physics plugin for items, so `RigidBody` and `Collider`
+   components weren't being processed. Items existed but had no physics
+   simulation. Fixed by ensuring `PhysicsPlugin` is included in the
+   headless server plugin chain. **Lesson:** When adding physics-dependent
+   entities, verify the headless server includes the physics plugin — it's
+   easy to assume "server doesn't render" means "server doesn't need
+   physics."
+
+3. **System ordering between `dispatch_interaction` and item handlers.**
+   `dispatch_interaction` fires `ItemPickupRequest` as a Bevy message, but
+   `handle_item_interaction` needs to read it in the same frame. Without
+   explicit ordering, the handler sometimes ran before the dispatcher. PR
+   #200 introduced `SystemSet` enums to enforce ordering. **Lesson:**
+   When a system fires a message that another system reads in the same
+   frame, explicit set ordering is mandatory — don't rely on Bevy's
+   default scheduling.
+
+4. **Camera query safety in `resolve_world_hits`.** The system queried
+   `Camera` with `.single()` which panics if there's no camera (e.g.,
+   during headless server startup). Changed to use `let Ok(cam) =
+   query.single() else { return; }`. **Lesson:** Always use fallible
+   queries for components that may not exist in all app configurations
+   (headless vs client).
+
+5. **Context menu range gating.** The initial context menu showed actions
+   for items at any distance. Added range checking using
+   `InteractionRange` so the menu only shows "Pick up" when the player is
+   within range. This was in the plan (server validates range) but the
+   client-side UX of not showing impossible actions was an oversight.
+   **Lesson:** Server-side validation is necessary but not sufficient —
+   the UI should also reflect what's possible to avoid confusing
+   request-then-reject interactions.
+
+### What went well
+
+- **The reparenting spike paid off immediately.** It confirmed that Avian
+  handles dynamic `RigidBody`/`Collider` removal and re-insertion cleanly
+  with no panics or warnings. Without the spike, the physics stashing
+  pattern would have been a leap of faith.
+
+- **Bottom-up sequencing continued to work.** PRs landed in dependency
+  order: spike → hand components → WorldHit button field → items module →
+  item event replication → item spawning → unified interactions stream →
+  raycast resolution + context menu → system ordering. No PR needed
+  rework due to missing infrastructure.
+
+- **The "hand is a container" abstraction held.** All four operations
+  (pickup, drop, store, take) are the same primitive: move item between
+  containers. The `Container` component with `slots: Vec<Option<Entity>>`
+  handled hand (capacity 1) and toolbox (capacity 6) uniformly. No
+  special-case code for "held vs stored."
+
+- **Stream-per-module isolation.** Moving `ItemEvent` to its own stream
+  (stream 5) instead of piggybacking on things' stream 3 was a
+  deviation from the plan but a clear improvement. The items module is
+  fully self-contained — it registers, serialises, and deserialises its
+  own events without any changes to the things module.
+
+- **Previous post-mortem recommendations were followed.** The break-a-wall
+  post-mortem said: "spike the actual API" and "verify force directions
+  with a unit test." The reparenting spike tested the concrete Avian API,
+  and the items module includes directional tests for physics restoration.
+
+- **Config-driven range worked out of the box.** The `interaction_range`
+  field in `config.toml` was used for both server validation and
+  client-side menu gating without any additional plumbing.
+
+### What to do differently next time
+
+- **Plan for stream ownership per module, not shared streams.** The plan
+  placed `ItemEvent` on things' stream 3. The implementation correctly
+  gave items its own stream 5. Future plans should default to one stream
+  per module — sharing streams couples modules at the wire protocol level.
+
+- **Include client-side UX validation in the plan, not just server-side.**
+  The plan thoroughly specified server-side range validation but didn't
+  mention client-side range gating for the context menu. Future plans
+  should address both "what does the server reject?" and "what does the
+  client not show?"
+
+- **Spike deparenting + transform ordering, not just reparenting.** The
+  reparenting spike confirmed pickup works, but the drop-position bug
+  (hurdle 1) was a deparenting ordering issue. Future spikes should test
+  the reverse operation too.
+
+- **Plan for binary separation early.** The split into client/server
+  binaries (PR #192) was unplanned and touched many files. Future plans
+  that add server-only or client-only systems should consider whether a
+  binary split is warranted and plan for it explicitly.
+
+- **Add system ordering to the spike checklist.** Two of the five hurdles
+  (system ordering, camera query safety) were scheduling issues. Future
+  plans should include a "scheduling spike" or at minimum a concrete
+  `SystemSet` design in the layer participation table, not just prose
+  ordering descriptions.
