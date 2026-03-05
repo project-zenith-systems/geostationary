@@ -200,14 +200,35 @@ decisions remain valid.
 
 ## Spike 2: Editor app state and camera (30 min)
 
-Depends on Spike 1 (plan may change based on MapLayer findings).
+**Status: Complete.** Answers are embedded in `bins/client/src/editor/mod.rs`
+(module doc comments) and `bins/client/src/editor/grid.rs` (unit tests).
 
-1. Can `AppState::Editor` coexist with `MainMenu` / `InGame` without
-   breaking `DespawnOnExit` cleanup?
-2. Does orthographic camera + XZ-plane raycasting work for grid cell
-   selection?
-3. Can tile entities from the game's rendering path be reused in the editor,
-   or does the editor need its own spawn logic?
+1. **Can `AppState::Editor` coexist with `MainMenu` / `InGame`?**
+   **Yes.** `DespawnOnExit` is per-entity/per-state with no cross-state
+   interference. Main-menu entities carry `DespawnOnExit(AppState::MainMenu)`
+   and clean up on `MainMenu` exit regardless of destination. The
+   `on_net_id_added` observer (hardcoded to `InGame`) never fires in the
+   editor since there is no active network connection. Tile entities (spawned
+   by the state-agnostic `spawn_tile_meshes`) are cleaned up explicitly via
+   `teardown_editor_world` on `OnExit(AppState::Editor)`.
+
+2. **Does orthographic camera + XZ-plane raycasting work?**
+   **Yes.** A `Camera3d` with `Projection::Orthographic` looking straight
+   down `-Y` produces parallel rays that always intersect the y=0 plane.
+   `ray_to_grid_cell` uses the same `round()` convention and `1e-4`
+   threshold as `raycast_tiles` in the tiles module — six unit tests
+   validate boundaries, negative coords, and degenerate rays. See
+   `bins/client/src/editor/grid.rs`.
+
+3. **Can tile entities from the game's rendering path be reused?**
+   **Yes — unchanged.** Inserting `Tilemap` on `OnEnter(AppState::Editor)`
+   is sufficient. `TilesPlugin::spawn_tile_meshes` picks it up automatically
+   and spawns full mesh + collider entities. No editor-specific spawn logic
+   is required.
+
+**Plan impact:** None. All spike answers confirm the planned design. The
+editor uses `AppState::Editor` with `DespawnOnExit`, an orthographic
+top-down camera, and the game's existing tile rendering path.
 
 ## Post-mortem
 

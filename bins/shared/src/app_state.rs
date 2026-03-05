@@ -5,4 +5,7 @@ pub enum AppState {
     #[default]
     MainMenu,
     InGame,
+    /// Map editor: orthographic top-down view, simulation disabled.
+    /// Entered from the main menu; exits back to `MainMenu` via Escape.
+    Editor,
 }
