@@ -179,15 +179,47 @@ impl MapLayer for TilesLayer {
             return Err("tiles layer: chunk_size must be greater than 0".into());
         }
 
-        // Validate and decode all chunks, collecting (global_pos, TileKind).
-        // We also track the maximum tile coordinate to size the Tilemap.
-        let tiles_per_chunk = chunk_size as usize * chunk_size as usize;
-        let expected_bytes = tiles_per_chunk * 2;
+        // Compute expected bytes per chunk with overflow protection.
+        let tiles_per_chunk = (chunk_size as usize)
+            .checked_mul(chunk_size as usize)
+            .ok_or("tiles layer: chunk_size is too large (chunk_size² overflows usize)")?;
+        let expected_bytes = tiles_per_chunk
+            .checked_mul(2)
+            .ok_or("tiles layer: chunk_size is too large (chunk_size² × 2 overflows usize)")?;
 
-        let mut max_x: i32 = -1;
-        let mut max_y: i32 = -1;
-        let mut decoded_tiles: Vec<(IVec2, TileKind)> = Vec::new();
+        // Handle the empty-map case before doing any chunk work.
+        if layer.chunks.is_empty() {
+            world.insert_resource(Tilemap::new(0, 0, TileKind::Floor));
+            return Ok(());
+        }
 
+        // Derive map dimensions from chunk indices without decoding any tile data.
+        // Reject negative chunk coordinates here so the subsequent u32 casts are safe.
+        let mut max_chunk_x: i32 = i32::MIN;
+        let mut max_chunk_y: i32 = i32::MIN;
+        for &(cx, cy) in layer.chunks.keys() {
+            if cx < 0 || cy < 0 {
+                return Err(format!(
+                    "tiles layer: negative chunk coordinate ({cx},{cy}) is not supported"
+                )
+                .into());
+            }
+            max_chunk_x = max_chunk_x.max(cx);
+            max_chunk_y = max_chunk_y.max(cy);
+        }
+
+        let width = (max_chunk_x as u32)
+            .checked_add(1)
+            .and_then(|v| v.checked_mul(chunk_size))
+            .ok_or("tiles layer: map dimensions overflow u32")?;
+        let height = (max_chunk_y as u32)
+            .checked_add(1)
+            .and_then(|v| v.checked_mul(chunk_size))
+            .ok_or("tiles layer: map dimensions overflow u32")?;
+
+        let mut tilemap = Tilemap::new(width, height, TileKind::Floor);
+
+        // Decode each chunk and write directly into the tilemap.
         for (&(chunk_x, chunk_y), b64) in &layer.chunks {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(b64)
@@ -206,7 +238,10 @@ impl MapLayer for TilesLayer {
 
             for local_y in 0..chunk_size {
                 for local_x in 0..chunk_size {
-                    let offset = ((local_y * chunk_size + local_x) * 2) as usize;
+                    // Compute the byte offset in usize arithmetic to avoid u32 overflow
+                    // for large (but still valid) chunk sizes.
+                    let offset =
+                        (local_y as usize * chunk_size as usize + local_x as usize) * 2;
                     let key = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
 
                     let tile_def = layer.keys.get(&key).ok_or_else(|| {
@@ -217,33 +252,9 @@ impl MapLayer for TilesLayer {
 
                     let global_x = chunk_x * chunk_size as i32 + local_x as i32;
                     let global_y = chunk_y * chunk_size as i32 + local_y as i32;
-
-                    if global_x < 0 || global_y < 0 {
-                        return Err(format!(
-                            "tiles layer: negative tile coordinate ({global_x},{global_y}) is not supported"
-                        )
-                        .into());
-                    }
-
-                    max_x = max_x.max(global_x);
-                    max_y = max_y.max(global_y);
-                    decoded_tiles.push((IVec2::new(global_x, global_y), tile_def.kind));
+                    tilemap.set(IVec2::new(global_x, global_y), tile_def.kind);
                 }
             }
-        }
-
-        // If there are no chunks the map is empty — insert a 0×0 Tilemap.
-        if layer.chunks.is_empty() {
-            world.insert_resource(Tilemap::new(0, 0, TileKind::Floor));
-            return Ok(());
-        }
-
-        let width = (max_x + 1) as u32;
-        let height = (max_y + 1) as u32;
-        let mut tilemap = Tilemap::new(width, height, TileKind::Floor);
-
-        for (pos, kind) in decoded_tiles {
-            tilemap.set(pos, kind);
         }
 
         world.insert_resource(tilemap);
@@ -259,73 +270,54 @@ impl MapLayer for TilesLayer {
             .ok_or("tiles layer: Tilemap resource not found")?;
 
         let chunk_size = SAVE_CHUNK_SIZE;
+        let num_chunks_x = tilemap.width().div_ceil(chunk_size);
+        let num_chunks_y = tilemap.height().div_ceil(chunk_size);
+        let tiles_per_chunk = chunk_size as usize * chunk_size as usize;
 
-        // Build the key dictionary: TileDef → u16 key.
-        // Keys are assigned in first-occurrence order (row-major scan).
         let mut key_dict: BTreeMap<u16, TileDef> = BTreeMap::new();
         let mut def_to_key: HashMap<TileDef, u16> = HashMap::new();
         let mut next_key: u16 = 0;
-
-        // Determine chunk extents from the tilemap dimensions.
-        let num_chunks_x = tilemap.width().div_ceil(chunk_size);
-        let num_chunks_y = tilemap.height().div_ceil(chunk_size);
-
-        // Pre-populate the key dictionary by scanning tiles in chunk/row-major
-        // order so key numbering is deterministic.
-        for chunk_y in 0..num_chunks_y {
-            for chunk_x in 0..num_chunks_x {
-                for local_y in 0..chunk_size {
-                    for local_x in 0..chunk_size {
-                        let global_x = chunk_x as i32 * chunk_size as i32 + local_x as i32;
-                        let global_y = chunk_y as i32 * chunk_size as i32 + local_y as i32;
-                        let pos = IVec2::new(global_x, global_y);
-                        // Pad out-of-bounds positions with Floor (the Tilemap default fill).
-                        let kind = tilemap.get(pos).unwrap_or(TileKind::Floor);
-                        let def = TileDef { kind, atmosphere: None };
-                        if !def_to_key.contains_key(&def) {
-                            def_to_key.insert(def.clone(), next_key);
-                            key_dict.insert(next_key, def);
-                            next_key = next_key
-                                .checked_add(1)
-                                .ok_or("tiles layer: too many unique tile configurations (>65535)")?;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Encode each chunk.
         let mut chunks: BTreeMap<(i32, i32), String> = BTreeMap::new();
-        let tiles_per_chunk = (chunk_size * chunk_size) as usize;
 
+        // Single pass: assign keys on first occurrence and encode each chunk in one loop.
         for chunk_y in 0..num_chunks_y {
             for chunk_x in 0..num_chunks_x {
                 let mut buf: Vec<u8> = Vec::with_capacity(tiles_per_chunk * 2);
                 for local_y in 0..chunk_size {
                     for local_x in 0..chunk_size {
-                        let global_x = chunk_x as i32 * chunk_size as i32 + local_x as i32;
-                        let global_y = chunk_y as i32 * chunk_size as i32 + local_y as i32;
-                        let pos = IVec2::new(global_x, global_y);
+                        let pos = IVec2::new(
+                            chunk_x as i32 * chunk_size as i32 + local_x as i32,
+                            chunk_y as i32 * chunk_size as i32 + local_y as i32,
+                        );
                         // Pad out-of-bounds positions with Floor (the Tilemap default fill).
                         let kind = tilemap.get(pos).unwrap_or(TileKind::Floor);
                         let def = TileDef { kind, atmosphere: None };
-                        let key = def_to_key[&def];
+                        let key = match def_to_key.entry(def.clone()) {
+                            std::collections::hash_map::Entry::Occupied(e) => *e.get(),
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                let k = next_key;
+                                next_key = next_key.checked_add(1).ok_or(
+                                    "tiles layer: too many unique tile configurations (>65535)",
+                                )?;
+                                key_dict.insert(k, def);
+                                *e.insert(k)
+                            }
+                        };
                         buf.extend_from_slice(&key.to_le_bytes());
                     }
                 }
-                let encoded =
-                    base64::engine::general_purpose::STANDARD.encode(&buf);
-                chunks.insert((chunk_x as i32, chunk_y as i32), encoded);
+                chunks.insert(
+                    (chunk_x as i32, chunk_y as i32),
+                    base64::engine::general_purpose::STANDARD.encode(&buf),
+                );
             }
         }
 
-        let layer_data = TilesLayerData {
+        Ok(to_layer_value(&TilesLayerData {
             chunk_size,
             keys: key_dict,
             chunks,
-        };
-
-        Ok(to_layer_value(&layer_data)?)
+        })?)
     }
 }
 
@@ -1195,5 +1187,44 @@ mod tests {
         let mut w = World::new();
         let result = TilesLayer.load(&raw, &mut w);
         assert!(result.is_err(), "chunk_size 0 must be rejected");
+    }
+
+    /// A chunk with a negative x coordinate is rejected with an error.
+    #[test]
+    fn tiles_layer_load_negative_chunk_coord_errors() {
+        use base64::Engine as _;
+        use std::collections::BTreeMap;
+
+        let chunk_size: u32 = 2;
+        let tile_count = (chunk_size * chunk_size) as usize;
+        let bytes: Vec<u8> = (0..tile_count).flat_map(|_| 0u16.to_le_bytes()).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+        let data = TilesLayerData {
+            chunk_size,
+            keys: {
+                let mut m = BTreeMap::new();
+                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m
+            },
+            chunks: {
+                let mut m = BTreeMap::new();
+                // chunk_x = -1 is negative
+                m.insert((-1, 0), encoded);
+                m
+            },
+        };
+        let raw = world::to_layer_value(&data).expect("serialize");
+        let mut w = World::new();
+        let result = TilesLayer.load(&raw, &mut w);
+        assert!(
+            result.is_err(),
+            "negative chunk coordinate must cause a load error"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("negative chunk coordinate"),
+            "error message should mention 'negative chunk coordinate', got: {msg}"
+        );
     }
 }
