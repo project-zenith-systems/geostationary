@@ -134,14 +134,19 @@ mod tests {
             self.0.to_string_lossy().into_owned()
         }
 
-        /// Return a path string that is guaranteed not to exist on disk by
-        /// using the counter-based name but *not* creating the file.
+        /// Return a path string that does not currently exist on disk.
+        ///
+        /// This uses the counter-based name pattern and checks for existence,
+        /// looping until it finds a path that is not present in the temp dir.
         fn nonexistent_path() -> String {
-            let n = FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            std::env::temp_dir()
-                .join(format!("loader_test_{}_missing.station.ron", n))
-                .to_string_lossy()
-                .into_owned()
+            loop {
+                let n = FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir()
+                    .join(format!("loader_test_{}_missing.station.ron", n));
+                if !path.exists() {
+                    return path.to_string_lossy().into_owned();
+                }
+            }
         }
     }
 
