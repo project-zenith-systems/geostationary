@@ -14,6 +14,7 @@ pub struct AppConfig {
     pub atmospherics: AtmosphericsConfig,
     pub souls: SoulsConfig,
     pub items: ItemsConfig,
+    pub world: WorldConfig,
 }
 
 impl From<&AppConfig> for bevy::prelude::WindowPlugin {
@@ -67,6 +68,9 @@ impl Default for AppConfig {
             items: ItemsConfig {
                 interaction_range: 2.0,
             },
+            world: WorldConfig {
+                map_path: "assets/maps/default.station.ron".to_string(),
+            },
         }
     }
 }
@@ -106,6 +110,12 @@ pub struct ItemsConfig {
     pub interaction_range: f32,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorldConfig {
+    /// Path to the `.station.ron` map file loaded on server startup.
+    pub map_path: String,
+}
+
 pub fn load_config() -> AppConfig {
     match load_config_inner() {
         Ok(config) => config,
@@ -141,6 +151,7 @@ fn load_config_inner() -> Result<AppConfig, ::config::ConfigError> {
             "items.interaction_range",
             defaults.items.interaction_range as f64,
         )?
+        .set_default("world.map_path", defaults.world.map_path)?
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Toml).required(false))
         .add_source(File::new(CONFIG_BASENAME, FileFormat::Ron).required(false))
         .add_source(Environment::with_prefix("GEOSTATIONARY").separator("__"));

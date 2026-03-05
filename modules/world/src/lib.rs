@@ -1,7 +1,9 @@
 pub mod lifecycle;
+pub mod loader;
 pub mod map_file;
 
 pub use lifecycle::{WorldLoading, WorldReady, WorldTeardown};
+pub use loader::MapPath;
 pub use map_file::{CURRENT_MAP_VERSION, MapFile, MapLayer, MapLayerRegistry, MapLayerRegistryExt, from_layer_value, to_layer_value};
 
 use bevy::prelude::*;
@@ -10,6 +12,10 @@ use bevy::prelude::*;
 /// registry, and lifecycle events.
 ///
 /// Add this plugin before any module that registers a `MapLayer`.
+///
+/// If a [`MapPath`] resource is present when the app starts, the plugin's
+/// [`loader::load_map`] startup system will read the `.station.ron` file and
+/// dispatch each layer to its registered [`MapLayer`] implementation.
 pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
@@ -18,5 +24,6 @@ impl Plugin for WorldPlugin {
         app.add_message::<WorldLoading>();
         app.add_message::<WorldReady>();
         app.add_message::<WorldTeardown>();
+        app.add_systems(Startup, loader::load_map);
     }
 }
