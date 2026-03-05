@@ -19,12 +19,12 @@ pub struct AppConfig {
 impl From<&AppConfig> for bevy::prelude::WindowPlugin {
     fn from(config: &AppConfig) -> Self {
         Self {
-                primary_window: Some(bevy::window::Window {
-                    title: config.window.title.clone(),
-                    ..default()
-                }),
+            primary_window: Some(bevy::window::Window {
+                title: config.window.title.clone(),
                 ..default()
-            }
+            }),
+            ..default()
+        }
     }
 }
 impl From<&AppConfig> for bevy::log::LogPlugin {
