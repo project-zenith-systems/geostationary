@@ -3,12 +3,14 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use bevy::state::state::FreelyMutableState;
 use bevy::{log, prelude::*};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
 mod client;
 mod config;
+mod orchestrate;
 mod protocol;
 mod runtime;
 mod server;
@@ -96,6 +98,17 @@ pub enum PlayerEvent {
     Joined { id: ClientId, name: String },
     /// Emitted when a client disconnects.
     Left { id: ClientId },
+}
+
+/// Server-side message emitted when a client sends an input direction.
+///
+/// The orchestration layer decodes [`ClientMessage::Input`] and re-emits it as this
+/// strongly-typed message.  Domain modules (e.g. `souls`) consume it to route input
+/// to the controlled entity.
+#[derive(Message, Clone, Debug)]
+pub struct ClientInputReceived {
+    pub from: ClientId,
+    pub direction: [f32; 3],
 }
 
 /// Server-side event emitted by a module stream handler after it has sent its initial data
@@ -748,9 +761,27 @@ const MAX_NET_EVENTS_PER_FRAME: usize = 100;
 /// Flag to track if we've already warned about hitting the event cap.
 static CAP_WARNING_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub struct NetworkPlugin;
+/// Plugin that provides transport, protocol framing, and connection orchestration.
+///
+/// Generic over the application state type `S` so the network module remains
+/// game-agnostic while still driving state transitions:
+///
+/// - `in_game`      — the state to enter once initial sync is complete.
+/// - `disconnected`  — the state to fall back to on disconnect / error.
+///
+/// # Example
+/// ```ignore
+/// NetworkPlugin {
+///     in_game: AppState::InGame,
+///     disconnected: AppState::MainMenu,
+/// }
+/// ```
+pub struct NetworkPlugin<S: FreelyMutableState + Copy> {
+    pub in_game: S,
+    pub disconnected: S,
+}
 
-impl Plugin for NetworkPlugin {
+impl<S: FreelyMutableState + Copy> Plugin for NetworkPlugin<S> {
     fn build(&self, app: &mut App) {
         let (server_event_tx, server_event_rx) = mpsc::unbounded_channel();
         let (client_event_tx, client_event_rx) = mpsc::unbounded_channel();
@@ -767,12 +798,16 @@ impl Plugin for NetworkPlugin {
         app.add_message::<ClientEvent>();
         app.add_message::<PlayerEvent>();
         app.add_message::<ModuleReadySent>();
+        app.add_message::<ClientInputReceived>();
         app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
         app.add_systems(
             PreUpdate,
             (drain_server_events, drain_client_events).in_set(NetworkSet::Receive),
         );
         app.add_systems(PreUpdate, process_net_commands.in_set(NetworkSet::Send));
+
+        // Register orchestration systems that manage sync barriers and state transitions.
+        orchestrate::register_orchestrate_systems(app, self.in_game, self.disconnected);
     }
 }
 

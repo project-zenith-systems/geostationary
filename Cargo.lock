@@ -5446,7 +5446,6 @@ dependencies = [
  "network",
  "physics",
  "serde",
- "souls",
  "things",
  "tiles",
 ]

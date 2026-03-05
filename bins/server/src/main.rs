@@ -47,7 +47,10 @@ fn main() {
         .add_plugins(bevy::scene::ScenePlugin)
         .add_plugins(bevy::state::app::StatesPlugin)
         .insert_resource(Headless)
-        .add_plugins(NetworkPlugin)
+        .add_plugins(NetworkPlugin {
+            in_game: shared::app_state::AppState::InGame,
+            disconnected: shared::app_state::AppState::MainMenu,
+        })
         .add_plugins(PhysicsPlugin)
         .add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin::<shared::app_state::AppState>::in_state(
@@ -58,7 +61,6 @@ fn main() {
         .add_plugins(souls::SoulsPlugin)
         .add_plugins(shared::world_setup::WorldSetupPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
-        .add_plugins(shared::server::ServerPlugin)
         .add_plugins(ItemsPlugin)
         .add_plugins(InteractionsPlugin::<shared::app_state::AppState>::in_state(
             shared::app_state::AppState::InGame,
