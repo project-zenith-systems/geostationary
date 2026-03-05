@@ -140,11 +140,11 @@ a spawn marker entity. Right-click deletes markers.
 **Save/Load:** Save queries the live world via registered `MapLayer::save()`
 implementations, collects all layers into a `MapFile`, and writes RON. Load
 reads a `MapFile`, clears the editor world, and calls `MapLayer::load()` for
-each layer. Unknown layers round-trip through the raw `ron::Value` store.
+each layer. Unknown layers round-trip through the raw `RawValue` store.
 
 ### Dependencies
 
-The `world` module requires `ron` as a direct dependency for `ron::Value`.
+The `world` module requires `ron` as a direct dependency for `RawValue`.
 Currently `ron` enters the workspace via the `config` crate — it should be
 added as an explicit workspace dependency.
 

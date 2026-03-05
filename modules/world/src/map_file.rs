@@ -64,8 +64,8 @@ pub trait MapLayer: Send + Sync + 'static {
     /// Serialize this module's world state into a raw RON value.
     ///
     /// The returned value is stored verbatim under [`key()`](MapLayer::key)
-    /// in [`MapFile::layers`].  Use [`to_layer_value`] as a helper.
-    fn save(&self, world: &World) -> Box<RawValue>;
+    /// in [`MapFile::layers`]. Use [`to_layer_value`] as a helper.
+    fn save(&self, world: &World) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Deserialize `data` and apply it to `world`.
     ///
@@ -95,6 +95,11 @@ impl MapLayerRegistry {
     }
 
     pub fn register(&mut self, layer: impl MapLayer) {
+        let key = layer.key();
+        assert!(
+            !self.layers.iter().any(|l| l.key() == key),
+            "duplicate MapLayer key: \"{key}\" is already registered"
+        );
         self.layers.push(Box::new(layer));
     }
 
@@ -104,13 +109,16 @@ impl MapLayerRegistry {
     /// original file are not included here — callers that need round-trip
     /// fidelity for unknown layers should merge with the original
     /// [`MapFile::layers`] after calling this method.
-    pub fn save_all(&self, world: &World) -> MapFile {
+    pub fn save_all(
+        &self,
+        world: &World,
+    ) -> Result<MapFile, Box<dyn std::error::Error + Send + Sync>> {
         let mut file = MapFile::new(1);
         for layer in &self.layers {
-            let value = layer.save(world);
+            let value = layer.save(world)?;
             file.layers.insert(layer.key().to_owned(), value);
         }
-        file
+        Ok(file)
     }
 
     /// Dispatch each layer in `file` to its registered implementation.
@@ -148,14 +156,10 @@ impl MapLayerRegistryExt for App {
 
 /// Serialize a concrete layer data type `T` into a [`Box<RawValue>`] for use
 /// in [`MapLayer::save`].
-///
-/// # Panics
-///
-/// Panics if `T` cannot be serialized to valid RON. This should only happen
-/// if `T`'s `Serialize` implementation produces invalid data, which is a bug
-/// in the layer implementation.
-pub fn to_layer_value<T: serde::Serialize>(value: &T) -> Box<RawValue> {
-    RawValue::from_rust(value).expect("MapLayer data must serialize to valid RON")
+pub fn to_layer_value<T: serde::Serialize>(
+    value: &T,
+) -> Result<Box<RawValue>, ron::Error> {
+    RawValue::from_rust(value)
 }
 
 /// Deserialize a [`RawValue`] into a concrete layer data type `T` for use in
@@ -292,9 +296,9 @@ mod tests {
         // Build a MapFile with serialized layer values.
         let mut file = MapFile::new(1);
         file.layers
-            .insert("tiles".to_owned(), to_layer_value(&tiles_data));
+            .insert("tiles".to_owned(), to_layer_value(&tiles_data).unwrap());
         file.layers
-            .insert("spawns".to_owned(), to_layer_value(&spawns));
+            .insert("spawns".to_owned(), to_layer_value(&spawns).unwrap());
 
         // Serialize the whole file and re-parse it to simulate loading from disk.
         let file_ron = ron::to_string(&file).expect("MapFile serialize");
@@ -428,12 +432,12 @@ mod tests {
             "foo"
         }
 
-        fn save(&self, world: &World) -> Box<RawValue> {
+        fn save(&self, world: &World) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
             let names: Vec<String> = world
                 .get_resource::<FooRegistry>()
                 .map(|r| r.items.clone())
                 .unwrap_or_default();
-            to_layer_value(&names)
+            Ok(to_layer_value(&names)?)
         }
 
         fn load(
@@ -453,8 +457,8 @@ mod tests {
             "bar"
         }
 
-        fn save(&self, _world: &World) -> Box<RawValue> {
-            to_layer_value(&())
+        fn save(&self, _world: &World) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(to_layer_value(&())?)
         }
 
         fn load(
@@ -478,9 +482,9 @@ mod tests {
         // Build a minimal file for the two layers.
         let mut file = MapFile::new(1);
         file.layers
-            .insert("foo".to_owned(), to_layer_value(&vec!["alpha", "beta"]));
+            .insert("foo".to_owned(), to_layer_value(&vec!["alpha", "beta"]).unwrap());
         file.layers
-            .insert("bar".to_owned(), to_layer_value(&()));
+            .insert("bar".to_owned(), to_layer_value(&()).unwrap());
 
         // Register layers in load order.
         let mut registry = MapLayerRegistry::new();
@@ -515,12 +519,12 @@ mod tests {
             "count"
         }
 
-        fn save(&self, world: &World) -> Box<RawValue> {
+        fn save(&self, world: &World) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
             let n = world
                 .get_resource::<TileCount>()
                 .map(|r| r.0)
                 .unwrap_or(0);
-            to_layer_value(&n)
+            Ok(to_layer_value(&n)?)
         }
 
         fn load(
@@ -545,7 +549,7 @@ mod tests {
         // Simulate a "server world" with one tile count.
         let mut server_world = World::new();
         server_world.insert_resource(TileCount(1024));
-        let server_file = registry.save_all(&server_world);
+        let server_file = registry.save_all(&server_world).unwrap();
         let server_count: u32 =
             from_layer_value(server_file.layers.get("count").unwrap()).unwrap();
         assert_eq!(server_count, 1024);
@@ -553,15 +557,15 @@ mod tests {
         // Simulate an "editor world" with a different tile count.
         let mut editor_world = World::new();
         editor_world.insert_resource(TileCount(512));
-        let editor_file = registry.save_all(&editor_world);
+        let editor_file = registry.save_all(&editor_world).unwrap();
         let editor_count: u32 =
             from_layer_value(editor_file.layers.get("count").unwrap()).unwrap();
         assert_eq!(editor_count, 512);
 
         // The same CountLayer.save() implementation produced both results —
         // no conditional logic or separate serialization paths.
-        let server_ron = layer.save(&server_world).get_ron().to_owned();
-        let editor_ron = layer.save(&editor_world).get_ron().to_owned();
+        let server_ron = layer.save(&server_world).unwrap().get_ron().to_owned();
+        let editor_ron = layer.save(&editor_world).unwrap().get_ron().to_owned();
         assert_ne!(server_ron, editor_ron, "different worlds produce different output");
     }
 
@@ -637,7 +641,7 @@ mod tests {
             },
             chunks: BTreeMap::new(),
         };
-        let raw = to_layer_value(&data);
+        let raw = to_layer_value(&data).unwrap();
         let loaded: TilesLayerData = from_layer_value(&raw).expect("deserialize");
         assert_eq!(data, loaded);
     }

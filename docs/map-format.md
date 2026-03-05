@@ -59,8 +59,8 @@ pub trait MapLayer: Send + Sync + 'static {
     fn key(&self) -> &'static str;
 
     /// Serialize this module's world state into a raw RON value for saving.
-    /// Use `world::to_layer_value(&data)` as a helper.
-    fn save(&self, world: &World) -> Box<ron::value::RawValue>;
+    /// Use `world::to_layer_value(&data)?` as a helper.
+    fn save(&self, world: &World) -> Result<Box<ron::value::RawValue>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Deserialize a raw RON value and apply it to the world on load.
     /// Use `world::from_layer_value::<T>(data)?` as a helper.
