@@ -24,13 +24,7 @@ fn main() {
 
     app.add_plugins(
         DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: app_config.window.title.clone(),
-                    ..default()
-                }),
-                ..default()
-            })
+            .set(WindowPlugin::from(&app_config))
             .set(LogPlugin::from(&app_config)),
     )
     .add_plugins(UiPlugin::new().with_event::<MenuEvent>().with_event::<ContextMenuAction>())

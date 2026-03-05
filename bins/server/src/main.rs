@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use interactions::InteractionsPlugin;
 use network::{Headless, NetCommand, NetServerSender, NetworkPlugin, ServerMessage};
 use physics::PhysicsPlugin;
-use shared::config::AppConfig;
+use shared::{app_state::AppState, config::AppConfig};
 use items::{InteractionRange, ItemsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
@@ -48,13 +48,13 @@ fn main() {
         .add_plugins(bevy::state::app::StatesPlugin)
         .insert_resource(Headless)
         .add_plugins(NetworkPlugin {
-            in_game: shared::app_state::AppState::InGame,
-            disconnected: shared::app_state::AppState::MainMenu,
+            in_game: AppState::InGame,
+            disconnected: AppState::MainMenu,
         })
         .add_plugins(PhysicsPlugin)
         .add_plugins(TilesPlugin)
-        .add_plugins(ThingsPlugin::<shared::app_state::AppState>::in_state(
-            shared::app_state::AppState::InGame,
+        .add_plugins(ThingsPlugin::<AppState>::in_state(
+            AppState::InGame,
         ))
         .add_plugins(atmospherics::AtmosphericsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
@@ -62,11 +62,11 @@ fn main() {
         .add_plugins(shared::world_setup::WorldSetupPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(ItemsPlugin)
-        .add_plugins(InteractionsPlugin::<shared::app_state::AppState>::in_state(
-            shared::app_state::AppState::InGame,
+        .add_plugins(InteractionsPlugin::<AppState>::in_state(
+            AppState::InGame,
         ))
         .insert_resource(InteractionRange(app_config.items.interaction_range))
-        .insert_state(shared::app_state::AppState::InGame)
+        .insert_state(AppState::InGame)
         .add_systems(Startup, host_on_startup)
         .add_systems(Update, check_shutdown_signal);
 
