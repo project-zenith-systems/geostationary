@@ -6,12 +6,18 @@ use serde::{Deserialize, Serialize};
 
 /// On-disk representation of a station map.
 ///
-/// The `layers` map stores raw [`RawValue`] blobs keyed by layer name.
-/// On load, [`MapLayerRegistry`] iterates the map, finds the registered
-/// [`MapLayer`] for each key, and calls `load()` with the blob.
-/// **Unrecognized layers are kept as raw values** — re-saving preserves
-/// them, so a map authored with a newer format version that has extra layers
-/// doesn't lose data when loaded by an older build.
+/// `MapFile` is a pure data container: it holds a version number and a map of
+/// raw RON blobs keyed by layer name. Deserializing a `MapFile` and then
+/// re-serializing it preserves **all** layer entries verbatim, including
+/// layers whose keys are not registered with any [`MapLayer`] implementation.
+/// This means an older build that does not know about a `"structures"` layer
+/// can still load the file, leave that blob untouched, and write it back out
+/// without data loss.
+///
+/// Higher-level helpers like [`MapLayerRegistry::save_all`] construct a
+/// **new** `MapFile` that only contains registered layers. Callers that need
+/// to preserve unknown layers must merge an existing `MapFile`'s
+/// `layers` map with the output of `save_all` before writing to disk.
 ///
 /// # Why `Box<RawValue>` rather than `ron::Value`?
 ///
@@ -35,6 +41,10 @@ impl MapFile {
         }
     }
 }
+
+/// The current on-disk format version written by [`MapLayerRegistry::save_all`].
+/// Bump this constant when making breaking changes to the map file format.
+pub const CURRENT_MAP_VERSION: u32 = 1;
 
 /// A named section of a map file.
 ///
@@ -105,15 +115,16 @@ impl MapLayerRegistry {
 
     /// Save all registered layers from `world` into a new [`MapFile`].
     ///
-    /// Layers not registered with this registry that existed in the
-    /// original file are not included here — callers that need round-trip
-    /// fidelity for unknown layers should merge with the original
-    /// [`MapFile::layers`] after calling this method.
+    /// The returned file uses [`CURRENT_MAP_VERSION`] as its version number.
+    /// Layers not registered with this registry are **not** included — callers
+    /// that need round-trip fidelity for unknown layers should start from an
+    /// existing [`MapFile`] and merge updated layers into its `layers` map
+    /// rather than discarding and replacing it.
     pub fn save_all(
         &self,
         world: &World,
     ) -> Result<MapFile, Box<dyn std::error::Error + Send + Sync>> {
-        let mut file = MapFile::new(1);
+        let mut file = MapFile::new(CURRENT_MAP_VERSION);
         for layer in &self.layers {
             let value = layer.save(world)?;
             file.layers.insert(layer.key().to_owned(), value);
@@ -121,10 +132,15 @@ impl MapLayerRegistry {
         Ok(file)
     }
 
-    /// Dispatch each layer in `file` to its registered implementation.
+    /// Load each registered layer that is present in `file`, in registration
+    /// order.
     ///
-    /// Unknown layers (keys with no registered handler) are silently
-    /// skipped — the caller is responsible for preserving them.
+    /// Iterates registered layers (not file keys) and looks up each layer's
+    /// [`key()`](MapLayer::key) in the file. Layers present in the file but
+    /// not registered are silently skipped and remain in `file.layers`
+    /// untouched. Registration order is therefore the effective load order,
+    /// which matters when one layer depends on resources inserted by an
+    /// earlier layer.
     pub fn load_all(
         &self,
         file: &MapFile,

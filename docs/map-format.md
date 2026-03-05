@@ -33,12 +33,17 @@ pub struct MapFile {
 ```
 
 The `layers` map stores raw `RawValue` blobs keyed by layer name. `RawValue`
-holds the verbatim RON bytes for each layer — on load, the world module
-iterates the map, finds the registered `MapLayer` for each key, and calls
-`load()` with the blob. **Unrecognized layers are kept as raw bytes** —
-re-saving preserves them exactly, so a map authored with a newer version
-(that has `"structures"` or `"wiring"` layers) doesn't lose data when loaded
-by an older build.
+holds the verbatim RON bytes for each layer. Deserializing a `MapFile` and
+re-serializing **that same `MapFile` struct** preserves all layer entries
+exactly — including layers whose keys are not registered with any `MapLayer`
+implementation. This ensures an older build can load a newer file, leave
+unknown layers untouched in the `MapFile`, and write the file back out without
+data loss.
+
+> **Note:** [`MapLayerRegistry::save_all`] constructs a **new** `MapFile`
+> containing only the layers it knows about. Callers that need to preserve
+> unknown layers must start from an existing `MapFile` and merge updated
+> entries into its `layers` map rather than discarding it.
 
 > **Why `RawValue` and not `ron::Value`?** Spike 1 (Q1) found that
 > `ron::Value` is a lossy representation for layer data: unit enum variant
