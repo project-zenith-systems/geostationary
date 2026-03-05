@@ -17,6 +17,7 @@ members = [
     "modules/input",
     "modules/interactions",
     "modules/items",
+    "modules/main_menu",
 ]
 default-members = ["bins/server"]
 

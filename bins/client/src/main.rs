@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use input::InputPlugin;
 use interactions::{ContextMenuAction, InteractionsPlugin};
 use items::{InteractionRange, ItemsPlugin};
-use main_menu::{MainMenuPlugin, MenuEvent};
+use main_menu::{MainMenuConfig, MainMenuPlugin, MenuEvent};
 use network::{Headless, NetCommand, NetworkPlugin, NetworkSet, ServerEvent};
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};
 use shared::app_state::AppState;
@@ -13,8 +13,6 @@ use shared::config::AppConfig;
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
 use ui::UiPlugin;
-
-mod main_menu;
 
 fn main() {
     let app_config = shared::config::load_config();
@@ -28,7 +26,11 @@ fn main() {
             .set(LogPlugin::from(&app_config)),
     )
     .add_plugins(UiPlugin::new().with_event::<MenuEvent>().with_event::<ContextMenuAction>())
-    .add_plugins(MainMenuPlugin)
+    .insert_resource(MainMenuConfig {
+        port: app_config.network.port,
+        player_name: app_config.souls.player_name.clone(),
+    })
+    .add_plugins(MainMenuPlugin { state: AppState::MainMenu })
     .add_plugins(NetworkPlugin {
         in_game: AppState::InGame,
         disconnected: AppState::MainMenu,
