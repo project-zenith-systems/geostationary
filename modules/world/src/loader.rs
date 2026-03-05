@@ -98,6 +98,7 @@ pub fn load_map(world: &mut World) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use bevy::prelude::*;
@@ -114,12 +115,40 @@ mod tests {
     /// collide.
     static FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    /// Write `contents` to a unique temp file and return the path.
-    fn write_tmp(contents: &str) -> String {
-        let n = FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("loader_test_{}.station.ron", n));
-        std::fs::write(&path, contents).expect("write temp map file");
-        path.to_string_lossy().into_owned()
+    /// RAII guard that deletes its temp file when dropped.
+    struct TempFile(PathBuf);
+
+    impl TempFile {
+        /// Write `contents` to a unique file in the system temp directory and
+        /// return a guard that deletes the file when dropped.
+        fn new(contents: &str) -> Self {
+            let n = FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("loader_test_{}.station.ron", n));
+            std::fs::write(&path, contents).expect("write temp map file");
+            TempFile(path)
+        }
+
+        /// Return a path string suitable for inserting into [`MapPath`].
+        fn path_str(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+
+        /// Return a path string that is guaranteed not to exist on disk by
+        /// using the counter-based name but *not* creating the file.
+        fn nonexistent_path() -> String {
+            let n = FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            std::env::temp_dir()
+                .join(format!("loader_test_{}_missing.station.ron", n))
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     /// Build a minimal [`World`] with the resources that [`load_map`] requires:
@@ -189,7 +218,7 @@ mod tests {
     #[test]
     fn load_map_errors_on_missing_file() {
         let mut world = make_world();
-        world.insert_resource(MapPath::new("/nonexistent/path.station.ron"));
+        world.insert_resource(MapPath::new(TempFile::nonexistent_path()));
         load_map(&mut world);
         assert_eq!(world_ready_count(&world), 0);
     }
@@ -198,9 +227,9 @@ mod tests {
     /// and does not emit [`WorldReady`].
     #[test]
     fn load_map_errors_on_bad_ron() {
-        let path = write_tmp("not valid ron {{{{");
+        let file = TempFile::new("not valid ron {{{{");
         let mut world = make_world();
-        world.insert_resource(MapPath::new(path));
+        world.insert_resource(MapPath::new(file.path_str()));
         load_map(&mut world);
         assert_eq!(world_ready_count(&world), 0);
     }
@@ -209,9 +238,9 @@ mod tests {
     /// [`load_map`] refuses to load it and does not emit [`WorldReady`].
     #[test]
     fn load_map_errors_on_unsupported_version() {
-        let path = write_tmp("(version: 9999, layers: {})");
+        let file = TempFile::new("(version: 9999, layers: {})");
         let mut world = make_world();
-        world.insert_resource(MapPath::new(path));
+        world.insert_resource(MapPath::new(file.path_str()));
         load_map(&mut world);
         assert_eq!(world_ready_count(&world), 0);
     }
@@ -220,13 +249,13 @@ mod tests {
     /// and [`WorldReady`] to be emitted.
     #[test]
     fn load_map_dispatches_registered_layer_and_emits_world_ready() {
-        let path = write_tmp("(version: 1, layers: { \"stub\": () })");
+        let file = TempFile::new("(version: 1, layers: { \"stub\": () })");
         let mut world = make_world();
         world
             .get_resource_mut::<MapLayerRegistry>()
             .unwrap()
             .register(StubLayer);
-        world.insert_resource(MapPath::new(path));
+        world.insert_resource(MapPath::new(file.path_str()));
         load_map(&mut world);
         assert_eq!(world_ready_count(&world), 1, "WorldReady must be emitted after successful load");
         assert!(
@@ -238,9 +267,9 @@ mod tests {
     /// A valid map file with no registered layers still emits [`WorldReady`].
     #[test]
     fn load_map_emits_world_ready_with_no_layers() {
-        let path = write_tmp("(version: 1, layers: {})");
+        let file = TempFile::new("(version: 1, layers: {})");
         let mut world = make_world();
-        world.insert_resource(MapPath::new(path));
+        world.insert_resource(MapPath::new(file.path_str()));
         load_map(&mut world);
         assert_eq!(world_ready_count(&world), 1, "WorldReady must be emitted even when no layers are registered");
     }
