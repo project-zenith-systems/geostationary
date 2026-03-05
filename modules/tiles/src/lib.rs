@@ -226,9 +226,11 @@ impl MapLayer for TilesLayer {
         if width > i32::MAX as u32 || height > i32::MAX as u32 {
             return Err("tiles layer: map dimensions exceed i32 range".into());
         }
-        let _total_tiles = (width as usize)
+        let total_tiles = (width as usize)
             .checked_mul(height as usize)
             .ok_or("tiles layer: total tile count overflows usize")?;
+        // total_tiles is validated here; Tilemap::new allocates this many tiles internally.
+        let _ = total_tiles;
 
         let mut tilemap = Tilemap::new(width, height, TileKind::Floor);
 
@@ -318,7 +320,7 @@ impl MapLayer for TilesLayer {
                             std::collections::hash_map::Entry::Vacant(e) => {
                                 if next_key > u16::MAX as u32 {
                                     return Err(
-                                        "tiles layer: too many unique tile configurations (>65536)"
+                                        "tiles layer: too many unique tile configurations (limit: 65536)"
                                             .into(),
                                     );
                                 }
