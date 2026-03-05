@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::lifecycle::{WorldLoading, WorldReady};
-use crate::map_file::{MapFile, MapLayerRegistry};
+use crate::map_file::{CURRENT_MAP_VERSION, MapFile, MapLayerRegistry};
 
 /// Resource that specifies the path to the `.station.ron` map file to load on
 /// startup.
@@ -28,13 +28,15 @@ impl MapPath {
 /// 1. Reads [`MapPath`] to locate the map file on disk. If absent, logs a
 ///    warning and returns early — the app continues in an uninitialised state.
 /// 2. Reads and parses the RON map file into a [`MapFile`].
-/// 3. Writes [`WorldLoading`] so that systems observing the start of loading
+/// 3. Validates that `file.version <= CURRENT_MAP_VERSION`. If the file was
+///    written by a newer build (unknown version), loading is aborted to avoid
+///    silent misloads.
+/// 4. Writes [`WorldLoading`] so that systems observing the start of loading
 ///    can prepare their resources.
-/// 4. Removes [`MapLayerRegistry`] from the world, calls
-///    [`MapLayerRegistry::load_all`], and re-inserts the registry. Removing it
-///    first allows individual [`crate::MapLayer::load`] implementations to also
-///    borrow the world mutably without conflicting with the registry.
-/// 5. On success writes [`WorldReady`]; on failure logs the error.
+/// 5. Calls [`MapLayerRegistry::load_all`] via [`World::resource_scope`] so
+///    that [`crate::MapLayer::load`] implementations can borrow `&mut World`
+///    without conflicting with the registry borrow.
+/// 6. On success writes [`WorldReady`]; on failure logs the error.
 ///
 /// This system runs at [`Startup`] and is registered by [`crate::WorldPlugin`].
 pub fn load_map(world: &mut World) {
@@ -65,17 +67,20 @@ pub fn load_map(world: &mut World) {
         }
     };
 
+    if file.version > CURRENT_MAP_VERSION {
+        error!(
+            "WorldPlugin: map file {:?} has version {} which is newer than the \
+             supported version {}; refusing to load to avoid silent misloads",
+            map_path, file.version, CURRENT_MAP_VERSION
+        );
+        return;
+    }
+
     world.write_message(WorldLoading);
 
-    // Remove the registry temporarily so that MapLayer::load() implementations
-    // can receive &mut World without a conflicting borrow of MapLayerRegistry.
-    let registry = world
-        .remove_resource::<MapLayerRegistry>()
-        .expect("MapLayerRegistry must be present; add WorldPlugin before plugins that register layers");
-
-    let result = registry.load_all(&file, world);
-
-    world.insert_resource(registry);
+    let result = world.resource_scope(|world, registry: Mut<MapLayerRegistry>| {
+        registry.load_all(&file, world)
+    });
 
     match result {
         Ok(()) => {
@@ -88,5 +93,155 @@ pub fn load_map(world: &mut World) {
                 map_path, e
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use bevy::prelude::*;
+    use ron::value::RawValue;
+
+    use super::*;
+    use crate::map_file::{MapLayer, MapLayerRegistry, to_layer_value};
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    /// Counter used to generate unique temp file names so parallel tests do not
+    /// collide.
+    static FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Write `contents` to a unique temp file and return the path.
+    fn write_tmp(contents: &str) -> String {
+        let n = FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("loader_test_{}.station.ron", n));
+        std::fs::write(&path, contents).expect("write temp map file");
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Build a minimal [`World`] with the resources that [`load_map`] requires:
+    /// [`MapLayerRegistry`], [`Messages<WorldLoading>`], and
+    /// [`Messages<WorldReady>`].
+    fn make_world() -> World {
+        let mut world = World::new();
+        world.init_resource::<MapLayerRegistry>();
+        world.init_resource::<Messages<WorldLoading>>();
+        world.init_resource::<Messages<WorldReady>>();
+        world
+    }
+
+    /// Return the number of [`WorldReady`] messages that have been written to
+    /// `world` since it was created.
+    fn world_ready_count(world: &World) -> usize {
+        world.resource::<Messages<WorldReady>>().len()
+    }
+
+    // ---------------------------------------------------------------------------
+    // Stub MapLayer used in success-path tests.
+    // ---------------------------------------------------------------------------
+
+    /// Marker resource inserted by [`StubLayer::load`].
+    #[derive(Resource)]
+    struct StubLoaded;
+
+    struct StubLayer;
+
+    impl MapLayer for StubLayer {
+        fn key(&self) -> &'static str {
+            "stub"
+        }
+
+        fn save(
+            &self,
+            _world: &World,
+        ) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(to_layer_value(&())?)
+        }
+
+        fn load(
+            &self,
+            _data: &RawValue,
+            world: &mut World,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            world.insert_resource(StubLoaded);
+            Ok(())
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests
+    // ---------------------------------------------------------------------------
+
+    /// When no [`MapPath`] resource is present, [`load_map`] skips loading and
+    /// does not emit [`WorldReady`].
+    #[test]
+    fn load_map_skips_without_map_path() {
+        let mut world = make_world();
+        load_map(&mut world);
+        assert_eq!(world_ready_count(&world), 0);
+    }
+
+    /// When [`MapPath`] points at a non-existent file, [`load_map`] logs an
+    /// error and does not emit [`WorldReady`].
+    #[test]
+    fn load_map_errors_on_missing_file() {
+        let mut world = make_world();
+        world.insert_resource(MapPath::new("/nonexistent/path.station.ron"));
+        load_map(&mut world);
+        assert_eq!(world_ready_count(&world), 0);
+    }
+
+    /// When the map file contains invalid RON, [`load_map`] logs a parse error
+    /// and does not emit [`WorldReady`].
+    #[test]
+    fn load_map_errors_on_bad_ron() {
+        let path = write_tmp("not valid ron {{{{");
+        let mut world = make_world();
+        world.insert_resource(MapPath::new(path));
+        load_map(&mut world);
+        assert_eq!(world_ready_count(&world), 0);
+    }
+
+    /// When the map file declares a version newer than [`CURRENT_MAP_VERSION`],
+    /// [`load_map`] refuses to load it and does not emit [`WorldReady`].
+    #[test]
+    fn load_map_errors_on_unsupported_version() {
+        let path = write_tmp("(version: 9999, layers: {})");
+        let mut world = make_world();
+        world.insert_resource(MapPath::new(path));
+        load_map(&mut world);
+        assert_eq!(world_ready_count(&world), 0);
+    }
+
+    /// A valid map file with a registered layer causes the layer to be loaded
+    /// and [`WorldReady`] to be emitted.
+    #[test]
+    fn load_map_dispatches_registered_layer_and_emits_world_ready() {
+        let path = write_tmp("(version: 1, layers: { \"stub\": () })");
+        let mut world = make_world();
+        world
+            .get_resource_mut::<MapLayerRegistry>()
+            .unwrap()
+            .register(StubLayer);
+        world.insert_resource(MapPath::new(path));
+        load_map(&mut world);
+        assert_eq!(world_ready_count(&world), 1, "WorldReady must be emitted after successful load");
+        assert!(
+            world.contains_resource::<StubLoaded>(),
+            "registered layer must have been called"
+        );
+    }
+
+    /// A valid map file with no registered layers still emits [`WorldReady`].
+    #[test]
+    fn load_map_emits_world_ready_with_no_layers() {
+        let path = write_tmp("(version: 1, layers: {})");
+        let mut world = make_world();
+        world.insert_resource(MapPath::new(path));
+        load_map(&mut world);
+        assert_eq!(world_ready_count(&world), 1, "WorldReady must be emitted even when no layers are registered");
     }
 }
