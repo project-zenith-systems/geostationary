@@ -160,11 +160,10 @@ fn held_item(
     for child in children.iter() {
         if let Ok(container) = hand_container_q.get(child) {
             for slot in &container.slots {
-                if let Some(item_entity) = slot {
-                    if let Ok(&net_id) = net_id_q.get(*item_entity) {
+                if let Some(item_entity) = slot
+                    && let Ok(&net_id) = net_id_q.get(*item_entity) {
                         return Some(net_id);
                     }
-                }
             }
         }
     }
@@ -182,6 +181,7 @@ fn held_item(
 /// - `Tile(Floor)`, hand holding item → "Drop", "Build Wall"
 ///
 /// Gated on `in_state(S)` and `not(resource_exists::<Headless>)`.
+#[allow(clippy::too_many_arguments)]
 fn build_context_menu(
     mut commands: Commands,
     mut resolved_hits: MessageReader<ResolvedHit>,
@@ -265,8 +265,8 @@ fn build_context_menu(
             } else {
                 // Hand empty + container has items → "Take from {name}".
                 let first_item = container.slots.iter().find_map(|s| *s);
-                if let Some(item_entity) = first_item {
-                    if let Ok(&item_net_id) = net_id_q.get(item_entity) {
+                if let Some(item_entity) = first_item
+                    && let Ok(&item_net_id) = net_id_q.get(item_entity) {
                         let label = format!("Take from {name}");
                         let btn = build_button(&theme)
                             .with_text(&label)
@@ -277,7 +277,6 @@ fn build_context_menu(
                             .build(&mut commands);
                         buttons.push(btn);
                     }
-                }
             }
         }
     } else if let Ok(tile) = tile_query.get(hit.entity) {
@@ -296,8 +295,8 @@ fn build_context_menu(
                 buttons.push(btn);
             }
             TileKind::Floor => {
-                if let Some(held_net_id) = holding {
-                    if in_range {
+                if let Some(held_net_id) = holding
+                    && in_range {
                         let drop_btn = build_button(&theme)
                             .with_text("Drop")
                             .with_event(ContextMenuAction::ItemDrop {
@@ -307,7 +306,6 @@ fn build_context_menu(
                             .build(&mut commands);
                         buttons.push(drop_btn);
                     }
-                }
                 let wall_btn = build_button(&theme)
                     .with_text("Build Wall")
                     .with_event(ContextMenuAction::TileToggle {
@@ -401,12 +399,11 @@ fn dismiss_context_menu(
             .read()
             .any(|a| a.button == MouseButton::Left);
 
-    if dismiss {
-        if let Some(menu) = active_menu.as_deref() {
+    if dismiss
+        && let Some(menu) = active_menu.as_deref() {
             commands.entity(menu.0).despawn();
             commands.remove_resource::<ActiveMenu>();
         }
-    }
 }
 
 /// Client-side system that reads [`InteractionRequest`] messages and sends them to
@@ -441,6 +438,7 @@ fn send_interaction(
 ///   [`ItemTakeRequest`]).
 ///
 /// Runs in `Update`, gated on [`Server`] resource.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_interaction(
     mut reader: ResMut<StreamReader<InteractionRequest>>,
     mut tilemap: Option<ResMut<Tilemap>>,

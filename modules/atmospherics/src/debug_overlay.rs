@@ -329,11 +329,10 @@ pub fn update_overlay_on_tile_mutation(
     // If `shared_mesh` was cleared (the cached mesh was removed) but other quads
     // still exist, reseed it from any remaining entry in `quad_by_pos` so that the
     // spawn pass reuses an existing mesh rather than creating a new one.
-    if shared_mesh.is_none() {
-        if let Some((_, mesh_handle, _)) = quad_by_pos.values().next() {
+    if shared_mesh.is_none()
+        && let Some((_, mesh_handle, _)) = quad_by_pos.values().next() {
             shared_mesh = Some(mesh_handle.clone());
         }
-    }
 
     // Second pass: spawn quads for tiles that became walkable, now that all
     // mesh-removal decisions have been made and `shared_mesh` reflects the

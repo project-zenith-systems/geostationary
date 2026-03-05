@@ -50,7 +50,7 @@ impl Container {
     /// success, or `None` if the container is full or the entity is already
     /// present.
     pub fn insert(&mut self, entity: Entity) -> Option<usize> {
-        if self.slots.iter().any(|s| *s == Some(entity)) {
+        if self.slots.contains(&Some(entity)) {
             return None;
         }
         for (i, slot) in self.slots.iter_mut().enumerate() {
@@ -75,7 +75,7 @@ impl Container {
 
     /// Returns `true` if the container holds `entity`.
     pub fn contains(&self, entity: Entity) -> bool {
-        self.slots.iter().any(|s| *s == Some(entity))
+        self.slots.contains(&Some(entity))
     }
 }
 
@@ -233,7 +233,7 @@ fn init_hand_containers(mut commands: Commands, query: Query<Entity, Added<HandS
 ///
 /// The system is gated on [`Server`] so it only runs in server builds; on
 /// clients no request messages will be written and the resource is absent.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn handle_item_interaction(
     mut commands: Commands,
     interaction_range: Res<InteractionRange>,
@@ -602,13 +602,11 @@ fn find_hand_slot_with_space(
         return None;
     };
     for &child in actor_children {
-        if hand_slot_q.get(child).is_ok() {
-            if let Ok(container) = containers.get(child) {
-                if container.has_space() {
+        if hand_slot_q.get(child).is_ok()
+            && let Ok(container) = containers.get(child)
+                && container.has_space() {
                     return Some(child);
                 }
-            }
-        }
     }
     None
 }
@@ -626,13 +624,11 @@ fn find_hand_slot_containing(
         return None;
     };
     for &child in actor_children {
-        if hand_slot_q.get(child).is_ok() {
-            if let Ok(container) = containers.get(child) {
-                if container.contains(item) {
+        if hand_slot_q.get(child).is_ok()
+            && let Ok(container) = containers.get(child)
+                && container.contains(item) {
                     return Some(child);
                 }
-            }
-        }
     }
     None
 }
@@ -653,6 +649,7 @@ fn find_hand_slot_containing(
 ///   and tag the item with [`StoredInContainer`] for O(1) source-lookup on `Taken`.
 /// - **Taken**: show item, reparent to creature's hand, remove from the source
 ///   container (via [`StoredInContainer`]), update the hand's [`Container`] slot.
+#[allow(clippy::type_complexity)]
 fn handle_item_event(
     mut commands: Commands,
     mut pending: ResMut<PendingItemEvents>,
@@ -727,11 +724,10 @@ fn handle_item_event(
                     continue;
                 };
                 // Remove item from its hand container slot.
-                if let Some(child_of) = maybe_child_of {
-                    if let Ok(mut container) = containers.get_mut(child_of.parent()) {
+                if let Some(child_of) = maybe_child_of
+                    && let Ok(mut container) = containers.get_mut(child_of.parent()) {
                         container.remove(item_entity);
                     }
-                }
                 let drop_pos = Vec3::from_array(position);
                 let Some(stash) = maybe_stash.cloned() else {
                     warn!(
@@ -773,11 +769,10 @@ fn handle_item_event(
                     continue;
                 };
                 // Remove item from its current hand container if held.
-                if let Some(child_of) = maybe_child_of {
-                    if let Ok(mut hand_container) = containers.get_mut(child_of.parent()) {
+                if let Some(child_of) = maybe_child_of
+                    && let Ok(mut hand_container) = containers.get_mut(child_of.parent()) {
                         hand_container.remove(item_entity);
                     }
-                }
                 // Strip physics if still present (e.g. for items received during initial sync).
                 if let (Some(col), Some(grav)) = (maybe_collider, maybe_gravity) {
                     commands
@@ -836,11 +831,10 @@ fn handle_item_event(
                         .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
                 }
                 // Remove from the tracked source container (O(1) via StoredInContainer).
-                if let Some(&StoredInContainer(src_container)) = maybe_stored_in {
-                    if let Ok(mut container) = containers.get_mut(src_container) {
+                if let Some(&StoredInContainer(src_container)) = maybe_stored_in
+                    && let Ok(mut container) = containers.get_mut(src_container) {
                         container.remove(item_entity);
                     }
-                }
                 commands.entity(item_entity).remove::<StoredInContainer>().insert((
                     Visibility::Inherited,
                     Transform::IDENTITY,

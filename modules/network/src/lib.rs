@@ -500,6 +500,8 @@ where
     }
 }
 
+type ClientStreamBuf = HashMap<u8, Arc<Mutex<VecDeque<(ClientId, Bytes)>>>>;
+
 /// Registry of module streams.  Modules call [`StreamRegistry::register`]
 /// during their plugin's `build()` to declare the streams they own.
 /// The network plugin reads the registry when hosting starts to know which
@@ -514,7 +516,7 @@ pub struct StreamRegistry {
     /// Per-tag receive buffers for server→client frames, shared with [`StreamReader`] instances.
     per_stream_bufs: HashMap<u8, Arc<Mutex<VecDeque<Bytes>>>>,
     /// Per-tag receive buffers for client→server frames, shared with [`StreamReader`] instances.
-    per_client_stream_bufs: HashMap<u8, Arc<Mutex<VecDeque<(ClientId, Bytes)>>>>,
+    per_client_stream_bufs: ClientStreamBuf,
     /// Per-tag shared sender channels for client→server streams.
     /// Each `SharedClientStreamTx` is wired to the live client stream when a client connects
     /// and set to `None` on disconnect.

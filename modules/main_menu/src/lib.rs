@@ -102,6 +102,7 @@ fn handle_network_errors(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn menu_message_reader<S: FreelyMutableState + Copy>(
     mut commands: Commands,
     query: Query<Entity, With<MenuRoot>>,

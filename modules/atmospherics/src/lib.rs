@@ -75,7 +75,7 @@ pub fn initialize_gas_grid(
         for x in 0..tilemap.width() {
             let pos = IVec2::new(x as i32, y as i32);
             if tilemap.is_walkable(pos) {
-                let in_vacuum = vacuum_region.map_or(false, |(min, max)| {
+                let in_vacuum = vacuum_region.is_some_and(|(min, max)| {
                     pos.x >= min.x && pos.x <= max.x && pos.y >= min.y && pos.y <= max.y
                 });
                 if !in_vacuum {

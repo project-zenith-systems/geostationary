@@ -124,11 +124,10 @@ fn unbind_soul(
                 );
 
                 // Clear the creature's input so it stops moving.
-                if let Some(creature) = soul.bound_to {
-                    if let Ok(mut input_dir) = input_dirs.get_mut(creature) {
+                if let Some(creature) = soul.bound_to
+                    && let Ok(mut input_dir) = input_dirs.get_mut(creature) {
                         input_dir.0 = Vec3::ZERO;
                     }
-                }
 
                 commands.entity(soul_entity).despawn();
                 break;
@@ -147,11 +146,10 @@ fn route_input(
     for ClientInputReceived { from, direction } in events.read() {
         for soul in souls.iter() {
             if soul.client_id == *from {
-                if let Some(creature) = soul.bound_to {
-                    if let Ok(mut input_dir) = input_dirs.get_mut(creature) {
+                if let Some(creature) = soul.bound_to
+                    && let Ok(mut input_dir) = input_dirs.get_mut(creature) {
                         input_dir.0 = Vec3::from_array(*direction);
                     }
-                }
                 break;
             }
         }

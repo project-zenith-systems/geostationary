@@ -420,11 +420,10 @@ fn handle_entity_lifecycle(
                     continue;
                 }
                 for state in &states {
-                    if let Some(&entity) = net_id_index.0.get(&state.net_id) {
-                        if let Ok(mut transform) = entities.get_mut(entity) {
+                    if let Some(&entity) = net_id_index.0.get(&state.net_id)
+                        && let Ok(mut transform) = entities.get_mut(entity) {
                             transform.translation = Vec3::from_array(state.position);
                         }
-                    }
                 }
             }
         }
@@ -443,6 +442,7 @@ fn handle_entity_lifecycle(
 ///
 /// Creature spawning and the EntitySpawned broadcast for the new player entity are
 /// handled by the `souls` module's `bind_soul` system.
+#[allow(clippy::type_complexity)]
 fn handle_client_joined(
     mut messages: MessageReader<PlayerEvent>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
@@ -564,13 +564,12 @@ fn broadcast_state(
         })
         .collect();
 
-    if !states.is_empty() {
-        if let Err(e) =
+    if !states.is_empty()
+        && let Err(e) =
             stream_sender.broadcast(&ThingsStreamMessage::StateUpdate { entities: states })
         {
             error!("Failed to broadcast entity state on things stream: {e}");
         }
-    }
 }
 
 /// Listens for left-click and right-click [`PointerAction`] events, raycasts against entity
@@ -601,8 +600,8 @@ fn raycast_things(
             f32::MAX,
             true,
             &SpatialQueryFilter::default(),
-        ) {
-            if things.get(hit.entity).is_ok() {
+        )
+            && things.get(hit.entity).is_ok() {
                 let world_pos = ray.origin + *ray.direction * hit.distance;
                 hit_writer.write(WorldHit {
                     button: action.button,
@@ -610,7 +609,6 @@ fn raycast_things(
                     world_pos,
                 });
             }
-        }
     }
 }
 

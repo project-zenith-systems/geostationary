@@ -587,11 +587,10 @@ fn raycast_tiles(
         // Grid coordinates: world X → column, world Z → row.
         let grid_pos = IVec2::new(world_pos.x.round() as i32, world_pos.z.round() as i32);
 
-        if tilemap.get(grid_pos).is_some() {
-            if let Some((entity, _)) = tile_query.iter().find(|(_, t)| t.position == grid_pos) {
+        if tilemap.get(grid_pos).is_some()
+            && let Some((entity, _)) = tile_query.iter().find(|(_, t)| t.position == grid_pos) {
                 hit_events.write(WorldHit { button: action.button, entity, world_pos });
             }
-        }
     }
 }
 

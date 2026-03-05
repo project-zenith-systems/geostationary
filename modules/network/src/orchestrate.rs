@@ -110,11 +110,11 @@ fn handle_client_events<S: FreelyMutableState + Copy>(
             }
             ClientEvent::Disconnected { reason } => {
                 info!("Disconnected: {reason}");
-                next_state.set(states.disconnected.clone());
+                next_state.set(states.disconnected);
             }
             ClientEvent::Error(msg) => {
                 error!("Network error: {msg}");
-                next_state.set(states.disconnected.clone());
+                next_state.set(states.disconnected);
             }
             ClientEvent::StreamFrame { tag: _, data: _ } => {
                 // Intentionally unhandled here; stream frames are processed in the respective module systems.
@@ -155,7 +155,7 @@ fn handle_client_events<S: FreelyMutableState + Copy>(
                 ServerMessage::Shutdown => {
                     info!("Server is shutting down");
                     net_commands.write(NetCommand::Disconnect);
-                    next_state.set(states.disconnected.clone());
+                    next_state.set(states.disconnected);
                 }
             },
         }
@@ -173,7 +173,7 @@ fn try_enter_in_game<S: FreelyMutableState + Copy>(
 ) {
     if sync.is_complete() && *state.get() != states.in_game {
         info!("Initial sync complete, entering InGame");
-        next_state.set(states.in_game.clone());
+        next_state.set(states.in_game);
     }
 }
 
