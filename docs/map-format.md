@@ -28,16 +28,29 @@ modules handle their own layers via the `MapLayer` trait.
 #[derive(Serialize, Deserialize)]
 pub struct MapFile {
     pub version: u32,
-    pub layers: BTreeMap<String, ron::Value>,
+    pub layers: BTreeMap<String, Box<ron::value::RawValue>>,
 }
 ```
 
-The `layers` map stores raw `ron::Value` blobs keyed by layer name. On load,
-the world module iterates the map, finds the registered `MapLayer` for each
-key, and calls `load()` with the blob. **Unrecognized layers are kept as raw
-values** — re-saving preserves them, so a map authored with a newer version
-(that has `"structures"` or `"wiring"` layers) doesn't lose data when loaded
-by an older build.
+The `layers` map stores raw `RawValue` blobs keyed by layer name. `RawValue`
+holds the verbatim RON bytes for each layer. Deserializing a `MapFile` and
+re-serializing **that same `MapFile` struct** preserves all layer entries
+exactly — including layers whose keys are not registered with any `MapLayer`
+implementation. This ensures an older build can load a newer file, leave
+unknown layers untouched in the `MapFile`, and write the file back out without
+data loss.
+
+> **Note:** [`MapLayerRegistry::save_all`] constructs a **new** `MapFile`
+> containing only the layers it knows about. Callers that need to preserve
+> unknown layers must start from an existing `MapFile` and merge updated
+> entries into its `layers` map rather than discarding it.
+
+> **Why `RawValue` and not `ron::Value`?** Spike 1 (Q1) found that
+> `ron::Value` is a lossy representation for layer data: unit enum variant
+> identifiers (e.g., `floor`, `Wall`) are parsed to `Value::Unit` with the
+> variant name discarded. This makes second-pass deserialization of types
+> like `TileKind` impossible via `into_rust`. `RawValue` stores the raw RON
+> bytes verbatim and is therefore lossless for all types.
 
 ## MapLayer trait
 
@@ -50,18 +63,24 @@ pub trait MapLayer: Send + Sync + 'static {
     /// Unique key for this layer in the file (e.g., "tiles", "spawns")
     fn key(&self) -> &'static str;
 
-    /// Serialize this module's world state into a RON value for saving
-    fn save(&self, world: &World) -> ron::Value;
+    /// Serialize this module's world state into a raw RON value for saving.
+    /// Use `world::to_layer_value(&data)?` as a helper.
+    fn save(&self, world: &World) -> Result<Box<ron::value::RawValue>, Box<dyn std::error::Error + Send + Sync>>;
 
-    /// Deserialize a RON value and apply it to the world on load
-    fn load(&self, data: &ron::Value, world: &mut World) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    /// Deserialize a raw RON value and apply it to the world on load.
+    /// Use `world::from_layer_value::<T>(data)?` as a helper.
+    fn load(&self, data: &ron::value::RawValue, world: &mut World) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 ```
 
-> **Note:** The exact trait signature — particularly what context `load()`
-> and `save()` receive — is subject to the MapLayer spike. `load()` may
-> need read access to resources (e.g., `ThingRegistry` for resolving
-> template names). `save()` needs read access to the live world state.
+Spike 1 findings:
+
+- `load()` receives `&mut World`. This gives full access to resources
+  (e.g., `ThingRegistry`) and allows inserting new resources (e.g.,
+  `Tilemap`) without a `Commands` buffer or extra flush.
+- `save()` receives `&World`. The same implementation works for both the
+  running server and the editor — the layer reads whatever live state the
+  world contains.
 
 Registration:
 

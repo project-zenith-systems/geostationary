@@ -140,27 +140,63 @@ a spawn marker entity. Right-click deletes markers.
 **Save/Load:** Save queries the live world via registered `MapLayer::save()`
 implementations, collects all layers into a `MapFile`, and writes RON. Load
 reads a `MapFile`, clears the editor world, and calls `MapLayer::load()` for
-each layer. Unknown layers round-trip through the raw `ron::Value` store.
+each layer. Unknown layers round-trip through the raw `RawValue` store.
 
 ### Dependencies
 
-The `world` module requires `ron` as a direct dependency for `ron::Value`.
+The `world` module requires `ron` as a direct dependency for `RawValue`.
 Currently `ron` enters the workspace via the `config` crate — it should be
 added as an explicit workspace dependency.
 
 ## Spike 1: MapLayer trait and ron::Value dispatch (30 min)
 
-1. Can `ron::Value` be deserialized into a concrete type in a second pass?
-   (Parse `MapFile` with `BTreeMap<String, ron::Value>`, then deserialize
-   individual values into `TilesLayerData` or `Vec<SpawnPoint>`.)
-2. Does `ron::Value` round-trip with fidelity for unknown layers?
-3. What context does `MapLayer::load()` need — `&mut Commands`, `&mut World`,
-   or something else? Does it need read access to resources like
-   `ThingRegistry`?
-4. Can the same `MapLayer::save()` path work for both the running server and
-   the editor, or do they need separate serialization logic?
-5. Is atmosphere best kept in `TileDef` (benefits from key deduplication) or
-   as a separate overlay grid layer owned by the atmos module?
+**Status: Complete.** Answers are embedded in `modules/world/src/map_file.rs`
+as test assertions (regression tests).
+
+1. **Can `ron::Value` be deserialized into a concrete type in a second pass?**
+   **Partially — and not the right tool.** `ron::Value` is a lossy
+   representation: unit enum variant identifiers (e.g., `floor`, `Wall`) are
+   parsed to `Value::Unit` with the variant name discarded. Attempting
+   `into_rust::<TileKind>()` on a `Value::Unit` fails with
+   `InvalidValueForType`. **Fix:** use `ron::value::RawValue` (raw RON bytes)
+   for layer storage. `RawValue::into_rust::<T>()` correctly reconstructs any
+   type including those with unit enum variants. `MapFile.layers` is now
+   `BTreeMap<String, Box<ron::value::RawValue>>`. See
+   `spike_q1_raw_value_to_concrete_type_second_pass` and
+   `spike_q1_ron_value_loses_unit_enum_variant_name`.
+
+2. **Does `ron::Value` round-trip with fidelity for unknown layers?**
+   `Box<ron::value::RawValue>` round-trips with **exact** syntactic fidelity
+   — the raw RON bytes are stored and re-emitted unchanged. Unknown layers
+   survive save/load cycles unmodified. See `spike_q2_unknown_layer_round_trips`.
+
+3. **What context does `MapLayer::load()` need?**
+   `&mut World` is sufficient. It allows reading any existing resource (e.g.,
+   `ThingRegistry`) and inserting new ones (e.g., `Tilemap`) without
+   intermediate buffering. `Commands` would require an extra `world.flush()`
+   and adds no benefit at load time because simulation hasn't started.
+   See `spike_q3_load_receives_mut_world_with_resource_access`.
+
+4. **Can the same `MapLayer::save()` path work for both server and editor?**
+   **Yes.** `save(&self, world: &World)` reads whatever live state the world
+   holds. The server and editor both use the same Bevy `World` — the layer
+   implementation is identical in both contexts, only the entity contents
+   differ. See `spike_q4_same_save_path_for_server_and_editor`.
+
+5. **Is atmosphere best kept in `TileDef` or as a separate overlay grid?**
+   **Keep in `TileDef`.** Key-dictionary deduplication stores only unique
+   tile configurations — a 32×32 map with Wall / Pressurised floor / Vacuum
+   floor encodes exactly three dictionary entries. A separate overlay grid
+   would add an entry per tile, growing the file and duplicating chunk
+   infrastructure. Atmosphere is also always co-read with tile kind at load
+   time, so there is no benefit to separating it at this scale. See
+   `spike_q5_atmosphere_in_tile_def_serde_default`.
+
+**Plan impact:** `MapFile.layers` type changes from
+`BTreeMap<String, ron::Value>` to `BTreeMap<String, Box<ron::value::RawValue>>`.
+`MapLayer::save()` returns `Box<RawValue>`; `MapLayer::load()` receives
+`&RawValue`. `docs/map-format.md` updated accordingly. All other plan
+decisions remain valid.
 
 ## Spike 2: Editor app state and camera (30 min)
 
