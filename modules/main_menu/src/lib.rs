@@ -16,11 +16,13 @@ pub struct MainMenuConfig {
 
 pub struct MainMenuPlugin<S: FreelyMutableState + Copy> {
     pub state: S,
+    pub editor_state: S,
 }
 
 impl<S: FreelyMutableState + Copy> Plugin for MainMenuPlugin<S> {
     fn build(&self, app: &mut App) {
         app.insert_resource(MainMenuActiveState(self.state));
+        app.insert_resource(MainMenuEditorState(self.editor_state));
         app.add_message::<MenuEvent>();
         app.add_systems(OnEnter(self.state), (menu_setup::<S>, menu_init));
         app.add_systems(
@@ -36,6 +38,9 @@ impl<S: FreelyMutableState + Copy> Plugin for MainMenuPlugin<S> {
 
 #[derive(Resource, Clone, Copy)]
 struct MainMenuActiveState<S: States>(S);
+
+#[derive(Resource, Clone, Copy)]
+struct MainMenuEditorState<S: States>(S);
 
 #[derive(Message, Clone, Debug)]
 pub enum MenuEvent {
@@ -99,7 +104,7 @@ fn handle_network_errors(
     }
 }
 
-fn menu_message_reader<S: States + Copy>(
+fn menu_message_reader<S: FreelyMutableState + Copy>(
     mut commands: Commands,
     query: Query<Entity, With<MenuRoot>>,
     theme: Res<UiTheme>,
@@ -107,7 +112,8 @@ fn menu_message_reader<S: States + Copy>(
     mut messages: MessageReader<MenuEvent>,
     mut exit: MessageWriter<AppExit>,
     mut net_commands: MessageWriter<NetCommand>,
-    mut next_state: ResMut<NextState<AppState>>,
+    mut next_state: ResMut<NextState<S>>,
+    editor_state: Res<MainMenuEditorState<S>>,
 ) {
     let Ok(menu_root_entity) = query.single() else {
         return;
@@ -142,7 +148,7 @@ fn menu_message_reader<S: States + Copy>(
                 ))
             }
             MenuEvent::Editor => {
-                next_state.set(AppState::Editor);
+                next_state.set(editor_state.0);
                 MenuEventResult::CloseMenu
             }
             MenuEvent::Quit => {

@@ -33,7 +33,7 @@ fn main() {
         port: app_config.network.port,
         player_name: app_config.souls.player_name.clone(),
     })
-    .add_plugins(MainMenuPlugin { state: AppState::MainMenu })
+    .add_plugins(MainMenuPlugin { state: AppState::MainMenu, editor_state: AppState::Editor })
     .add_plugins(NetworkPlugin {
         in_game: AppState::InGame,
         disconnected: AppState::MainMenu,
