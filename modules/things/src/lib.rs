@@ -11,6 +11,7 @@ use network::{
 use physics::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
 use serde::{Deserialize, Serialize};
 use wincode::{SchemaRead, SchemaWrite};
+use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 
 /// System set for the things module's server-side lifecycle systems.
 /// Other modules can use this for explicit ordering relative to things systems.
@@ -83,6 +84,29 @@ pub struct DisplayName(pub String);
 #[reflect(Component)]
 pub struct InputDirection(pub Vec3);
 
+/// Marker component placed on every entity that was spawned by the `"spawns"`
+/// map layer. Used by [`SpawnsLayer::save`] to identify which entities should
+/// be written back out as spawn points.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct SpawnMarker;
+
+/// One entry in the `"spawns"` map layer.
+///
+/// Template names keep the file stable across registry-order changes.
+/// The `contents` field is reserved for containers that are pre-loaded with
+/// item templates at map load time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpawnPoint {
+    pub position: [f32; 3],
+    /// Name of the [`ThingRegistry`] template (registered via
+    /// [`ThingRegistry::register_named`]).
+    pub template: String,
+    /// Optional pre-loaded contents for container entities.
+    #[serde(default)]
+    pub contents: Vec<String>,
+}
+
 /// Entity event to construct the visual and physical representation of a thing.
 /// The observer adds base components (mesh, physics, Thing marker) then runs
 /// the template registered for the given `kind` via [`ThingRegistry`].
@@ -97,18 +121,175 @@ pub type ThingBuilder = Box<dyn Fn(Entity, &SpawnThing, &mut Commands) + Send + 
 
 /// Registry mapping `kind` values to template callbacks that insert
 /// type-specific components on a spawned entity.
+///
+/// Templates may also be registered with a string name via
+/// [`register_named`](ThingRegistry::register_named) to support name-based
+/// lookup in the `"spawns"` map layer.
 #[derive(Resource, Default)]
 pub struct ThingRegistry {
     templates: HashMap<u16, ThingBuilder>,
+    name_to_kind: HashMap<String, u16>,
+    kind_to_name: HashMap<u16, String>,
 }
 
 impl ThingRegistry {
+    /// Register a template builder for a numeric kind without a name.
+    ///
+    /// Use [`register_named`](Self::register_named) instead when the template
+    /// should be reachable by name from a map file.
     pub fn register(
         &mut self,
         kind: u16,
         builder: impl Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync + 'static,
     ) {
         self.templates.insert(kind, Box::new(builder));
+    }
+
+    /// Register a named template builder.
+    ///
+    /// The `name` is used as the `template` field in [`SpawnPoint`] entries in
+    /// the `"spawns"` map layer. A template must be registered with a name
+    /// before [`SpawnsLayer::save`] can serialize it, and `load` will return
+    /// an error for any spawn point whose template name has not been registered.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is already registered for a different `kind`, or if
+    /// `kind` already has a different name registered. Duplicate registrations
+    /// with the exact same `name` and `kind` are idempotent and do not panic.
+    pub fn register_named(
+        &mut self,
+        name: impl Into<String>,
+        kind: u16,
+        builder: impl Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync + 'static,
+    ) {
+        let name = name.into();
+        if let Some(&existing_kind) = self.name_to_kind.get(&name) {
+            assert_eq!(
+                existing_kind, kind,
+                "template name \"{name}\" is already registered for kind {existing_kind}, \
+                 cannot re-register for kind {kind}"
+            );
+            return;
+        }
+        if let Some(existing_name) = self.kind_to_name.get(&kind) {
+            assert_eq!(
+                existing_name, &name,
+                "kind {kind} is already registered under name \"{existing_name}\", \
+                 cannot re-register under name \"{name}\""
+            );
+            return;
+        }
+        self.name_to_kind.insert(name.clone(), kind);
+        self.kind_to_name.insert(kind, name);
+        self.register(kind, builder);
+    }
+
+    /// Look up the kind number for a template name, or `None` if unregistered.
+    pub fn kind_by_name(&self, name: &str) -> Option<u16> {
+        self.name_to_kind.get(name).copied()
+    }
+
+    /// Look up the template name for a kind number, or `None` if the kind has
+    /// no registered name.
+    pub fn name_by_kind(&self, kind: u16) -> Option<&str> {
+        self.kind_to_name.get(&kind).map(String::as_str)
+    }
+}
+
+/// `MapLayer` implementation for the `"spawns"` layer.
+///
+/// **Load:** deserializes a list of [`SpawnPoint`]s and, for each one, spawns
+/// an entity with [`SpawnMarker`] and triggers [`SpawnThing`] using the kind
+/// looked up via the template name in [`ThingRegistry`].
+///
+/// **Save:** queries all entities that carry [`SpawnMarker`] + [`Thing`] +
+/// [`Transform`], converts each to a [`SpawnPoint`], and serializes the list.
+pub struct SpawnsLayer;
+
+impl MapLayer for SpawnsLayer {
+    fn key(&self) -> &'static str {
+        "spawns"
+    }
+
+    fn save(
+        &self,
+        world: &World,
+    ) -> Result<Box<ron::value::RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+        let (Some(spawn_marker_id), Some(thing_id), Some(transform_id)) = (
+            world.component_id::<SpawnMarker>(),
+            world.component_id::<Thing>(),
+            world.component_id::<Transform>(),
+        ) else {
+            // No spawn-marker entities exist yet (components not registered).
+            return to_layer_value(&Vec::<SpawnPoint>::new()).map_err(Into::into);
+        };
+
+        let registry = world.resource::<ThingRegistry>();
+        let mut spawn_points = Vec::new();
+
+        for archetype in world.archetypes().iter() {
+            if !archetype.contains(spawn_marker_id)
+                || !archetype.contains(thing_id)
+                || !archetype.contains(transform_id)
+            {
+                continue;
+            }
+
+            for archetype_entity in archetype.entities() {
+                let entity = archetype_entity.id();
+                let Ok(entity_ref) = world.get_entity(entity) else {
+                    continue;
+                };
+                let transform = entity_ref
+                    .get::<Transform>()
+                    .expect("archetype guarantees Transform");
+                let thing = entity_ref
+                    .get::<Thing>()
+                    .expect("archetype guarantees Thing");
+                let Some(name) = registry.name_by_kind(thing.kind) else {
+                    warn!(
+                        "SpawnMarker entity {:?} has kind {} with no registered name; \
+                         skipping during save",
+                        entity, thing.kind
+                    );
+                    continue;
+                };
+                // TODO: persist original SpawnPoint.contents through load→save round-trip
+                // once container pre-loading is implemented.
+                spawn_points.push(SpawnPoint {
+                    position: transform.translation.to_array(),
+                    template: name.to_owned(),
+                    contents: vec![],
+                });
+            }
+        }
+
+        to_layer_value(&spawn_points).map_err(Into::into)
+    }
+
+    fn load(
+        &self,
+        data: &ron::value::RawValue,
+        world: &mut World,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let spawn_points: Vec<SpawnPoint> = from_layer_value(data)?;
+        for sp in spawn_points {
+            let kind = {
+                let registry = world.resource::<ThingRegistry>();
+                registry
+                    .kind_by_name(&sp.template)
+                    .ok_or_else(|| format!("unknown spawn template: \"{}\"", sp.template))?
+            };
+            let position = Vec3::from_array(sp.position);
+            let entity = world.spawn(SpawnMarker).id();
+            world.trigger(SpawnThing {
+                entity,
+                kind,
+                position,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -228,11 +409,13 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
         app.register_type::<PlayerControlled>();
         app.register_type::<InputDirection>();
         app.register_type::<DisplayName>();
+        app.register_type::<SpawnMarker>();
         app.init_resource::<ThingRegistry>();
         app.init_resource::<NetIdIndex>();
         app.init_resource::<StateBroadcastTimer>();
         app.insert_resource(ThingsActiveState(state));
         app.add_observer(on_spawn_thing);
+        app.register_map_layer(SpawnsLayer);
         app.add_observer(on_net_id_added::<S>);
         app.add_systems(OnExit(state), clear_net_id_index);
 
@@ -420,10 +603,11 @@ fn handle_entity_lifecycle(
                     continue;
                 }
                 for state in &states {
-                    if let Some(&entity) = net_id_index.0.get(&state.net_id)
-                        && let Ok(mut transform) = entities.get_mut(entity) {
+                    if let Some(&entity) = net_id_index.0.get(&state.net_id) {
+                        if let Ok(mut transform) = entities.get_mut(entity) {
                             transform.translation = Vec3::from_array(state.position);
                         }
+                    }
                 }
             }
         }
@@ -442,7 +626,6 @@ fn handle_entity_lifecycle(
 ///
 /// Creature spawning and the EntitySpawned broadcast for the new player entity are
 /// handled by the `souls` module's `bind_soul` system.
-#[allow(clippy::type_complexity)]
 fn handle_client_joined(
     mut messages: MessageReader<PlayerEvent>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
@@ -564,12 +747,13 @@ fn broadcast_state(
         })
         .collect();
 
-    if !states.is_empty()
-        && let Err(e) =
+    if !states.is_empty() {
+        if let Err(e) =
             stream_sender.broadcast(&ThingsStreamMessage::StateUpdate { entities: states })
         {
             error!("Failed to broadcast entity state on things stream: {e}");
         }
+    }
 }
 
 /// Listens for left-click and right-click [`PointerAction`] events, raycasts against entity
@@ -600,8 +784,8 @@ fn raycast_things(
             f32::MAX,
             true,
             &SpatialQueryFilter::default(),
-        )
-            && things.get(hit.entity).is_ok() {
+        ) {
+            if things.get(hit.entity).is_ok() {
                 let world_pos = ray.origin + *ray.direction * hit.distance;
                 hit_writer.write(WorldHit {
                     button: action.button,
@@ -609,6 +793,7 @@ fn raycast_things(
                     world_pos,
                 });
             }
+        }
     }
 }
 
@@ -664,6 +849,119 @@ mod tests {
             slot.side,
             HandSide::Right,
             "HandSlot side should be Right"
+        );
+    }
+
+    /// Verifies that SpawnsLayer::load deserializes spawn points and triggers
+    /// SpawnThing for each, producing entities with SpawnMarker + Thing +
+    /// Transform at the correct positions.
+    #[test]
+    fn spawns_layer_load_spawns_entities_at_correct_positions() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ThingRegistry>();
+        app.add_observer(on_spawn_thing);
+
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register_named("crate", 1, |_entity, _event, _commands| {});
+
+        let data = world::to_layer_value(&vec![
+            SpawnPoint {
+                position: [1.0, 0.0, 2.0],
+                template: "crate".to_owned(),
+                contents: vec![],
+            },
+            SpawnPoint {
+                position: [3.0, 0.0, 4.0],
+                template: "crate".to_owned(),
+                contents: vec![],
+            },
+        ])
+        .expect("to_layer_value");
+
+        SpawnsLayer
+            .load(&data, app.world_mut())
+            .expect("SpawnsLayer::load");
+
+        app.update();
+
+        let mut positions: Vec<[f32; 3]> = {
+            let world = app.world();
+            let Some(spawn_marker_id) = world.component_id::<SpawnMarker>() else {
+                panic!("SpawnMarker component not registered");
+            };
+            world
+                .archetypes()
+                .iter()
+                .filter(|a| a.contains(spawn_marker_id))
+                .flat_map(|a| a.entities())
+                .filter_map(|ae| {
+                    world
+                        .get_entity(ae.id())
+                        .ok()?
+                        .get::<Transform>()
+                        .map(|t| t.translation.to_array())
+                })
+                .collect()
+        };
+        positions.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+
+        assert_eq!(positions.len(), 2, "expected 2 spawned entities");
+        assert_eq!(positions[0], [1.0, 0.0, 2.0]);
+        assert_eq!(positions[1], [3.0, 0.0, 4.0]);
+    }
+
+    /// Verifies that SpawnsLayer::save serializes all SpawnMarker entities back
+    /// to the correct SpawnPoint list and that the round-trip is lossless.
+    #[test]
+    fn spawns_layer_save_round_trips() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ThingRegistry>();
+        app.add_observer(on_spawn_thing);
+
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register_named("barrel", 2, |_entity, _event, _commands| {});
+
+        // Manually place a spawn-marker entity (simulating what load() does).
+        app.world_mut().spawn((
+            SpawnMarker,
+            Transform::from_translation(Vec3::new(5.0, 0.0, 7.0)),
+            Thing { kind: 2 },
+        ));
+
+        let raw = SpawnsLayer.save(app.world()).expect("SpawnsLayer::save");
+        let loaded: Vec<SpawnPoint> =
+            world::from_layer_value(&raw).expect("round-trip deserialize");
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].template, "barrel");
+        assert_eq!(loaded[0].position, [5.0, 0.0, 7.0]);
+        assert!(loaded[0].contents.is_empty());
+    }
+
+    /// Verifies that SpawnsLayer::load returns an error for an unregistered
+    /// template name rather than silently ignoring or panicking.
+    #[test]
+    fn spawns_layer_load_errors_on_unknown_template() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ThingRegistry>();
+        app.add_observer(on_spawn_thing);
+
+        let data = world::to_layer_value(&vec![SpawnPoint {
+            position: [0.0, 0.0, 0.0],
+            template: "no_such_thing".to_owned(),
+            contents: vec![],
+        }])
+        .expect("to_layer_value");
+
+        let result = SpawnsLayer.load(&data, app.world_mut());
+        assert!(
+            result.is_err(),
+            "load should return Err for an unknown template"
         );
     }
 

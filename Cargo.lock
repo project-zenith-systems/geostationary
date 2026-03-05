@@ -5745,8 +5745,10 @@ dependencies = [
  "input",
  "network",
  "physics",
+ "ron",
  "serde",
  "wincode",
+ "world",
 ]
 
 [[package]]
