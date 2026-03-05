@@ -217,6 +217,19 @@ impl MapLayer for TilesLayer {
             .and_then(|v| v.checked_mul(chunk_size))
             .ok_or("tiles layer: map dimensions overflow u32")?;
 
+        // Validate that chunk_size, width, and height are within the ranges expected
+        // by Tilemap and the subsequent i32 casts, and that the total tile count
+        // fits in usize to avoid overflows and incorrect allocations.
+        if chunk_size > i32::MAX as u32 {
+            return Err("tiles layer: chunk_size exceeds i32 range".into());
+        }
+        if width > i32::MAX as u32 || height > i32::MAX as u32 {
+            return Err("tiles layer: map dimensions exceed i32 range".into());
+        }
+        let _total_tiles = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or("tiles layer: total tile count overflows usize")?;
+
         let mut tilemap = Tilemap::new(width, height, TileKind::Floor);
 
         // Decode each chunk and write directly into the tilemap.
@@ -270,13 +283,21 @@ impl MapLayer for TilesLayer {
             .ok_or("tiles layer: Tilemap resource not found")?;
 
         let chunk_size = SAVE_CHUNK_SIZE;
+
+        // Tilemap coordinates are i32; reject maps too wide/tall to address safely.
+        if tilemap.width() > i32::MAX as u32 || tilemap.height() > i32::MAX as u32 {
+            return Err("tiles layer: map dimensions exceed i32 range and cannot be saved".into());
+        }
+
         let num_chunks_x = tilemap.width().div_ceil(chunk_size);
         let num_chunks_y = tilemap.height().div_ceil(chunk_size);
         let tiles_per_chunk = chunk_size as usize * chunk_size as usize;
 
         let mut key_dict: BTreeMap<u16, TileDef> = BTreeMap::new();
         let mut def_to_key: HashMap<TileDef, u16> = HashMap::new();
-        let mut next_key: u16 = 0;
+        // Use u32 so we can represent values 0..=65536 without wrapping,
+        // allowing all 65536 valid u16 keys (0..=65535) to be assigned.
+        let mut next_key: u32 = 0;
         let mut chunks: BTreeMap<(i32, i32), String> = BTreeMap::new();
 
         // Single pass: assign keys on first occurrence and encode each chunk in one loop.
@@ -295,10 +316,14 @@ impl MapLayer for TilesLayer {
                         let key = match def_to_key.entry(def.clone()) {
                             std::collections::hash_map::Entry::Occupied(e) => *e.get(),
                             std::collections::hash_map::Entry::Vacant(e) => {
-                                let k = next_key;
-                                next_key = next_key.checked_add(1).ok_or(
-                                    "tiles layer: too many unique tile configurations (>65535)",
-                                )?;
+                                if next_key > u16::MAX as u32 {
+                                    return Err(
+                                        "tiles layer: too many unique tile configurations (>65536)"
+                                            .into(),
+                                    );
+                                }
+                                let k = next_key as u16;
+                                next_key += 1;
                                 key_dict.insert(k, def);
                                 *e.insert(k)
                             }
