@@ -14,5 +14,4 @@ tiles = { path = "../../modules/tiles" }
 things = { path = "../../modules/things" }
 atmospherics = { path = "../../modules/atmospherics" }
 creatures = { path = "../../modules/creatures" }
-souls = { path = "../../modules/souls" }
 items = { path = "../../modules/items" }

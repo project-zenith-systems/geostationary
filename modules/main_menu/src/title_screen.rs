@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use ui::{UiTheme, build_button};
 
-use super::MenuEvent;
+use crate::MenuEvent;
 
 pub fn spawn(commands: &mut Commands, theme: &UiTheme) -> Vec<Entity> {
     let title = commands

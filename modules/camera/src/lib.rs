@@ -50,7 +50,7 @@ impl<S: States + Copy> Plugin for CameraPlugin<S> {
     }
 }
 
-/// Spawns the 3D follow camera when entering the active state.
+/// Spawns the 3D follow camera and directional lighting when entering the active state.
 fn spawn_camera<S: States + Copy>(mut commands: Commands, active_state: Res<CameraActiveState<S>>) {
     // Start camera at default position (will move to player in first frame)
     let camera_pos = Vec3::new(6.0, 10.0, 10.0);
@@ -65,6 +65,16 @@ fn spawn_camera<S: States + Copy>(mut commands: Commands, active_state: Res<Came
             affects_lightmapped_meshes: true,
         },
         FollowCamera,
+        DespawnOnExit(active_state.0),
+    ));
+
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 10000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::new(4.0, 0.0, 4.0), Vec3::Y),
         DespawnOnExit(active_state.0),
     ));
 }
