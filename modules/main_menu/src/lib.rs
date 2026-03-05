@@ -1,5 +1,5 @@
 use bevy::{app::AppExit, prelude::*, state::state::FreelyMutableState, state::state_scoped::DespawnOnExit};
-use network::{ClientEvent, NetCommand, NetworkSet, ServerEvent};
+use network::{ClientEvent, NetCommand, NetworkReceive, ServerEvent};
 use ui::*;
 
 mod loading_screen;
@@ -26,11 +26,9 @@ impl<S: FreelyMutableState + Copy> Plugin for MainMenuPlugin<S> {
         app.add_message::<MenuEvent>();
         app.add_systems(OnEnter(self.state), (menu_setup::<S>, menu_init));
         app.add_systems(
-            PreUpdate,
+            NetworkReceive,
             (handle_network_errors, menu_message_reader::<S>)
                 .chain()
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send)
                 .run_if(in_state(self.state)),
         );
     }

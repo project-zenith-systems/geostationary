@@ -10,9 +10,9 @@ use bevy::prelude::*;
 use bevy::state::state::FreelyMutableState;
 
 use crate::{
-    Client, ClientEvent, ClientId, ClientInputReceived, ClientMessage,
-    ModuleReadySent, NetCommand, NetServerSender, NetworkSet, PlayerEvent, Server, ServerEvent,
-    ServerMessage, StreamRegistry,
+    Client, ClientEvent, ClientId, ClientInputReceived, ClientMessage, ModuleReadySent, NetCommand,
+    NetServerSender, NetworkReceive, PlayerEvent, Server, ServerEvent, ServerMessage,
+    StreamRegistry,
 };
 
 /// Tracks the initial-sync barrier for the client.
@@ -67,18 +67,12 @@ pub(crate) fn register_orchestrate_systems<S: FreelyMutableState + Copy>(
     app.init_resource::<PendingSync>();
     app.init_resource::<ClientInitSyncState>();
     app.add_systems(
-        PreUpdate,
-        handle_client_events::<S>
-            .run_if(resource_exists::<Client>)
-            .after(NetworkSet::Receive)
-            .before(NetworkSet::Send),
+        NetworkReceive,
+        handle_client_events::<S>.run_if(resource_exists::<Client>),
     );
     app.add_systems(
-        PreUpdate,
-        handle_server_events
-            .run_if(resource_exists::<Server>)
-            .after(NetworkSet::Receive)
-            .before(NetworkSet::Send),
+        NetworkReceive,
+        handle_server_events.run_if(resource_exists::<Server>),
     );
     app.add_systems(
         Update,

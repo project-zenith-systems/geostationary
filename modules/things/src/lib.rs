@@ -5,8 +5,8 @@ use bevy::state::state_scoped::DespawnOnExit;
 use input::{PointerAction, WorldHit};
 use network::{
     Client, ClientId, ControlledByClient, EntityState, Headless, ModuleReadySent, NetId,
-    NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader, StreamRegistry,
-    StreamSender, NETWORK_UPDATE_INTERVAL,
+    NetworkReceive, NetworkSend, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader,
+    StreamRegistry, StreamSender, NETWORK_UPDATE_INTERVAL,
 };
 use physics::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
 use serde::{Deserialize, Serialize};
@@ -251,29 +251,23 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
 
         let state = self.state;
         app.configure_sets(
-            PreUpdate,
-            ThingsSet::SendStreamReady
-                .after(ThingsSet::HandleClientJoined)
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
+            NetworkReceive,
+            ThingsSet::SendStreamReady.after(ThingsSet::HandleClientJoined),
         );
         app.add_systems(
-            PreUpdate,
+            NetworkReceive,
             (
-                handle_entity_lifecycle
-                    .run_if(resource_exists::<Client>),
+                handle_entity_lifecycle.run_if(resource_exists::<Client>),
                 handle_client_joined
                     .run_if(resource_exists::<Server>)
                     .in_set(ThingsSet::HandleClientJoined),
                 send_stream_ready_on_join
                     .run_if(resource_exists::<Server>)
                     .in_set(ThingsSet::SendStreamReady),
-            )
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
+            ),
         );
         app.add_systems(
-            Update,
+            NetworkSend,
             broadcast_state.run_if(resource_exists::<Server>),
         );
 

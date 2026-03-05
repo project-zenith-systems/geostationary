@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use input::{PointerAction, WorldHit};
 use network::{
-    ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
+    ClientId, Headless, ModuleReadySent, NetworkReceive, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{Collider, RigidBody};
@@ -269,24 +269,17 @@ impl Plugin for TilesPlugin {
         }
 
         app.add_systems(
-            PreUpdate,
-            handle_tiles_stream
-                .run_if(not(resource_exists::<Server>))
-                .after(NetworkSet::Receive),
+            NetworkReceive,
+            handle_tiles_stream.run_if(not(resource_exists::<Server>)),
         );
-        // Runs in PreUpdate after NetworkSet::Receive so PlayerEvent::Joined is
+        // Runs in NetworkReceive (after Drain) so PlayerEvent::Joined is
         // readable.  If the Tilemap resource is not yet available (e.g.
         // listen-server: setup_world hasn't run yet) the client is queued in
         // PendingTilesSyncs and retried each frame.
         app.init_resource::<PendingTilesSyncs>();
-        app.configure_sets(
-            PreUpdate,
-            TilesSet::SendOnConnect
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
-        );
+        app.configure_sets(NetworkReceive, TilesSet::SendOnConnect);
         app.add_systems(
-            PreUpdate,
+            NetworkReceive,
             send_tilemap_on_connect
                 .run_if(resource_exists::<Server>)
                 .in_set(TilesSet::SendOnConnect),

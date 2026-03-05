@@ -7,7 +7,7 @@ use input::InputPlugin;
 use interactions::{ContextMenuAction, InteractionsPlugin};
 use items::{InteractionRange, ItemsPlugin};
 use main_menu::{MainMenuConfig, MainMenuPlugin, MenuEvent};
-use network::{Headless, NetCommand, NetworkPlugin, NetworkSet, ServerEvent};
+use network::{Headless, NetCommand, NetworkPlugin, NetworkReceive, ServerEvent};
 use physics::{PhysicsDebugPlugin, PhysicsPlugin};
 use shared::app_state::AppState;
 use shared::config::AppConfig;
@@ -58,12 +58,7 @@ fn main() {
         .add_plugins(InteractionsPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(ItemsPlugin)
         .insert_resource(InteractionRange(app_config.items.interaction_range))
-        .add_systems(
-            PreUpdate,
-            listen_server_self_connect
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
-        )
+        .add_systems(NetworkReceive, listen_server_self_connect)
         .init_state::<AppState>();
 
     app.run();

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use network::{
-    Client, ModuleReadySent, NetId, NetworkSet, PlayerEvent, Server, StreamDef, StreamDirection,
-    StreamReader, StreamRegistry, StreamSender,
+    Client, ModuleReadySent, NetId, NetworkReceive, NetworkSend, PlayerEvent, Server, StreamDef,
+    StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
 use serde::{Deserialize, Serialize};
@@ -1125,10 +1125,8 @@ impl Plugin for ItemsPlugin {
         app.insert_resource(reader);
 
         app.add_systems(
-            PreUpdate,
-            handle_items_lifecycle
-                .run_if(resource_exists::<Client>)
-                .after(NetworkSet::Receive),
+            NetworkReceive,
+            handle_items_lifecycle.run_if(resource_exists::<Client>),
         );
         app.add_systems(
             Update,
@@ -1141,13 +1139,14 @@ impl Plugin for ItemsPlugin {
         );
         app.add_systems(
             Update,
-            (
-                handle_item_interaction.run_if(resource_exists::<Server>),
-                broadcast_item_event.run_if(resource_exists::<Server>),
-            ),
+            handle_item_interaction.run_if(resource_exists::<Server>),
         );
         app.add_systems(
-            PreUpdate,
+            NetworkSend,
+            broadcast_item_event.run_if(resource_exists::<Server>),
+        );
+        app.add_systems(
+            NetworkReceive,
             (
                 (broadcast_held_on_join, broadcast_stored_on_join),
                 send_items_stream_ready_on_join,

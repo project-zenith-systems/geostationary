@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use network::{
-    ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
-    StreamDirection, StreamReader, StreamRegistry, StreamSender,
+    ClientId, Headless, ModuleReadySent, NetworkReceive, NetworkSend, PlayerEvent, Server,
+    StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{ConstantForce, RigidBody};
 use tiles::{TileMutated, Tilemap};
@@ -258,29 +258,22 @@ impl Plugin for AtmosphericsPlugin {
                 .run_if(not(resource_exists::<Headless>)),
         );
         app.add_systems(
-            PreUpdate,
-            handle_atmos_updates
-                .run_if(not(resource_exists::<Server>))
-                .after(NetworkSet::Receive),
+            NetworkReceive,
+            handle_atmos_updates.run_if(not(resource_exists::<Server>)),
         );
         app.init_resource::<PendingAtmosSyncs>();
         app.init_resource::<AtmosBroadcastTimers>();
-        // send_gas_grid_on_connect runs in PreUpdate after NetworkSet::Receive so
+        // send_gas_grid_on_connect runs in NetworkReceive (after Drain) so
         // PlayerEvent::Joined is readable.
-        app.configure_sets(
-            PreUpdate,
-            AtmosSet::SendOnConnect
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
-        );
+        app.configure_sets(NetworkReceive, AtmosSet::SendOnConnect);
         app.add_systems(
-            PreUpdate,
+            NetworkReceive,
             send_gas_grid_on_connect
                 .run_if(resource_exists::<Server>)
                 .in_set(AtmosSet::SendOnConnect),
         );
         app.add_systems(
-            Update,
+            NetworkSend,
             broadcast_gas_grid.run_if(resource_exists::<Server>),
         );
 

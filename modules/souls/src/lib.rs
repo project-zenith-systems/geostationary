@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use network::{
-    Client, ClientId, ClientInputReceived, NetClientSender, NetworkSet, PlayerEvent, Server,
+    Client, ClientId, ClientInputReceived, NetClientSender, NetworkReceive, PlayerEvent, Server,
     StreamSender, NETWORK_UPDATE_INTERVAL,
 };
 use things::{InputDirection, ThingsSet, ThingsStreamMessage};
@@ -32,16 +32,14 @@ pub struct SoulsPlugin;
 impl Plugin for SoulsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            PreUpdate,
+            NetworkReceive,
             (
                 bind_soul
                     .run_if(resource_exists::<Server>)
                     .after(ThingsSet::HandleClientJoined),
                 unbind_soul.run_if(resource_exists::<Server>),
                 route_input.run_if(resource_exists::<Server>),
-            )
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
+            ),
         );
         app.add_systems(Update, send_input.run_if(resource_exists::<Client>));
         app.init_resource::<InputSendTimer>();

@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use bevy::app::MainScheduleOrder;
+use bevy::ecs::schedule::ScheduleLabel;
 use bevy::state::state::FreelyMutableState;
 use bevy::{log, prelude::*};
 use bytes::Bytes;
@@ -30,15 +32,36 @@ const CLIENT_BUFFER_SIZE: usize = 100;
 const NETWORK_UPDATE_RATE: f32 = 30.0;
 pub const NETWORK_UPDATE_INTERVAL: f32 = 1.0 / NETWORK_UPDATE_RATE;
 
-/// System set for network systems. Game code should read network events
-/// after `NetworkSet::Receive` and write `NetCommand` messages before
-/// `NetworkSet::Send`.
+/// Schedule that runs after `PreUpdate` and before `StateTransition`.
+///
+/// Drains inbound async network events into Bevy messages, then runs module
+/// systems that react to those messages (on-connect sends, orchestration,
+/// client-side stream handlers). Connection lifecycle commands are also
+/// dispatched here.
+///
+/// Ordering within this schedule uses [`NetworkSet`] sets:
+/// `NetworkSet::Drain` (first) → *module systems* → `NetworkSet::Commands` (last).
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NetworkReceive;
+
+/// Schedule that runs after `PostUpdate` and before `Last`.
+///
+/// Modules place their outbound broadcast / replication systems here so that
+/// all gameplay systems in `Update` and late mutations in `PostUpdate` have
+/// committed their changes before state is serialised and sent to clients.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NetworkSend;
+
+/// Ordering sets within the [`NetworkReceive`] schedule.
+///
+/// Module systems that react to network messages run between `Drain` and
+/// `Commands` by default (no explicit set annotation needed).
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NetworkSet {
-    /// Drains async events into Bevy messages.
-    Receive,
-    /// Processes commands and dispatches them to async tasks.
-    Send,
+    /// Drains async events into Bevy messages. Runs first in `NetworkReceive`.
+    Drain,
+    /// Dispatches connection lifecycle commands to async tasks. Runs last in `NetworkReceive`.
+    Commands,
 }
 
 /// Commands sent by game code to control the network layer.
@@ -799,12 +822,27 @@ impl<S: FreelyMutableState + Copy> Plugin for NetworkPlugin<S> {
         app.add_message::<PlayerEvent>();
         app.add_message::<ModuleReadySent>();
         app.add_message::<ClientInputReceived>();
-        app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
+        // Ensure custom schedules exist (non-destructive — other plugins may
+        // have already added systems to them) and insert into the main order.
+        app.init_schedule(NetworkReceive);
+        app.init_schedule(NetworkSend);
+        {
+            let mut order = app.world_mut().resource_mut::<MainScheduleOrder>();
+            order.insert_after(PreUpdate, NetworkReceive);
+            order.insert_after(PostUpdate, NetworkSend);
+        }
+
+        // Within NetworkReceive: Drain runs first, Commands runs last,
+        // module systems run between them (no set annotation needed).
+        app.configure_sets(NetworkReceive, NetworkSet::Drain.before(NetworkSet::Commands));
         app.add_systems(
-            PreUpdate,
-            (drain_server_events, drain_client_events).in_set(NetworkSet::Receive),
+            NetworkReceive,
+            (drain_server_events, drain_client_events).in_set(NetworkSet::Drain),
         );
-        app.add_systems(PreUpdate, process_net_commands.in_set(NetworkSet::Send));
+        app.add_systems(
+            NetworkReceive,
+            process_net_commands.in_set(NetworkSet::Commands),
+        );
 
         // Register orchestration systems that manage sync barriers and state transitions.
         orchestrate::register_orchestrate_systems(app, self.in_game, self.disconnected);
