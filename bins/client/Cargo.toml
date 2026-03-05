@@ -18,5 +18,6 @@ ui = { path = "../../modules/ui" }
 camera = { path = "../../modules/camera" }
 input = { path = "../../modules/input" }
 interactions = { path = "../../modules/interactions" }
+main_menu = { path = "../../modules/main_menu" }
 items = { path = "../../modules/items" }
 player = { path = "../../modules/player" }

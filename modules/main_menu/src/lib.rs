@@ -1,30 +1,41 @@
-use bevy::{app::AppExit, prelude::*, state::state_scoped::DespawnOnExit};
+use bevy::{app::AppExit, prelude::*, state::state::FreelyMutableState, state::state_scoped::DespawnOnExit};
 use network::{ClientEvent, NetCommand, NetworkSet, ServerEvent};
 use ui::*;
-
-use shared::app_state::AppState;
-use shared::config::AppConfig;
 
 mod loading_screen;
 mod settings_screen;
 mod title_screen;
 
-pub struct MainMenuPlugin;
+/// Configuration resource injected by the binary crate.
+/// Decouples the main-menu module from `AppConfig`.
+#[derive(Resource, Clone)]
+pub struct MainMenuConfig {
+    pub port: u16,
+    pub player_name: String,
+}
 
-impl Plugin for MainMenuPlugin {
+pub struct MainMenuPlugin<S: FreelyMutableState + Copy> {
+    pub state: S,
+}
+
+impl<S: FreelyMutableState + Copy> Plugin for MainMenuPlugin<S> {
     fn build(&self, app: &mut App) {
+        app.insert_resource(MainMenuActiveState(self.state));
         app.add_message::<MenuEvent>();
-        app.add_systems(OnEnter(AppState::MainMenu), (menu_setup, menu_init));
+        app.add_systems(OnEnter(self.state), (menu_setup::<S>, menu_init));
         app.add_systems(
             PreUpdate,
-            (handle_network_errors, menu_message_reader)
+            (handle_network_errors, menu_message_reader::<S>)
                 .chain()
                 .after(NetworkSet::Receive)
                 .before(NetworkSet::Send)
-                .run_if(in_state(AppState::MainMenu)),
+                .run_if(in_state(self.state)),
         );
     }
 }
+
+#[derive(Resource, Clone, Copy)]
+struct MainMenuActiveState<S: States>(S);
 
 #[derive(Message, Clone, Debug)]
 pub enum MenuEvent {
@@ -43,7 +54,7 @@ enum MenuEventResult {
     CloseMenu,
 }
 
-fn menu_setup(mut commands: Commands, theme: Res<UiTheme>) {
+fn menu_setup<S: States + Copy>(mut commands: Commands, theme: Res<UiTheme>, active_state: Res<MainMenuActiveState<S>>) {
     commands.spawn((
         Node {
             justify_content: JustifyContent::Start,
@@ -56,7 +67,7 @@ fn menu_setup(mut commands: Commands, theme: Res<UiTheme>) {
             ..default()
         },
         BackgroundColor(theme.background),
-        DespawnOnExit(AppState::MainMenu),
+        DespawnOnExit(active_state.0),
         MenuRoot,
     ));
 }
@@ -87,11 +98,11 @@ fn handle_network_errors(
     }
 }
 
-fn menu_message_reader(
+fn menu_message_reader<S: States + Copy>(
     mut commands: Commands,
     query: Query<Entity, With<MenuRoot>>,
     theme: Res<UiTheme>,
-    config: Res<AppConfig>,
+    config: Res<MainMenuConfig>,
     mut messages: MessageReader<MenuEvent>,
     mut exit: MessageWriter<AppExit>,
     mut net_commands: MessageWriter<NetCommand>,
@@ -111,7 +122,7 @@ fn menu_message_reader(
             )),
             MenuEvent::Play => {
                 net_commands.write(NetCommand::Host {
-                    port: config.network.port,
+                    port: config.port,
                 });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,
@@ -120,8 +131,8 @@ fn menu_message_reader(
             }
             MenuEvent::Join => {
                 net_commands.write(NetCommand::Connect {
-                    addr: ([127u8, 0u8, 0u8, 1u8], config.network.port).into(),
-                    name: config.souls.player_name.clone(),
+                    addr: ([127u8, 0u8, 0u8, 1u8], config.port).into(),
+                    name: config.player_name.clone(),
                 });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use bevy::state::state_scoped::DespawnOnExit;
 use input::{PointerAction, WorldHit};
 use network::{
     Client, ClientId, ControlledByClient, EntityState, Headless, ModuleReadySent, NetId,
@@ -214,8 +215,13 @@ impl<S: States + Copy> ThingsPlugin<S> {
     }
 }
 
+/// Resource storing the active state value for replicated-entity cleanup.
+#[derive(Resource, Clone, Copy)]
+struct ThingsActiveState<S: States>(S);
+
 impl<S: States + Copy> Plugin for ThingsPlugin<S> {
     fn build(&self, app: &mut App) {
+        let state = self.state;
         app.register_type::<Thing>();
         app.register_type::<HandSide>();
         app.register_type::<HandSlot>();
@@ -225,7 +231,10 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
         app.init_resource::<ThingRegistry>();
         app.init_resource::<NetIdIndex>();
         app.init_resource::<StateBroadcastTimer>();
+        app.insert_resource(ThingsActiveState(state));
         app.add_observer(on_spawn_thing);
+        app.add_observer(on_net_id_added::<S>);
+        app.add_systems(OnExit(state), clear_net_id_index);
 
         // Register stream 3 (server→client) with StreamRegistry.
         let (sender, reader) = app
@@ -279,6 +288,28 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
                 .run_if(not(resource_exists::<Headless>)),
         );
     }
+}
+
+/// Inserts [`DespawnOnExit`] on every replicated entity when it receives a [`NetId`].
+///
+/// This ensures replicated entities are automatically cleaned up when leaving the active
+/// game state.
+fn on_net_id_added<S: States + Copy>(
+    trigger: On<Add, NetId>,
+    mut commands: Commands,
+    active_state: Res<ThingsActiveState<S>>,
+) {
+    commands
+        .entity(trigger.event_target())
+        .insert(DespawnOnExit(active_state.0));
+}
+
+/// Clears the [`NetIdIndex`] when leaving the active game state.
+///
+/// Entities are already despawned via [`DespawnOnExit`]; this removes the now-stale
+/// mappings so a subsequent connection starts with a clean index.
+fn clear_net_id_index(mut net_id_index: ResMut<NetIdIndex>) {
+    net_id_index.0.clear();
 }
 
 fn on_spawn_thing(

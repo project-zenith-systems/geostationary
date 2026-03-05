@@ -1,21 +1,12 @@
 use bevy::prelude::*;
 use network::{
-    Client, ClientId, NetClientSender, NetworkSet, PlayerEvent, Server, StreamSender,
-    NETWORK_UPDATE_INTERVAL,
+    Client, ClientId, ClientInputReceived, NetClientSender, NetworkSet, PlayerEvent, Server,
+    StreamSender, NETWORK_UPDATE_INTERVAL,
 };
 use things::{InputDirection, ThingsSet, ThingsStreamMessage};
 
 /// The interval (in seconds) at which the client sends input updates to the server.
 const INPUT_SEND_INTERVAL: f32 = NETWORK_UPDATE_INTERVAL;
-
-/// Server-side message emitted when a client sends an input direction.
-/// Defined here because input is a souls-module concern: the soul binds
-/// the client to a creature and routes input to it.
-#[derive(Message, Clone, Debug)]
-pub struct ClientInputReceived {
-    pub from: ClientId,
-    pub direction: [f32; 3],
-}
 
 /// Component placed on a dedicated soul entity to bind a client to a creature.
 ///
@@ -40,7 +31,6 @@ pub struct SoulsPlugin;
 
 impl Plugin for SoulsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ClientInputReceived>();
         app.add_systems(
             PreUpdate,
             (
