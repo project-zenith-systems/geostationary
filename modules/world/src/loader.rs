@@ -41,7 +41,7 @@ impl MapPath {
 /// This system runs at [`Startup`] and is registered by [`crate::WorldPlugin`].
 pub fn load_map(world: &mut World) {
     let Some(map_path) = world.get_resource::<MapPath>().map(|r| r.0.clone()) else {
-        warn!("WorldPlugin: no MapPath resource found, skipping map load");
+        info!("WorldPlugin: no MapPath resource found, skipping map load");
         return;
     };
 

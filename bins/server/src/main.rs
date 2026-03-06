@@ -54,6 +54,7 @@ fn main() {
             disconnected: AppState::MainMenu,
         })
         .add_plugins(PhysicsPlugin)
+        .add_plugins(WorldPlugin)
         .add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin::<AppState>::in_state(
             AppState::InGame,
@@ -61,7 +62,7 @@ fn main() {
         .add_plugins(atmospherics::AtmosphericsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(souls::SoulsPlugin)
-        .add_plugins(WorldPlugin)
+        .add_plugins(shared::world_init::WorldInitPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(ItemsPlugin)
         .add_plugins(InteractionsPlugin::<AppState>::in_state(

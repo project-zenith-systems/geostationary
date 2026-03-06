@@ -5455,9 +5455,12 @@ dependencies = [
  "config",
  "creatures",
  "items",
+ "network",
  "physics",
  "serde",
  "things",
+ "tiles",
+ "world",
 ]
 
 [[package]]

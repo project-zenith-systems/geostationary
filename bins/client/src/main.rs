@@ -45,7 +45,8 @@ fn main() {
         app.add_plugins(PhysicsDebugPlugin);
     }
 
-    app.add_plugins(TilesPlugin)
+    app.add_plugins(WorldPlugin)
+        .add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(atmospherics::AtmosphericsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
@@ -53,7 +54,7 @@ fn main() {
         .add_plugins(player::PlayerPlugin)
         .add_plugins(camera::CameraPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(EditorPlugin)
-        .add_plugins(WorldPlugin)
+        .add_plugins(shared::world_init::WorldInitPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(InputPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(InteractionsPlugin::<AppState>::in_state(AppState::InGame))
