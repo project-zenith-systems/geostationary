@@ -1,5 +1,10 @@
+use std::collections::{BTreeMap, HashMap};
+
+use base64::Engine as _;
 use bevy::prelude::*;
 use input::{PointerAction, WorldHit};
+use serde::{Deserialize, Serialize};
+use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 use network::{
     ClientId, Headless, ModuleReadySent, NetworkReceive, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
@@ -20,7 +25,7 @@ pub enum TilesSet {
     SendOnConnect,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, SchemaRead, SchemaWrite)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, SchemaRead, SchemaWrite, Serialize, Deserialize)]
 #[reflect(Debug, PartialEq)]
 pub enum TileKind {
     Floor,
@@ -93,31 +98,6 @@ impl Tilemap {
         self.get(pos).is_some_and(|kind| kind.is_walkable())
     }
 
-    /// Creates a 16x10 test room for decompression scenarios, with perimeter walls
-    /// and a central double wall that separates a left (pressurized) chamber from
-    /// a right (vacuum) chamber.
-    pub fn test_room() -> Tilemap {
-        let mut tilemap = Tilemap::new(16, 10, TileKind::Floor);
-
-        // Perimeter walls
-        for x in 0..16 {
-            tilemap.set(IVec2::new(x, 0), TileKind::Wall);
-            tilemap.set(IVec2::new(x, 9), TileKind::Wall);
-        }
-        for y in 0..10 {
-            tilemap.set(IVec2::new(0, y), TileKind::Wall);
-            tilemap.set(IVec2::new(15, y), TileKind::Wall);
-        }
-
-        // Separating wall between left (pressurized, cols 1–8) and right (vacuum, cols 11–14) chambers
-        for y in 0..10 {
-            tilemap.set(IVec2::new(9, y), TileKind::Wall);
-            tilemap.set(IVec2::new(10, y), TileKind::Wall);
-        }
-
-        tilemap
-    }
-
     /// Returns an iterator over all tiles with their positions and kinds
     pub fn iter(&self) -> impl Iterator<Item = (IVec2, TileKind)> + '_ {
         (0..self.height).flat_map(move |y| {
@@ -129,6 +109,242 @@ impl Tilemap {
                 (pos, kind)
             })
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Map layer data types (on-disk format for the "tiles" layer)
+// ---------------------------------------------------------------------------
+
+/// On-disk representation of the `"tiles"` map layer.
+///
+/// Uses key-dictionary deduplication + base64-encoded chunk blobs.
+/// See `docs/map-format.md` for the full format description.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TilesLayerData {
+    pub chunk_size: u32,
+    /// Maps u16 key → tile definition.  Only configurations that actually
+    /// appear in the map are stored.
+    pub keys: BTreeMap<u16, TileDef>,
+    /// Maps (chunk_x, chunk_y) → base64-encoded u16 key array.
+    /// Each chunk stores `chunk_size * chunk_size` u16 values in
+    /// row-major order (y * chunk_size + x), encoded as little-endian bytes.
+    pub chunks: BTreeMap<(i32, i32), String>,
+}
+
+/// Per-tile configuration stored in the key dictionary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TileDef {
+    pub kind: TileKind,
+    /// Atmosphere override for this tile.  `None` means the default
+    /// (Pressurised for Floor, no atmos for Wall).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atmosphere: Option<Atmo>,
+}
+
+/// Atmosphere state baked into a tile definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Atmo {
+    Pressurised,
+    Vacuum,
+}
+
+// ---------------------------------------------------------------------------
+// TilesLayer — MapLayer implementation
+// ---------------------------------------------------------------------------
+
+/// Chunk size used when saving a [`Tilemap`] to disk.
+const SAVE_CHUNK_SIZE: u32 = 32;
+
+/// `MapLayer` implementation for the `"tiles"` layer.
+///
+/// **load**: Decodes key-dictionary + base64 chunks → inserts [`Tilemap`] resource.
+/// **save**: Reads [`Tilemap`] resource → builds key-dictionary + base64 chunks.
+pub struct TilesLayer;
+
+impl MapLayer for TilesLayer {
+    fn key(&self) -> &'static str {
+        "tiles"
+    }
+
+    fn load(
+        &self,
+        data: &ron::value::RawValue,
+        world: &mut World,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let layer: TilesLayerData = from_layer_value(data)?;
+
+        let chunk_size = layer.chunk_size;
+        if chunk_size == 0 {
+            return Err("tiles layer: chunk_size must be greater than 0".into());
+        }
+
+        // Compute expected bytes per chunk with overflow protection.
+        let tiles_per_chunk = (chunk_size as usize)
+            .checked_mul(chunk_size as usize)
+            .ok_or("tiles layer: chunk_size is too large (chunk_size² overflows usize)")?;
+        let expected_bytes = tiles_per_chunk
+            .checked_mul(2)
+            .ok_or("tiles layer: chunk_size is too large (chunk_size² × 2 overflows usize)")?;
+
+        // Handle the empty-map case before doing any chunk work.
+        if layer.chunks.is_empty() {
+            world.insert_resource(Tilemap::new(0, 0, TileKind::Floor));
+            return Ok(());
+        }
+
+        // Derive map dimensions from chunk indices without decoding any tile data.
+        // Reject negative chunk coordinates here so the subsequent u32 casts are safe.
+        let mut max_chunk_x: i32 = i32::MIN;
+        let mut max_chunk_y: i32 = i32::MIN;
+        for &(cx, cy) in layer.chunks.keys() {
+            if cx < 0 || cy < 0 {
+                return Err(format!(
+                    "tiles layer: negative chunk coordinate ({cx},{cy}) is not supported"
+                )
+                .into());
+            }
+            max_chunk_x = max_chunk_x.max(cx);
+            max_chunk_y = max_chunk_y.max(cy);
+        }
+
+        let width = (max_chunk_x as u32)
+            .checked_add(1)
+            .and_then(|v| v.checked_mul(chunk_size))
+            .ok_or("tiles layer: map dimensions overflow u32")?;
+        let height = (max_chunk_y as u32)
+            .checked_add(1)
+            .and_then(|v| v.checked_mul(chunk_size))
+            .ok_or("tiles layer: map dimensions overflow u32")?;
+
+        // Validate that chunk_size, width, and height are within the ranges expected
+        // by Tilemap and the subsequent i32 casts, and that the total tile count
+        // fits in usize to avoid overflows and incorrect allocations.
+        if chunk_size > i32::MAX as u32 {
+            return Err("tiles layer: chunk_size exceeds i32 range".into());
+        }
+        if width > i32::MAX as u32 || height > i32::MAX as u32 {
+            return Err("tiles layer: map dimensions exceed i32 range".into());
+        }
+        let total_tiles = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or("tiles layer: total tile count overflows usize")?;
+        // total_tiles is validated here; Tilemap::new allocates this many tiles internally.
+        let _ = total_tiles;
+
+        let mut tilemap = Tilemap::new(width, height, TileKind::Floor);
+
+        // Decode each chunk and write directly into the tilemap.
+        for (&(chunk_x, chunk_y), b64) in &layer.chunks {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| {
+                    format!("tiles layer: chunk ({chunk_x},{chunk_y}) base64 decode failed: {e}")
+                })?;
+
+            if bytes.len() != expected_bytes {
+                return Err(format!(
+                    "tiles layer: chunk ({chunk_x},{chunk_y}) has {} bytes, expected {expected_bytes} \
+                     (chunk_size={chunk_size})",
+                    bytes.len()
+                )
+                .into());
+            }
+
+            for local_y in 0..chunk_size {
+                for local_x in 0..chunk_size {
+                    // Compute the byte offset in usize arithmetic to avoid u32 overflow
+                    // for large (but still valid) chunk sizes.
+                    let offset =
+                        (local_y as usize * chunk_size as usize + local_x as usize) * 2;
+                    let key = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+
+                    let tile_def = layer.keys.get(&key).ok_or_else(|| {
+                        format!(
+                            "tiles layer: chunk ({chunk_x},{chunk_y}) references unknown key {key}"
+                        )
+                    })?;
+
+                    let global_x = chunk_x * chunk_size as i32 + local_x as i32;
+                    let global_y = chunk_y * chunk_size as i32 + local_y as i32;
+                    tilemap.set(IVec2::new(global_x, global_y), tile_def.kind);
+                }
+            }
+        }
+
+        world.insert_resource(tilemap);
+        Ok(())
+    }
+
+    fn save(
+        &self,
+        world: &World,
+    ) -> Result<Box<ron::value::RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+        let tilemap = world
+            .get_resource::<Tilemap>()
+            .ok_or("tiles layer: Tilemap resource not found")?;
+
+        let chunk_size = SAVE_CHUNK_SIZE;
+
+        // Tilemap coordinates are i32; reject maps too wide/tall to address safely.
+        if tilemap.width() > i32::MAX as u32 || tilemap.height() > i32::MAX as u32 {
+            return Err("tiles layer: map dimensions exceed i32 range and cannot be saved".into());
+        }
+
+        let num_chunks_x = tilemap.width().div_ceil(chunk_size);
+        let num_chunks_y = tilemap.height().div_ceil(chunk_size);
+        let tiles_per_chunk = chunk_size as usize * chunk_size as usize;
+
+        let mut key_dict: BTreeMap<u16, TileDef> = BTreeMap::new();
+        let mut def_to_key: HashMap<TileDef, u16> = HashMap::new();
+        // Use u32 so we can represent values 0..=65536 without wrapping,
+        // allowing all 65536 valid u16 keys (0..=65535) to be assigned.
+        let mut next_key: u32 = 0;
+        let mut chunks: BTreeMap<(i32, i32), String> = BTreeMap::new();
+
+        // Single pass: assign keys on first occurrence and encode each chunk in one loop.
+        for chunk_y in 0..num_chunks_y {
+            for chunk_x in 0..num_chunks_x {
+                let mut buf: Vec<u8> = Vec::with_capacity(tiles_per_chunk * 2);
+                for local_y in 0..chunk_size {
+                    for local_x in 0..chunk_size {
+                        let pos = IVec2::new(
+                            chunk_x as i32 * chunk_size as i32 + local_x as i32,
+                            chunk_y as i32 * chunk_size as i32 + local_y as i32,
+                        );
+                        // Pad out-of-bounds positions with Floor (the Tilemap default fill).
+                        let kind = tilemap.get(pos).unwrap_or(TileKind::Floor);
+                        let def = TileDef { kind, atmosphere: None };
+                        let key = match def_to_key.entry(def.clone()) {
+                            std::collections::hash_map::Entry::Occupied(e) => *e.get(),
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                if next_key > u16::MAX as u32 {
+                                    return Err(
+                                        "tiles layer: too many unique tile configurations (limit: 65536)"
+                                            .into(),
+                                    );
+                                }
+                                let k = next_key as u16;
+                                next_key += 1;
+                                key_dict.insert(k, def);
+                                *e.insert(k)
+                            }
+                        };
+                        buf.extend_from_slice(&key.to_le_bytes());
+                    }
+                }
+                chunks.insert(
+                    (chunk_x as i32, chunk_y as i32),
+                    base64::engine::general_purpose::STANDARD.encode(&buf),
+                );
+            }
+        }
+
+        Ok(to_layer_value(&TilesLayerData {
+            chunk_size,
+            keys: key_dict,
+            chunks,
+        })?)
     }
 }
 
@@ -230,6 +446,7 @@ pub struct TilesPlugin;
 impl Plugin for TilesPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<TileKind>();
+        app.register_map_layer(TilesLayer);
         app.register_type::<Tilemap>();
         app.register_type::<Tile>();
 
@@ -693,35 +910,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tilemap_test_room() {
-        let room = Tilemap::test_room();
-        assert_eq!(room.width(), 16);
-        assert_eq!(room.height(), 10);
-
-        // Perimeter should be walls
-        for x in 0..16 {
-            assert_eq!(room.get(IVec2::new(x, 0)), Some(TileKind::Wall));
-            assert_eq!(room.get(IVec2::new(x, 9)), Some(TileKind::Wall));
-        }
-        for y in 0..10 {
-            assert_eq!(room.get(IVec2::new(0, y)), Some(TileKind::Wall));
-            assert_eq!(room.get(IVec2::new(15, y)), Some(TileKind::Wall));
-        }
-
-        // Left chamber (cols 1–8) should be floor
-        assert_eq!(room.get(IVec2::new(4, 5)), Some(TileKind::Floor));
-        assert_eq!(room.get(IVec2::new(8, 3)), Some(TileKind::Floor));
-
-        // Separating wall (cols 9–10)
-        assert_eq!(room.get(IVec2::new(9, 5)), Some(TileKind::Wall));
-        assert_eq!(room.get(IVec2::new(10, 3)), Some(TileKind::Wall));
-
-        // Right chamber (cols 11–14) should be floor
-        assert_eq!(room.get(IVec2::new(11, 5)), Some(TileKind::Floor));
-        assert_eq!(room.get(IVec2::new(14, 3)), Some(TileKind::Floor));
-    }
-
-    #[test]
     fn test_tilemap_iter() {
         let mut tilemap = Tilemap::new(2, 2, TileKind::Floor);
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
@@ -737,7 +925,15 @@ mod tests {
 
     #[test]
     fn test_tilemap_to_from_bytes_roundtrip() {
-        let original = Tilemap::test_room();
+        let mut original = Tilemap::new(16, 10, TileKind::Floor);
+        for x in 0..16 {
+            original.set(IVec2::new(x, 0), TileKind::Wall);
+            original.set(IVec2::new(x, 9), TileKind::Wall);
+        }
+        for y in 0..10 {
+            original.set(IVec2::new(0, y), TileKind::Wall);
+            original.set(IVec2::new(15, y), TileKind::Wall);
+        }
         let bytes = original.to_bytes().expect("to_bytes should succeed");
         let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
 
@@ -811,5 +1007,243 @@ mod tests {
             }
             other => panic!("unexpected variant: {:?}", other),
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // TilesLayer (MapLayer) tests
+    // ---------------------------------------------------------------------------
+
+    /// Helper: build a minimal World with the resources needed by TilesLayer::save.
+    fn world_with_tilemap(tilemap: Tilemap) -> World {
+        let mut world = World::new();
+        world.insert_resource(tilemap);
+        world
+    }
+
+    /// A 2×2 tilemap survives a save→load round-trip through TilesLayer.
+    #[test]
+    fn tiles_layer_roundtrip_small() {
+        let mut original = Tilemap::new(2, 2, TileKind::Floor);
+        original.set(IVec2::new(0, 0), TileKind::Wall);
+        original.set(IVec2::new(1, 1), TileKind::Wall);
+
+        let world = world_with_tilemap(original.clone());
+        let raw = TilesLayer.save(&world).expect("save must succeed");
+
+        let mut load_world = World::new();
+        TilesLayer
+            .load(&raw, &mut load_world)
+            .expect("load must succeed");
+
+        let loaded = load_world
+            .get_resource::<Tilemap>()
+            .expect("Tilemap resource must be present after load");
+
+        // The loaded map must cover at least the original 2×2 extent (it may
+        // be padded to the nearest chunk boundary).
+        for (pos, kind) in original.iter() {
+            assert_eq!(
+                loaded.get(pos),
+                Some(kind),
+                "tile at {pos:?} must match after round-trip"
+            );
+        }
+    }
+
+    /// A tilemap with only Floor tiles serializes to a single key and
+    /// round-trips correctly.
+    #[test]
+    fn tiles_layer_all_floor() {
+        let original = Tilemap::new(4, 4, TileKind::Floor);
+        let world = world_with_tilemap(original.clone());
+
+        let raw = TilesLayer.save(&world).expect("save must succeed");
+        let data: TilesLayerData =
+            world::from_layer_value(&raw).expect("TilesLayerData must deserialize");
+        assert_eq!(data.keys.len(), 1, "only one unique tile def (Floor)");
+        assert_eq!(data.chunk_size, SAVE_CHUNK_SIZE);
+
+        let mut load_world = World::new();
+        TilesLayer.load(&raw, &mut load_world).expect("load must succeed");
+        let loaded = load_world.resource::<Tilemap>();
+        for (pos, kind) in original.iter() {
+            assert_eq!(loaded.get(pos), Some(kind));
+        }
+    }
+
+    /// A tilemap with Floor and Wall tiles produces exactly two keys.
+    #[test]
+    fn tiles_layer_two_kinds_produce_two_keys() {
+        let mut original = Tilemap::new(3, 3, TileKind::Floor);
+        original.set(IVec2::new(0, 0), TileKind::Wall);
+
+        let world = world_with_tilemap(original);
+        let raw = TilesLayer.save(&world).expect("save must succeed");
+        let data: TilesLayerData =
+            world::from_layer_value(&raw).expect("deserialize");
+        assert_eq!(data.keys.len(), 2, "Floor and Wall → two keys");
+    }
+
+    /// Saving when no Tilemap resource is present returns an error.
+    #[test]
+    fn tiles_layer_save_without_tilemap_errors() {
+        let world = World::new();
+        let result = TilesLayer.save(&world);
+        assert!(result.is_err(), "save without Tilemap must fail");
+    }
+
+    /// Loading corrupt base64 returns an error.
+    #[test]
+    fn tiles_layer_load_invalid_base64_errors() {
+        use std::collections::BTreeMap;
+
+        let data = TilesLayerData {
+            chunk_size: 4,
+            keys: {
+                let mut m = BTreeMap::new();
+                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m
+            },
+            chunks: {
+                let mut m = BTreeMap::new();
+                m.insert((0, 0), "!!!not-valid-base64!!!".to_owned());
+                m
+            },
+        };
+        let raw = world::to_layer_value(&data).expect("serialize");
+        let mut w = World::new();
+        let result = TilesLayer.load(&raw, &mut w);
+        assert!(result.is_err(), "corrupt base64 must cause a load error");
+    }
+
+    /// Loading a chunk with the wrong byte count returns an error.
+    #[test]
+    fn tiles_layer_load_wrong_chunk_length_errors() {
+        use base64::Engine as _;
+        use std::collections::BTreeMap;
+
+        let data = TilesLayerData {
+            chunk_size: 4,
+            keys: {
+                let mut m = BTreeMap::new();
+                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m
+            },
+            chunks: {
+                let mut m = BTreeMap::new();
+                // 4×4 chunk needs 32 bytes; give it 2
+                let short = base64::engine::general_purpose::STANDARD.encode([0u8, 0u8]);
+                m.insert((0, 0), short);
+                m
+            },
+        };
+        let raw = world::to_layer_value(&data).expect("serialize");
+        let mut w = World::new();
+        let result = TilesLayer.load(&raw, &mut w);
+        assert!(result.is_err(), "wrong byte count must cause a load error");
+    }
+
+    /// Loading a chunk that references an unknown key returns an error.
+    #[test]
+    fn tiles_layer_load_unknown_key_errors() {
+        use base64::Engine as _;
+        use std::collections::BTreeMap;
+
+        let chunk_size: u32 = 2;
+        let tiles = chunk_size * chunk_size;
+        // Encode all tiles with key=5, which is not in the dictionary.
+        let bytes: Vec<u8> = (0..tiles).flat_map(|_| 5u16.to_le_bytes()).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+        let data = TilesLayerData {
+            chunk_size,
+            keys: {
+                let mut m = BTreeMap::new();
+                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m
+            },
+            chunks: {
+                let mut m = BTreeMap::new();
+                m.insert((0, 0), encoded);
+                m
+            },
+        };
+        let raw = world::to_layer_value(&data).expect("serialize");
+        let mut w = World::new();
+        let result = TilesLayer.load(&raw, &mut w);
+        assert!(result.is_err(), "unknown key must cause a load error");
+    }
+
+    /// An empty chunks map loads as an empty Tilemap (0×0).
+    #[test]
+    fn tiles_layer_load_empty_chunks_gives_empty_tilemap() {
+        use std::collections::BTreeMap;
+
+        let data = TilesLayerData {
+            chunk_size: 32,
+            keys: BTreeMap::new(),
+            chunks: BTreeMap::new(),
+        };
+        let raw = world::to_layer_value(&data).expect("serialize");
+        let mut w = World::new();
+        TilesLayer.load(&raw, &mut w).expect("empty map must load without error");
+        let tm = w.resource::<Tilemap>();
+        assert_eq!(tm.width(), 0);
+        assert_eq!(tm.height(), 0);
+    }
+
+    /// chunk_size: 0 is rejected with an error.
+    #[test]
+    fn tiles_layer_load_zero_chunk_size_errors() {
+        use std::collections::BTreeMap;
+
+        let data = TilesLayerData {
+            chunk_size: 0,
+            keys: BTreeMap::new(),
+            chunks: BTreeMap::new(),
+        };
+        let raw = world::to_layer_value(&data).expect("serialize");
+        let mut w = World::new();
+        let result = TilesLayer.load(&raw, &mut w);
+        assert!(result.is_err(), "chunk_size 0 must be rejected");
+    }
+
+    /// A chunk with a negative x coordinate is rejected with an error.
+    #[test]
+    fn tiles_layer_load_negative_chunk_coord_errors() {
+        use base64::Engine as _;
+        use std::collections::BTreeMap;
+
+        let chunk_size: u32 = 2;
+        let tile_count = (chunk_size * chunk_size) as usize;
+        let bytes: Vec<u8> = (0..tile_count).flat_map(|_| 0u16.to_le_bytes()).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+        let data = TilesLayerData {
+            chunk_size,
+            keys: {
+                let mut m = BTreeMap::new();
+                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m
+            },
+            chunks: {
+                let mut m = BTreeMap::new();
+                // chunk_x = -1 is negative
+                m.insert((-1, 0), encoded);
+                m
+            },
+        };
+        let raw = world::to_layer_value(&data).expect("serialize");
+        let mut w = World::new();
+        let result = TilesLayer.load(&raw, &mut w);
+        assert!(
+            result.is_err(),
+            "negative chunk coordinate must cause a load error"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("negative chunk coordinate"),
+            "error message should mention 'negative chunk coordinate', got: {msg}"
+        );
     }
 }

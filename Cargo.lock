@@ -5804,11 +5804,15 @@ dependencies = [
 name = "tiles"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bevy",
  "input",
  "network",
  "physics",
+ "ron",
+ "serde",
  "wincode",
+ "world",
 ]
 
 [[package]]
