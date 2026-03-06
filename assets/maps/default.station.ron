@@ -4,9 +4,9 @@
 // Vacuum Bay   (rows 1-8,  cols 18-30) — sealed vacuum section
 // Central Corridor (rows 1-30, cols 11-16) — pressurised spine
 // Medbay       (rows 10-17, cols 1-9)  — pressurised
-// Cargo Hold   (rows 10-17, cols 18-30)— pressurised, with pillar
+// Cargo Hold   (rows 10-17, cols 18-30) — pressurised, with pillar
 // Engineering  (rows 19-30, cols 1-9)  — pressurised, with pillar
-// Storage      (rows 19-30, cols 18-30)— pressurised
+// Storage      (rows 19-30, cols 18-30) — pressurised
 //
 // Doors connect each room to the central corridor and between
 // vertically adjacent rooms on each side.
