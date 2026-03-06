@@ -154,9 +154,8 @@ pub fn handle_load(world: &mut World) {
     // Load the tiles layer via the registered MapLayer implementation.
     // This inserts the Tilemap resource which spawn_tile_meshes then picks up.
     if let Some(tiles_data) = file.layers.get("tiles") {
-        let tiles_data = tiles_data.clone();
         let load_result = world.resource_scope(|world, registry: Mut<MapLayerRegistry>| {
-            registry.load_layer("tiles", &tiles_data, world)
+            registry.load_layer("tiles", tiles_data, world)
         });
 
         match load_result {

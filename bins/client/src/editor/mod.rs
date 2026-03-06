@@ -119,10 +119,6 @@ fn teardown_editor_world(
 ) {
     commands.remove_resource::<Tilemap>();
     commands.remove_resource::<spawns::SpawnMarkerAssets>();
-    commands.remove_resource::<io::EditorMapFile>();
-    commands.remove_resource::<palette::EditorSelectedTile>();
-    commands.remove_resource::<palette::EditorSelectedEntity>();
-    commands.remove_resource::<palette::EditorTool>();
 
     for entity in &tile_entities {
         commands.entity(entity).despawn();

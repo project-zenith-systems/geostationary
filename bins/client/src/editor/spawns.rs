@@ -86,7 +86,7 @@ pub fn place_spawn_marker(
     commands.spawn((
         Mesh3d(assets.mesh.clone()),
         MeshMaterial3d(assets.material.clone()),
-        Transform::from_xyz(world_x, 0.3, world_z),
+        Transform::from_xyz(world_x, 0.0, world_z),
         SpawnMarker,
         Thing { kind: selected.kind },
         EditorSpawnMarker,
