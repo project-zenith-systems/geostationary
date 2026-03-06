@@ -17,3 +17,4 @@ creatures = { path = "../../modules/creatures" }
 souls = { path = "../../modules/souls" }
 items = { path = "../../modules/items" }
 interactions = { path = "../../modules/interactions" }
+world = { path = "../../modules/world" }

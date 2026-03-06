@@ -14,6 +14,7 @@ use shared::config::AppConfig;
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
 use ui::UiPlugin;
+use world::WorldPlugin;
 
 mod editor;
 
@@ -52,7 +53,7 @@ fn main() {
         .add_plugins(player::PlayerPlugin)
         .add_plugins(camera::CameraPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(EditorPlugin)
-        .add_plugins(shared::world_setup::WorldSetupPlugin)
+        .add_plugins(WorldPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(InputPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(InteractionsPlugin::<AppState>::in_state(AppState::InGame))

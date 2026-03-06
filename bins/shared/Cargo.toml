@@ -8,9 +8,7 @@ bevy = { workspace = true }
 config = { workspace = true }
 serde = { workspace = true }
 
-network = { path = "../../modules/network" }
 physics = { path = "../../modules/physics" }
-tiles = { path = "../../modules/tiles" }
 things = { path = "../../modules/things" }
 atmospherics = { path = "../../modules/atmospherics" }
 creatures = { path = "../../modules/creatures" }

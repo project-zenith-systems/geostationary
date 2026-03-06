@@ -1959,6 +1959,7 @@ dependencies = [
  "things",
  "tiles",
  "ui",
+ "world",
 ]
 
 [[package]]
@@ -3271,6 +3272,7 @@ dependencies = [
  "souls",
  "things",
  "tiles",
+ "world",
 ]
 
 [[package]]
@@ -5453,11 +5455,9 @@ dependencies = [
  "config",
  "creatures",
  "items",
- "network",
  "physics",
  "serde",
  "things",
- "tiles",
 ]
 
 [[package]]
