@@ -45,7 +45,7 @@ impl Plugin for TemplatesPlugin {
         let mut registry = app.world_mut().resource_mut::<ThingRegistry>();
 
         // Kind 0: Creature — player-controlled entity with locked axes, hand slot.
-        registry.register(0, move |entity, _event, commands| {
+        registry.register_named("creature", 0, move |entity, _event, commands| {
             debug!("Template kind 0 (creature): applying to {entity:?}");
             commands.entity(entity).insert((
                 Mesh3d(creature_mesh.clone()),
