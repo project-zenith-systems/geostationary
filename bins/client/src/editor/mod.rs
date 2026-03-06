@@ -1,82 +1,133 @@
 //! Editor mode (`AppState::Editor`).
 //!
-//! # Spike findings
-//!
-//! This module is the outcome of *Spike 2: Editor app state and camera*
-//! (see `docs/plans/map-authoring.md`).  It provides a minimal but runnable
-//! editor to confirm the three spike questions:
-//!
-//! ## Q1 – `AppState::Editor` coexists with `MainMenu` / `InGame`
-//!
-//! Each state uses `DespawnOnExit` independently.  Main-menu entities carry
-//! `DespawnOnExit(AppState::MainMenu)` and are cleaned up as soon as
-//! `AppState::MainMenu` is exited — whether the next state is `InGame` *or*
-//! `Editor`.  Editor entities carry `DespawnOnExit(AppState::Editor)` and are
-//! cleaned up on editor exit.  The `on_net_id_added` observer in `client.rs`
-//! hardcodes `DespawnOnExit(AppState::InGame)` for replicated entities; since
-//! the editor never has a live network connection those observers never fire,
-//! so there is no interference.  The `clear_net_id_index` system also only
-//! runs on `OnExit(AppState::InGame)` and is unaffected.
-//!
-//! ## Q2 – Orthographic camera + XZ-plane raycasting
-//!
-//! An orthographic top-down camera produces rays with direction ≈ `(0, −1, 0)`.
-//! Intersecting with the y = 0 plane always produces a valid XZ world position
-//! (see [`grid::ray_to_grid_cell`]).  The `round()` convention used in
-//! `grid.rs` matches the existing `raycast_tiles` system in the `tiles` module,
-//! so both paths identify the same tile entity by grid position.
-//!
-//! ## Q3 – Tile entity reuse
-//!
-//! The editor inserts a `Tilemap` resource on `OnEnter(AppState::Editor)`.
-//! The existing `spawn_tile_meshes` system in `TilesPlugin` picks it up
-//! automatically and spawns full mesh + collider entities — no editor-specific
-//! spawn logic needed.  On exit the `Tilemap` resource and all `Tile` entities
-//! are removed by [`teardown_editor_world`], leaving the ECS clean for the
-//! next state.
+//! A live Bevy world with simulation disabled, providing:
+//! - Orthographic top-down camera with pan (WASD / middle-click drag) and zoom (scroll)
+//! - Tile palette: select Floor or Wall, left-click/drag to paint
+//! - Entity palette: select a template (ball, can, toolbox), click a floor tile to place a spawn marker
+//! - Spawn markers are visible overlays, not simulated entities
+//! - Right-click on a spawn marker to delete it
+//! - Save/Load `.station.ron` files via `MapLayer` trait
 
 use bevy::prelude::*;
 use shared::app_state::AppState;
-use tiles::{Tile, Tilemap};
+use tiles::{Tile, Tilemap, TileKind};
 
 pub mod camera;
 pub mod grid;
+pub mod io;
+pub mod painting;
+pub mod palette;
+pub mod spawns;
 
 pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::Editor), (camera::spawn_editor_camera, setup_editor_tilemap));
+        // Resources.
+        app.init_resource::<palette::EditorSelectedTile>();
+        app.init_resource::<palette::EditorSelectedEntity>();
+        app.init_resource::<palette::EditorTool>();
+        app.init_resource::<io::EditorMapFile>();
+
+        // Messages for palette UI events and save/load.
+        app.add_message::<palette::EditorUiEvent>();
+        app.add_message::<io::EditorSaveEvent>();
+        app.add_message::<io::EditorLoadEvent>();
+
+        // OnEnter: spawn camera, tilemap, palette UI, spawn marker assets.
+        app.add_systems(
+            OnEnter(AppState::Editor),
+            (
+                camera::spawn_editor_camera,
+                setup_editor_tilemap,
+                palette::spawn_palette_ui,
+                spawns::init_spawn_marker_assets,
+            ),
+        );
+
+        // OnExit: clean up editor world.
         app.add_systems(OnExit(AppState::Editor), teardown_editor_world);
+
+        // Update systems gated on Editor state — split into groups to stay
+        // within Bevy's tuple size limits for `.run_if()`.
+        let in_editor = in_state(AppState::Editor);
+
+        // Camera controls.
         app.add_systems(
             Update,
-            (grid::log_hovered_cell, handle_editor_exit).run_if(in_state(AppState::Editor)),
+            (
+                camera::camera_pan_keyboard,
+                camera::camera_pan_drag,
+                camera::camera_zoom,
+            )
+                .run_if(in_editor.clone()),
+        );
+
+        // Painting, spawns, and palette UI.
+        app.add_systems(
+            Update,
+            (
+                painting::paint_tiles.run_if(is_tile_tool),
+                spawns::place_spawn_marker,
+                spawns::delete_spawn_marker,
+                palette::handle_palette_buttons,
+                palette::process_palette_events,
+            )
+                .run_if(in_editor.clone()),
+        );
+
+        // Save/load and exit handler.
+        app.add_systems(
+            Update,
+            (io::handle_save, io::handle_load, handle_editor_exit)
+                .run_if(in_editor),
         );
     }
 }
 
-/// Inserts the test-room `Tilemap` resource so the `TilesPlugin`'s
-/// `spawn_tile_meshes` system materialises tile entities automatically.
-///
-/// In the full editor this would load (or create) a map file; for the spike it
-/// reuses `Tilemap::test_room()` to confirm that the game's existing rendering
-/// path works unmodified inside `AppState::Editor`.
-fn setup_editor_tilemap(mut commands: Commands) {
-    commands.insert_resource(Tilemap::test_room());
+/// Run condition: returns true when the editor tool is set to [`palette::EditorTool::Tile`].
+fn is_tile_tool(tool: Option<Res<palette::EditorTool>>) -> bool {
+    tool.is_some_and(|t| *t == palette::EditorTool::Tile)
 }
 
-/// Removes the `Tilemap` resource and despawns all `Tile` entities when leaving
-/// the editor.
+/// Inserts a default 32×32 `Tilemap` resource for the editor.
 ///
-/// Tile entities spawned by `TilesPlugin::spawn_tile_meshes` do not carry a
-/// `DespawnOnExit` marker (that system is shared with `InGame` and is
-/// state-agnostic), so explicit cleanup is needed here.
+/// Creates a room with perimeter walls and interior floor tiles.
+fn setup_editor_tilemap(mut commands: Commands) {
+    let size = 32_u32;
+    let mut tilemap = Tilemap::new(size, size, TileKind::Floor);
+
+    // Build perimeter walls.
+    for x in 0..size as i32 {
+        tilemap.set(IVec2::new(x, 0), TileKind::Wall);
+        tilemap.set(IVec2::new(x, size as i32 - 1), TileKind::Wall);
+    }
+    for y in 0..size as i32 {
+        tilemap.set(IVec2::new(0, y), TileKind::Wall);
+        tilemap.set(IVec2::new(size as i32 - 1, y), TileKind::Wall);
+    }
+
+    commands.insert_resource(tilemap);
+}
+
+/// Removes editor resources and despawns all tile and spawn marker entities
+/// when leaving the editor.
 fn teardown_editor_world(
     mut commands: Commands,
     tile_entities: Query<Entity, With<Tile>>,
+    spawn_marker_entities: Query<Entity, With<spawns::EditorSpawnMarker>>,
 ) {
     commands.remove_resource::<Tilemap>();
+    commands.remove_resource::<spawns::SpawnMarkerAssets>();
+    commands.remove_resource::<io::EditorMapFile>();
+    commands.remove_resource::<palette::EditorSelectedTile>();
+    commands.remove_resource::<palette::EditorSelectedEntity>();
+    commands.remove_resource::<palette::EditorTool>();
+
     for entity in &tile_entities {
+        commands.entity(entity).despawn();
+    }
+    for entity in &spawn_marker_entities {
         commands.entity(entity).despawn();
     }
 }

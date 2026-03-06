@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = { workspace = true, features = ["2d", "3d", "ui"] }
+ron = { workspace = true }
 
 shared = { path = "../shared" }
 network = { path = "../../modules/network" }

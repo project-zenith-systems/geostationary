@@ -153,6 +153,26 @@ impl MapLayerRegistry {
         }
         Ok(())
     }
+
+    /// Load a single registered layer by its key.
+    ///
+    /// Returns `Ok(true)` if the layer was found and loaded successfully,
+    /// `Ok(false)` if no layer with that key is registered, or `Err` if
+    /// loading failed.
+    pub fn load_layer(
+        &self,
+        key: &str,
+        data: &RawValue,
+        world: &mut World,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        for layer in &self.layers {
+            if layer.key() == key {
+                layer.load(data, world)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 /// Extension trait for [`App`] that provides `register_map_layer`.

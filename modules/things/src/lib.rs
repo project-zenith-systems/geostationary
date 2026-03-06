@@ -195,6 +195,11 @@ impl ThingRegistry {
     pub fn name_by_kind(&self, kind: u16) -> Option<&str> {
         self.kind_to_name.get(&kind).map(String::as_str)
     }
+
+    /// Returns an iterator over all named templates as `(name, kind)` pairs.
+    pub fn named_templates(&self) -> impl Iterator<Item = (&str, u16)> {
+        self.name_to_kind.iter().map(|(name, &kind)| (name.as_str(), kind))
+    }
 }
 
 /// `MapLayer` implementation for the `"spawns"` layer.
