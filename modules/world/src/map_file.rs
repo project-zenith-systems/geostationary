@@ -75,7 +75,10 @@ pub trait MapLayer: Send + Sync + 'static {
     ///
     /// The returned value is stored verbatim under [`key()`](MapLayer::key)
     /// in [`MapFile::layers`]. Use [`to_layer_value`] as a helper.
-    fn save(&self, world: &World) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>>;
+    fn save(
+        &self,
+        world: &World,
+    ) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Deserialize `data` and apply it to `world`.
     ///
@@ -192,9 +195,7 @@ impl MapLayerRegistryExt for App {
 
 /// Serialize a concrete layer data type `T` into a [`Box<RawValue>`] for use
 /// in [`MapLayer::save`].
-pub fn to_layer_value<T: serde::Serialize>(
-    value: &T,
-) -> Result<Box<RawValue>, ron::Error> {
+pub fn to_layer_value<T: serde::Serialize>(value: &T) -> Result<Box<RawValue>, ron::Error> {
     RawValue::from_rust(value)
 }
 
@@ -468,7 +469,10 @@ mod tests {
             "foo"
         }
 
-        fn save(&self, world: &World) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+        fn save(
+            &self,
+            world: &World,
+        ) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
             let names: Vec<String> = world
                 .get_resource::<FooRegistry>()
                 .map(|r| r.items.clone())
@@ -493,7 +497,10 @@ mod tests {
             "bar"
         }
 
-        fn save(&self, _world: &World) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+        fn save(
+            &self,
+            _world: &World,
+        ) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
             Ok(to_layer_value(&())?)
         }
 
@@ -517,8 +524,10 @@ mod tests {
 
         // Build a minimal file for the two layers.
         let mut file = MapFile::new(1);
-        file.layers
-            .insert("foo".to_owned(), to_layer_value(&vec!["alpha", "beta"]).unwrap());
+        file.layers.insert(
+            "foo".to_owned(),
+            to_layer_value(&vec!["alpha", "beta"]).unwrap(),
+        );
         file.layers
             .insert("bar".to_owned(), to_layer_value(&()).unwrap());
 
@@ -555,11 +564,11 @@ mod tests {
             "count"
         }
 
-        fn save(&self, world: &World) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
-            let n = world
-                .get_resource::<TileCount>()
-                .map(|r| r.0)
-                .unwrap_or(0);
+        fn save(
+            &self,
+            world: &World,
+        ) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+            let n = world.get_resource::<TileCount>().map(|r| r.0).unwrap_or(0);
             Ok(to_layer_value(&n)?)
         }
 
@@ -586,23 +595,24 @@ mod tests {
         let mut server_world = World::new();
         server_world.insert_resource(TileCount(1024));
         let server_file = registry.save_all(&server_world).unwrap();
-        let server_count: u32 =
-            from_layer_value(server_file.layers.get("count").unwrap()).unwrap();
+        let server_count: u32 = from_layer_value(server_file.layers.get("count").unwrap()).unwrap();
         assert_eq!(server_count, 1024);
 
         // Simulate an "editor world" with a different tile count.
         let mut editor_world = World::new();
         editor_world.insert_resource(TileCount(512));
         let editor_file = registry.save_all(&editor_world).unwrap();
-        let editor_count: u32 =
-            from_layer_value(editor_file.layers.get("count").unwrap()).unwrap();
+        let editor_count: u32 = from_layer_value(editor_file.layers.get("count").unwrap()).unwrap();
         assert_eq!(editor_count, 512);
 
         // The same CountLayer.save() implementation produced both results —
         // no conditional logic or separate serialization paths.
         let server_ron = layer.save(&server_world).unwrap().get_ron().to_owned();
         let editor_ron = layer.save(&editor_world).unwrap().get_ron().to_owned();
-        assert_ne!(server_ron, editor_ron, "different worlds produce different output");
+        assert_ne!(
+            server_ron, editor_ron,
+            "different worlds produce different output"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -700,8 +710,7 @@ mod tests {
             &self,
             _world: &World,
         ) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
-            to_layer_value(&())
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            to_layer_value(&()).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         }
 
         fn load(
@@ -757,10 +766,7 @@ mod tests {
         let not_found = registry
             .load_layer("other", &data, &mut world)
             .expect("load_layer should not error");
-        assert!(
-            !not_found,
-            "expected false for non-matching key"
-        );
+        assert!(!not_found, "expected false for non-matching key");
         assert_eq!(
             0,
             load_calls.load(std::sync::atomic::Ordering::SeqCst),

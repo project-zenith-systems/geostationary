@@ -10,7 +10,7 @@
 
 use bevy::prelude::*;
 use shared::app_state::AppState;
-use tiles::{Tile, Tilemap, TileKind};
+use tiles::{Tile, TileKind, Tilemap};
 
 pub mod camera;
 pub mod grid;
@@ -83,8 +83,7 @@ impl Plugin for EditorPlugin {
         // Save/load and exit handler.
         app.add_systems(
             Update,
-            (io::handle_save, io::handle_load, handle_editor_exit)
-                .run_if(in_editor),
+            (io::handle_save, io::handle_load, handle_editor_exit).run_if(in_editor),
         );
     }
 }

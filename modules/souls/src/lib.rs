@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use network::{
-    Client, ClientId, ClientInputReceived, NetClientSender, NetworkReceive, PlayerEvent, Server,
-    StreamSender, NETWORK_UPDATE_INTERVAL,
+    Client, ClientId, ClientInputReceived, NETWORK_UPDATE_INTERVAL, NetClientSender,
+    NetworkReceive, PlayerEvent, Server, StreamSender,
 };
 use things::{InputDirection, ThingsSet, ThingsStreamMessage};
 
@@ -125,9 +125,10 @@ fn unbind_soul(
 
                 // Clear the creature's input so it stops moving.
                 if let Some(creature) = soul.bound_to
-                    && let Ok(mut input_dir) = input_dirs.get_mut(creature) {
-                        input_dir.0 = Vec3::ZERO;
-                    }
+                    && let Ok(mut input_dir) = input_dirs.get_mut(creature)
+                {
+                    input_dir.0 = Vec3::ZERO;
+                }
 
                 commands.entity(soul_entity).despawn();
                 break;
@@ -147,9 +148,10 @@ fn route_input(
         for soul in souls.iter() {
             if soul.client_id == *from {
                 if let Some(creature) = soul.bound_to
-                    && let Ok(mut input_dir) = input_dirs.get_mut(creature) {
-                        input_dir.0 = Vec3::from_array(*direction);
-                    }
+                    && let Ok(mut input_dir) = input_dirs.get_mut(creature)
+                {
+                    input_dir.0 = Vec3::from_array(*direction);
+                }
                 break;
             }
         }
@@ -162,7 +164,10 @@ struct InputSendTimer(Timer);
 
 impl Default for InputSendTimer {
     fn default() -> Self {
-        Self(Timer::from_seconds(INPUT_SEND_INTERVAL, TimerMode::Repeating))
+        Self(Timer::from_seconds(
+            INPUT_SEND_INTERVAL,
+            TimerMode::Repeating,
+        ))
     }
 }
 

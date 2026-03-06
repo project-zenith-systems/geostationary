@@ -158,11 +158,7 @@ mod tests {
             "expected y ≈ 3.0 (parent y), got y = {}",
             pos.y
         );
-        assert!(
-            pos.z.abs() < 0.01,
-            "expected z ≈ 0.0, got z = {}",
-            pos.z
-        );
+        assert!(pos.z.abs() < 0.01, "expected z ≈ 0.0, got z = {}", pos.z);
     }
 
     /// Spike result: reparenting and physics component removal in Avian — (b).
@@ -189,10 +185,7 @@ mod tests {
             .id();
 
         // Spawn a stationary parent at the origin.
-        let parent = app
-            .world_mut()
-            .spawn(Transform::default())
-            .id();
+        let parent = app.world_mut().spawn(Transform::default()).id();
 
         // Remove physics and reparent — entity should stop falling.
         app.world_mut()
@@ -214,11 +207,7 @@ mod tests {
         app.world_mut()
             .entity_mut(entity)
             .remove::<ChildOf>()
-            .insert((
-                RigidBody::Dynamic,
-                Collider::sphere(0.5),
-                GravityScale(1.0),
-            ));
+            .insert((RigidBody::Dynamic, Collider::sphere(0.5), GravityScale(1.0)));
 
         // Two updates: Avian detects the new RigidBody on the first update and
         // advances the simulation by one fixed step on the second.
@@ -318,10 +307,7 @@ mod tests {
         app.finish();
 
         // Spawn a parent entity.
-        let parent = app
-            .world_mut()
-            .spawn(Transform::default())
-            .id();
+        let parent = app.world_mut().spawn(Transform::default()).id();
 
         // Spawn a dynamic entity.
         let entity = app

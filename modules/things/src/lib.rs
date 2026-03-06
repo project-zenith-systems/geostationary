@@ -4,9 +4,9 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use input::{PointerAction, WorldHit};
 use network::{
-    Client, ClientId, ControlledByClient, EntityState, Headless, ModuleReadySent, NetId,
-    NetworkReceive, NetworkSend, PlayerEvent, Server, StreamDef, StreamDirection, StreamReader,
-    StreamRegistry, StreamSender, NETWORK_UPDATE_INTERVAL,
+    Client, ClientId, ControlledByClient, EntityState, Headless, ModuleReadySent,
+    NETWORK_UPDATE_INTERVAL, NetId, NetworkReceive, NetworkSend, PlayerEvent, Server, StreamDef,
+    StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
 use serde::{Deserialize, Serialize};
@@ -198,7 +198,9 @@ impl ThingRegistry {
 
     /// Returns an iterator over all named templates as `(name, kind)` pairs.
     pub fn named_templates(&self) -> impl Iterator<Item = (&str, u16)> {
-        self.name_to_kind.iter().map(|(name, &kind)| (name.as_str(), kind))
+        self.name_to_kind
+            .iter()
+            .map(|(name, &kind)| (name.as_str(), kind))
     }
 }
 
@@ -494,11 +496,7 @@ fn clear_net_id_index(mut net_id_index: ResMut<NetIdIndex>) {
     net_id_index.0.clear();
 }
 
-fn on_spawn_thing(
-    on: On<SpawnThing>,
-    mut commands: Commands,
-    registry: Res<ThingRegistry>,
-) {
+fn on_spawn_thing(on: On<SpawnThing>, mut commands: Commands, registry: Res<ThingRegistry>) {
     let event = on.event();
     debug!(
         "on_spawn_thing: kind={} entity={:?} pos={:?}",
@@ -565,7 +563,9 @@ fn handle_entity_lifecycle(
                         commands.entity(existing).insert(PlayerControlled);
                     }
                     if let Some(owner_id) = owner {
-                        commands.entity(existing).insert(ControlledByClient(owner_id));
+                        commands
+                            .entity(existing)
+                            .insert(ControlledByClient(owner_id));
                     }
                     continue;
                 }
@@ -608,10 +608,10 @@ fn handle_entity_lifecycle(
                     continue;
                 }
                 for state in &states {
-                    if let Some(&entity) = net_id_index.0.get(&state.net_id) {
-                        if let Ok(mut transform) = entities.get_mut(entity) {
-                            transform.translation = Vec3::from_array(state.position);
-                        }
+                    if let Some(&entity) = net_id_index.0.get(&state.net_id)
+                        && let Ok(mut transform) = entities.get_mut(entity)
+                    {
+                        transform.translation = Vec3::from_array(state.position);
                     }
                 }
             }
@@ -631,6 +631,7 @@ fn handle_entity_lifecycle(
 ///
 /// Creature spawning and the EntitySpawned broadcast for the new player entity are
 /// handled by the `souls` module's `bind_soul` system.
+#[allow(clippy::type_complexity)]
 fn handle_client_joined(
     mut messages: MessageReader<PlayerEvent>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
@@ -649,8 +650,7 @@ fn handle_client_joined(
         };
 
         // Catch-up: send EntitySpawned on stream 3 for every existing Thing entity.
-        for (net_id, opt_controlled_by, transform, opt_velocity, opt_name, thing) in
-            entities.iter()
+        for (net_id, opt_controlled_by, transform, opt_velocity, opt_name, thing) in entities.iter()
         {
             let owner = opt_controlled_by
                 .map(|c| c.0)
@@ -720,7 +720,12 @@ fn broadcast_state(
     mut timer: ResMut<StateBroadcastTimer>,
     stream_sender: Res<StreamSender<ThingsStreamMessage>>,
     mut entities: Query<
-        (&NetId, &Transform, Option<&LinearVelocity>, &mut LastBroadcast),
+        (
+            &NetId,
+            &Transform,
+            Option<&LinearVelocity>,
+            &mut LastBroadcast,
+        ),
         Without<ChildOf>,
     >,
 ) {
@@ -752,12 +757,11 @@ fn broadcast_state(
         })
         .collect();
 
-    if !states.is_empty() {
-        if let Err(e) =
+    if !states.is_empty()
+        && let Err(e) =
             stream_sender.broadcast(&ThingsStreamMessage::StateUpdate { entities: states })
-        {
-            error!("Failed to broadcast entity state on things stream: {e}");
-        }
+    {
+        error!("Failed to broadcast entity state on things stream: {e}");
     }
 }
 
@@ -789,15 +793,14 @@ fn raycast_things(
             f32::MAX,
             true,
             &SpatialQueryFilter::default(),
-        ) {
-            if things.get(hit.entity).is_ok() {
-                let world_pos = ray.origin + *ray.direction * hit.distance;
-                hit_writer.write(WorldHit {
-                    button: action.button,
-                    entity: hit.entity,
-                    world_pos,
-                });
-            }
+        ) && things.get(hit.entity).is_ok()
+        {
+            let world_pos = ray.origin + *ray.direction * hit.distance;
+            hit_writer.write(WorldHit {
+                button: action.button,
+                entity: hit.entity,
+                world_pos,
+            });
         }
     }
 }
@@ -850,11 +853,7 @@ mod tests {
             .find_map(|child| app.world().get::<HandSlot>(child));
 
         let slot = hand_slot_child.expect("creature should have a HandSlot child entity");
-        assert_eq!(
-            slot.side,
-            HandSide::Right,
-            "HandSlot side should be Right"
-        );
+        assert_eq!(slot.side, HandSide::Right, "HandSlot side should be Right");
     }
 
     /// Verifies that SpawnsLayer::load deserializes spawn points and triggers
@@ -994,5 +993,4 @@ mod tests {
         assert_eq!(named.len(), 1, "only named templates should appear");
         assert_eq!(named[0], ("named", 1));
     }
-
 }

@@ -270,13 +270,18 @@ pub fn update_overlay_on_tile_mutation(
     // Build a position-keyed lookup from the query snapshot for O(1) access.
     // Also seeds the shared mesh handle from any pre-existing quad and builds the
     // per-mesh refcount used for mesh cleanup.
-    let mut quad_by_pos: std::collections::HashMap<IVec2, (Entity, Handle<Mesh>, Handle<StandardMaterial>)> =
-        std::collections::HashMap::new();
+    let mut quad_by_pos: std::collections::HashMap<
+        IVec2,
+        (Entity, Handle<Mesh>, Handle<StandardMaterial>),
+    > = std::collections::HashMap::new();
     let mut mesh_refcounts: std::collections::HashMap<bevy::asset::AssetId<Mesh>, usize> =
         std::collections::HashMap::new();
     let mut shared_mesh: Option<Handle<Mesh>> = None;
     for (entity, quad) in existing_quads.iter() {
-        quad_by_pos.insert(quad.position, (entity, quad.mesh.clone(), quad.material.clone()));
+        quad_by_pos.insert(
+            quad.position,
+            (entity, quad.mesh.clone(), quad.material.clone()),
+        );
         *mesh_refcounts.entry(quad.mesh.id()).or_insert(0) += 1;
         if shared_mesh.is_none() {
             shared_mesh = Some(quad.mesh.clone());
@@ -322,7 +327,10 @@ pub fn update_overlay_on_tile_mutation(
             // Remove the per-quad material (each quad owns a unique material handle).
             materials.remove(&material_handle);
             commands.entity(entity).despawn();
-            debug!("Despawned overlay quad at {:?} (tile became wall)", position);
+            debug!(
+                "Despawned overlay quad at {:?} (tile became wall)",
+                position
+            );
         }
     }
 
@@ -330,9 +338,10 @@ pub fn update_overlay_on_tile_mutation(
     // still exist, reseed it from any remaining entry in `quad_by_pos` so that the
     // spawn pass reuses an existing mesh rather than creating a new one.
     if shared_mesh.is_none()
-        && let Some((_, mesh_handle, _)) = quad_by_pos.values().next() {
-            shared_mesh = Some(mesh_handle.clone());
-        }
+        && let Some((_, mesh_handle, _)) = quad_by_pos.values().next()
+    {
+        shared_mesh = Some(mesh_handle.clone());
+    }
 
     // Second pass: spawn quads for tiles that became walkable, now that all
     // mesh-removal decisions have been made and `shared_mesh` reflects the
@@ -362,7 +371,10 @@ pub fn update_overlay_on_tile_mutation(
                     material,
                 },
             ));
-            debug!("Spawned overlay quad at {:?} (tile became walkable)", position);
+            debug!(
+                "Spawned overlay quad at {:?} (tile became walkable)",
+                position
+            );
         }
     }
 }

@@ -48,16 +48,12 @@ fn load_map_on_host(world: &mut World) {
 /// All walkable cells are filled with `standard_pressure` from config (no
 /// vacuum region — vacuum regions were an artifact of the old hardcoded test
 /// room and will be expressed as a map layer in the future).
-fn init_atmosphere(
-    mut commands: Commands,
-    tilemap: Res<Tilemap>,
-    config: Res<AppConfig>,
-) {
+fn init_atmosphere(mut commands: Commands, tilemap: Res<Tilemap>, config: Res<AppConfig>) {
     let gas_grid = atmospherics::initialize_gas_grid(
         &tilemap,
         config.atmospherics.standard_pressure,
         None, // No vacuum region — uniform standard pressure for now.
-              // Vacuum regions will be expressed via an "atmospherics" map layer.
+        // Vacuum regions will be expressed via an "atmospherics" map layer.
         config.atmospherics.diffusion_rate,
     );
     commands.insert_resource(gas_grid);

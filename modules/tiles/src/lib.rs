@@ -3,14 +3,14 @@ use std::collections::{BTreeMap, HashMap};
 use base64::Engine as _;
 use bevy::prelude::*;
 use input::{PointerAction, WorldHit};
-use serde::{Deserialize, Serialize};
-use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 use network::{
     ClientId, Headless, ModuleReadySent, NetworkReceive, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{Collider, RigidBody};
+use serde::{Deserialize, Serialize};
 use wincode::{SchemaRead, SchemaWrite};
+use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 
 /// System set for the tiles module's server-side lifecycle systems.
 /// Other modules can use this for explicit ordering relative to tiles systems.
@@ -25,7 +25,19 @@ pub enum TilesSet {
     SendOnConnect,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, SchemaRead, SchemaWrite, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Reflect,
+    SchemaRead,
+    SchemaWrite,
+    Serialize,
+    Deserialize,
+)]
 #[reflect(Debug, PartialEq)]
 pub enum TileKind {
     Floor,
@@ -255,8 +267,7 @@ impl MapLayer for TilesLayer {
                 for local_x in 0..chunk_size {
                     // Compute the byte offset in usize arithmetic to avoid u32 overflow
                     // for large (but still valid) chunk sizes.
-                    let offset =
-                        (local_y as usize * chunk_size as usize + local_x as usize) * 2;
+                    let offset = (local_y as usize * chunk_size as usize + local_x as usize) * 2;
                     let key = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
 
                     let tile_def = layer.keys.get(&key).ok_or_else(|| {
@@ -314,7 +325,10 @@ impl MapLayer for TilesLayer {
                         );
                         // Pad out-of-bounds positions with Floor (the Tilemap default fill).
                         let kind = tilemap.get(pos).unwrap_or(TileKind::Floor);
-                        let def = TileDef { kind, atmosphere: None };
+                        let def = TileDef {
+                            kind,
+                            atmosphere: None,
+                        };
                         let key = match def_to_key.entry(def.clone()) {
                             std::collections::hash_map::Entry::Occupied(e) => *e.get(),
                             std::collections::hash_map::Entry::Vacant(e) => {
@@ -358,10 +372,7 @@ pub enum TilesStreamMessage {
         tiles: Vec<TileKind>,
     },
     /// Incremental mutation broadcast to all clients after the server applies a toggle.
-    TileMutated {
-        position: [i32; 2],
-        kind: TileKind,
-    },
+    TileMutated { position: [i32; 2], kind: TileKind },
 }
 
 /// Bevy event fired when a tile mutation arrives from the server (or is applied locally
@@ -479,10 +490,7 @@ impl Plugin for TilesPlugin {
                 Update,
                 apply_tile_mutation.run_if(not(resource_exists::<Server>)),
             );
-            app.add_systems(
-                Update,
-                raycast_tiles,
-            );
+            app.add_systems(Update, raycast_tiles);
         }
 
         app.add_systems(
@@ -556,7 +564,12 @@ impl FromWorld for TileMeshes {
 /// Spawns a single tile entity for the given grid position and kind.
 /// Used by both [`spawn_tile_meshes`] (initial load) and [`apply_tile_mutation`]
 /// (incremental updates) to guarantee identical visual and physics setup.
-fn spawn_tile_entity(commands: &mut Commands, position: IVec2, kind: TileKind, tile_meshes: &TileMeshes) {
+fn spawn_tile_entity(
+    commands: &mut Commands,
+    position: IVec2,
+    kind: TileKind,
+    tile_meshes: &TileMeshes,
+) {
     let world_x = position.x as f32;
     let world_z = position.y as f32;
     match kind {
@@ -672,10 +685,7 @@ fn handle_tiles_stream(
         match msg {
             variant @ TilesStreamMessage::TilemapData { .. } => match Tilemap::try_from(variant) {
                 Ok(tm) => {
-                    info!(
-                        "Received tilemap {}×{} from server",
-                        tm.width, tm.height
-                    );
+                    info!("Received tilemap {}×{} from server", tm.width, tm.height);
                     commands.insert_resource(tm);
                 }
                 Err(e) => error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}"),
@@ -689,7 +699,10 @@ fn handle_tiles_stream(
                     // TilemapData snapshot arrives. If entities were spawned early,
                     // spawn_tile_meshes would see a non-empty tile query and skip
                     // the full initial map spawn, leaving most tiles missing.
-                    mutation_events.write(TileMutated { position: pos, kind });
+                    mutation_events.write(TileMutated {
+                        position: pos,
+                        kind,
+                    });
                 }
             }
         }
@@ -729,7 +742,10 @@ fn send_tilemap_on_connect(
     }
 
     let Some(ts) = tiles_sender.as_deref() else {
-        error!("No TilesStreamMessage sender available; {} client(s) waiting", pending.0.len());
+        error!(
+            "No TilesStreamMessage sender available; {} client(s) waiting",
+            pending.0.len()
+        );
         return;
     };
 
@@ -775,7 +791,9 @@ fn raycast_tiles(
     mut hit_events: MessageWriter<WorldHit>,
 ) {
     let Some(tilemap) = tilemap else { return };
-    let Ok((camera, cam_transform)) = camera_query.single() else { return };
+    let Ok((camera, cam_transform)) = camera_query.single() else {
+        return;
+    };
 
     for action in pointer_events.read() {
         if !matches!(action.button, MouseButton::Left | MouseButton::Right) {
@@ -805,9 +823,14 @@ fn raycast_tiles(
         let grid_pos = IVec2::new(world_pos.x.round() as i32, world_pos.z.round() as i32);
 
         if tilemap.get(grid_pos).is_some()
-            && let Some((entity, _)) = tile_query.iter().find(|(_, t)| t.position == grid_pos) {
-                hit_events.write(WorldHit { button: action.button, entity, world_pos });
-            }
+            && let Some((entity, _)) = tile_query.iter().find(|(_, t)| t.position == grid_pos)
+        {
+            hit_events.write(WorldHit {
+                button: action.button,
+                entity,
+                world_pos,
+            });
+        }
     }
 }
 
@@ -988,7 +1011,10 @@ mod tests {
             kind: TileKind::Floor,
         };
         let result = Tilemap::try_from(msg);
-        assert!(result.is_err(), "TileMutated should not convert to a Tilemap");
+        assert!(
+            result.is_err(),
+            "TileMutated should not convert to a Tilemap"
+        );
     }
 
     #[test]
@@ -1064,7 +1090,9 @@ mod tests {
         assert_eq!(data.chunk_size, SAVE_CHUNK_SIZE);
 
         let mut load_world = World::new();
-        TilesLayer.load(&raw, &mut load_world).expect("load must succeed");
+        TilesLayer
+            .load(&raw, &mut load_world)
+            .expect("load must succeed");
         let loaded = load_world.resource::<Tilemap>();
         for (pos, kind) in original.iter() {
             assert_eq!(loaded.get(pos), Some(kind));
@@ -1079,8 +1107,7 @@ mod tests {
 
         let world = world_with_tilemap(original);
         let raw = TilesLayer.save(&world).expect("save must succeed");
-        let data: TilesLayerData =
-            world::from_layer_value(&raw).expect("deserialize");
+        let data: TilesLayerData = world::from_layer_value(&raw).expect("deserialize");
         assert_eq!(data.keys.len(), 2, "Floor and Wall → two keys");
     }
 
@@ -1101,7 +1128,13 @@ mod tests {
             chunk_size: 4,
             keys: {
                 let mut m = BTreeMap::new();
-                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m.insert(
+                    0,
+                    TileDef {
+                        kind: TileKind::Floor,
+                        atmosphere: None,
+                    },
+                );
                 m
             },
             chunks: {
@@ -1126,7 +1159,13 @@ mod tests {
             chunk_size: 4,
             keys: {
                 let mut m = BTreeMap::new();
-                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m.insert(
+                    0,
+                    TileDef {
+                        kind: TileKind::Floor,
+                        atmosphere: None,
+                    },
+                );
                 m
             },
             chunks: {
@@ -1159,7 +1198,13 @@ mod tests {
             chunk_size,
             keys: {
                 let mut m = BTreeMap::new();
-                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m.insert(
+                    0,
+                    TileDef {
+                        kind: TileKind::Floor,
+                        atmosphere: None,
+                    },
+                );
                 m
             },
             chunks: {
@@ -1186,7 +1231,9 @@ mod tests {
         };
         let raw = world::to_layer_value(&data).expect("serialize");
         let mut w = World::new();
-        TilesLayer.load(&raw, &mut w).expect("empty map must load without error");
+        TilesLayer
+            .load(&raw, &mut w)
+            .expect("empty map must load without error");
         let tm = w.resource::<Tilemap>();
         assert_eq!(tm.width(), 0);
         assert_eq!(tm.height(), 0);
@@ -1223,7 +1270,13 @@ mod tests {
             chunk_size,
             keys: {
                 let mut m = BTreeMap::new();
-                m.insert(0, TileDef { kind: TileKind::Floor, atmosphere: None });
+                m.insert(
+                    0,
+                    TileDef {
+                        kind: TileKind::Floor,
+                        atmosphere: None,
+                    },
+                );
                 m
             },
             chunks: {

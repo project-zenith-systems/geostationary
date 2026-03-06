@@ -139,7 +139,7 @@ fn capitalise(s: &str) -> String {
 }
 
 fn spawn_palette_button(commands: &mut Commands, label: &str, event: EditorUiEvent) -> Entity {
-    let btn = commands
+    commands
         .spawn((
             Button,
             Node {
@@ -163,8 +163,7 @@ fn spawn_palette_button(commands: &mut Commands, label: &str, event: EditorUiEve
                 TextColor(Color::srgb(0.9, 0.9, 0.92)),
             ));
         })
-        .id();
-    btn
+        .id()
 }
 
 /// Button colors for palette buttons.
@@ -182,7 +181,12 @@ pub struct PaletteButtonEvent(pub EditorUiEvent);
 /// System: handle palette button interactions (color changes + event dispatch).
 pub fn handle_palette_buttons(
     mut query: Query<
-        (&Interaction, &mut BackgroundColor, &PaletteButtonColors, &PaletteButtonEvent),
+        (
+            &Interaction,
+            &mut BackgroundColor,
+            &PaletteButtonColors,
+            &PaletteButtonEvent,
+        ),
         Changed<Interaction>,
     >,
     mut writer: MessageWriter<EditorUiEvent>,

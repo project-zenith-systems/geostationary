@@ -8,7 +8,7 @@ use tiles::{TileMutated, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
-pub use gas_grid::{GasCell, GasGrid, DEFAULT_DIFFUSION_RATE};
+pub use gas_grid::{DEFAULT_DIFFUSION_RATE, GasCell, GasGrid};
 
 mod debug_overlay;
 pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
@@ -47,9 +47,7 @@ pub enum AtmosStreamMessage {
     },
     /// Incremental update broadcast at ~10 Hz; contains only cells that changed
     /// beyond the delta epsilon since the last snapshot or delta.
-    GasGridDelta {
-        changes: Vec<(u16, f32)>,
-    },
+    GasGridDelta { changes: Vec<(u16, f32)> },
 }
 
 /// Creates and initializes a GasGrid from a Tilemap.
@@ -64,8 +62,7 @@ pub fn initialize_gas_grid(
     vacuum_region: Option<(IVec2, IVec2)>,
     diffusion_rate: f32,
 ) -> GasGrid {
-    let mut gas_grid =
-        GasGrid::with_tuning(tilemap.width(), tilemap.height(), diffusion_rate);
+    let mut gas_grid = GasGrid::with_tuning(tilemap.width(), tilemap.height(), diffusion_rate);
 
     // Sync walls from tilemap to mark impassable cells
     gas_grid.sync_walls(tilemap);
@@ -225,7 +222,11 @@ impl Plugin for AtmosphericsPlugin {
         app.add_message::<TileMutated>();
         app.add_systems(
             FixedUpdate,
-            (wall_sync_system, diffusion_step_system, apply_pressure_forces)
+            (
+                wall_sync_system,
+                diffusion_step_system,
+                apply_pressure_forces,
+            )
                 .chain()
                 .run_if(resource_exists::<Server>),
         );
@@ -254,8 +255,7 @@ impl Plugin for AtmosphericsPlugin {
         // writers, regardless of intra-Update system ordering.
         app.add_systems(
             PostUpdate,
-            debug_overlay::update_overlay_on_tile_mutation
-                .run_if(not(resource_exists::<Headless>)),
+            debug_overlay::update_overlay_on_tile_mutation.run_if(not(resource_exists::<Headless>)),
         );
         app.add_systems(
             NetworkReceive,
@@ -374,7 +374,10 @@ fn send_gas_grid_on_connect(
     }
 
     let Some(sender) = atmos_sender.as_deref() else {
-        error!("No AtmosStreamMessage sender available; {} client(s) waiting", pending.0.len());
+        error!(
+            "No AtmosStreamMessage sender available; {} client(s) waiting",
+            pending.0.len()
+        );
         return;
     };
 

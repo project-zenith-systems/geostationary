@@ -53,9 +53,8 @@ pub fn handle_save(world: &mut World) {
     let path = world.resource::<AppConfig>().world.map_path.clone();
     info!("Editor: saving map to {path}");
 
-    let result = world.resource_scope(|world, registry: Mut<MapLayerRegistry>| {
-        registry.save_all(world)
-    });
+    let result =
+        world.resource_scope(|world, registry: Mut<MapLayerRegistry>| registry.save_all(world));
 
     match result {
         Ok(mut file) => {
@@ -72,11 +71,11 @@ pub fn handle_save(world: &mut World) {
             match ron::ser::to_string_pretty(&file, pretty) {
                 Ok(ron_str) => {
                     // Ensure parent directory exists.
-                    if let Some(parent) = std::path::Path::new(&path).parent() {
-                        if let Err(e) = std::fs::create_dir_all(parent) {
-                            error!("Editor: failed to create directory {parent:?}: {e}");
-                            return;
-                        }
+                    if let Some(parent) = std::path::Path::new(&path).parent()
+                        && let Err(e) = std::fs::create_dir_all(parent)
+                    {
+                        error!("Editor: failed to create directory {parent:?}: {e}");
+                        return;
                     }
                     match std::fs::write(&path, &ron_str) {
                         Ok(()) => info!("Editor: map saved to {path}"),
@@ -192,10 +191,7 @@ pub fn handle_load(world: &mut World) {
                         match registry.kind_by_name(&sp.template) {
                             Some(k) => k,
                             None => {
-                                warn!(
-                                    "Editor: unknown spawn template '{}', skipping",
-                                    sp.template
-                                );
+                                warn!("Editor: unknown spawn template '{}', skipping", sp.template);
                                 continue;
                             }
                         }
@@ -212,7 +208,10 @@ pub fn handle_load(world: &mut World) {
                         entity_commands.insert((Mesh3d(m.clone()), MeshMaterial3d(mat.clone())));
                     }
                 }
-                info!("Editor: spawns layer loaded ({} points)", spawn_points.len());
+                info!(
+                    "Editor: spawns layer loaded ({} points)",
+                    spawn_points.len()
+                );
             }
             Err(e) => {
                 error!("Editor: failed to parse spawns layer: {e}");

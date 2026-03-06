@@ -31,12 +31,19 @@ fn main() {
             .set(WindowPlugin::from(&app_config))
             .set(LogPlugin::from(&app_config)),
     )
-    .add_plugins(UiPlugin::new().with_event::<MenuEvent>().with_event::<ContextMenuAction>())
+    .add_plugins(
+        UiPlugin::new()
+            .with_event::<MenuEvent>()
+            .with_event::<ContextMenuAction>(),
+    )
     .insert_resource(MainMenuConfig {
         port: app_config.network.port,
         player_name: app_config.souls.player_name.clone(),
     })
-    .add_plugins(MainMenuPlugin { state: AppState::MainMenu, editor_state: AppState::Editor })
+    .add_plugins(MainMenuPlugin {
+        state: AppState::MainMenu,
+        editor_state: AppState::Editor,
+    })
     .add_plugins(NetworkPlugin {
         in_game: AppState::InGame,
         disconnected: AppState::MainMenu,

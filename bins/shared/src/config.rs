@@ -1,5 +1,5 @@
-use bevy::log::{warn, Level};
-use bevy::prelude::{default, Resource};
+use bevy::log::{Level, warn};
+use bevy::prelude::{Resource, default};
 use serde::Deserialize;
 
 use ::config::{Config, Environment, File, FileFormat};

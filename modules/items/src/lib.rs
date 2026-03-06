@@ -267,8 +267,7 @@ fn handle_item_interaction(
     // ── Pickup ────────────────────────────────────────────────────────────────
     for req in pickups {
         // Validate: item must have Item component.
-        let Ok((maybe_collider, maybe_gravity, maybe_stash, maybe_parent)) =
-            items_q.get(req.item)
+        let Ok((maybe_collider, maybe_gravity, maybe_stash, maybe_parent)) = items_q.get(req.item)
         else {
             warn!("ItemPickupRequest: entity {:?} is not an Item", req.item);
             continue;
@@ -296,8 +295,7 @@ fn handle_item_interaction(
         };
 
         // Validate: actor and item must have transforms for range check.
-        let (Ok(actor_gt), Ok(item_gt)) =
-            (transforms.get(req.actor), transforms.get(req.item))
+        let (Ok(actor_gt), Ok(item_gt)) = (transforms.get(req.actor), transforms.get(req.item))
         else {
             warn!("ItemPickupRequest: actor or item has no GlobalTransform");
             continue;
@@ -361,7 +359,10 @@ fn handle_item_interaction(
 
         // Validate: drop_position must be within interaction range of the actor.
         let Ok(actor_gt) = transforms.get(req.actor) else {
-            warn!("ItemDropRequest: actor {:?} has no GlobalTransform", req.actor);
+            warn!(
+                "ItemDropRequest: actor {:?} has no GlobalTransform",
+                req.actor
+            );
             continue;
         };
         let drop_distance = actor_gt.translation().distance(req.drop_position);
@@ -432,10 +433,7 @@ fn handle_item_interaction(
         };
 
         // Validate: distance to target container — both transforms are required.
-        match (
-            transforms.get(req.actor),
-            transforms.get(req.container),
-        ) {
+        match (transforms.get(req.actor), transforms.get(req.container)) {
             (Ok(actor_gt), Ok(container_gt)) => {
                 let distance = actor_gt.translation().distance(container_gt.translation());
                 if distance > range {
@@ -525,10 +523,7 @@ fn handle_item_interaction(
         };
 
         // Validate: distance to container — both transforms are required.
-        match (
-            transforms.get(req.actor),
-            transforms.get(req.container),
-        ) {
+        match (transforms.get(req.actor), transforms.get(req.container)) {
             (Ok(actor_gt), Ok(container_gt)) => {
                 let distance = actor_gt.translation().distance(container_gt.translation());
                 if distance > range {
@@ -576,9 +571,11 @@ fn handle_item_interaction(
             .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
 
         // Show and reparent to hand, resetting local transform to the hand anchor.
-        commands
-            .entity(req.item)
-            .insert((Visibility::Inherited, Transform::IDENTITY, ChildOf(hand_entity)));
+        commands.entity(req.item).insert((
+            Visibility::Inherited,
+            Transform::IDENTITY,
+            ChildOf(hand_entity),
+        ));
         if let Ok(mut hand_container) = containers.get_mut(hand_entity) {
             hand_container.insert(req.item);
         }
@@ -604,9 +601,10 @@ fn find_hand_slot_with_space(
     for &child in actor_children {
         if hand_slot_q.get(child).is_ok()
             && let Ok(container) = containers.get(child)
-                && container.has_space() {
-                    return Some(child);
-                }
+            && container.has_space()
+        {
+            return Some(child);
+        }
     }
     None
 }
@@ -626,9 +624,10 @@ fn find_hand_slot_containing(
     for &child in actor_children {
         if hand_slot_q.get(child).is_ok()
             && let Ok(container) = containers.get(child)
-                && container.contains(item) {
-                    return Some(child);
-                }
+            && container.contains(item)
+        {
+            return Some(child);
+        }
     }
     None
 }
@@ -672,7 +671,10 @@ fn handle_item_event(
         match event {
             ItemEvent::PickedUp { item, holder } => {
                 let Some(&item_entity) = net_id_index.0.get(&item) else {
-                    warn!("handle_item_event: PickedUp item NetId({}) not found", item.0);
+                    warn!(
+                        "handle_item_event: PickedUp item NetId({}) not found",
+                        item.0
+                    );
                     continue;
                 };
                 let Some(&creature_entity) = net_id_index.0.get(&holder) else {
@@ -688,9 +690,7 @@ fn handle_item_event(
                     &hand_slot_q,
                     &containers,
                 ) else {
-                    warn!(
-                        "handle_item_event: PickedUp holder has no hand with free space"
-                    );
+                    warn!("handle_item_event: PickedUp holder has no hand with free space");
                     continue;
                 };
                 let Ok((maybe_collider, maybe_gravity, _, _, _)) = items_q.get(item_entity) else {
@@ -716,7 +716,10 @@ fn handle_item_event(
 
             ItemEvent::Dropped { item, position } => {
                 let Some(&item_entity) = net_id_index.0.get(&item) else {
-                    warn!("handle_item_event: Dropped item NetId({}) not found", item.0);
+                    warn!(
+                        "handle_item_event: Dropped item NetId({}) not found",
+                        item.0
+                    );
                     continue;
                 };
                 let Ok((_, _, maybe_stash, maybe_child_of, _)) = items_q.get(item_entity) else {
@@ -725,9 +728,10 @@ fn handle_item_event(
                 };
                 // Remove item from its hand container slot.
                 if let Some(child_of) = maybe_child_of
-                    && let Ok(mut container) = containers.get_mut(child_of.parent()) {
-                        container.remove(item_entity);
-                    }
+                    && let Ok(mut container) = containers.get_mut(child_of.parent())
+                {
+                    container.remove(item_entity);
+                }
                 let drop_pos = Vec3::from_array(position);
                 let Some(stash) = maybe_stash.cloned() else {
                     warn!(
@@ -770,9 +774,10 @@ fn handle_item_event(
                 };
                 // Remove item from its current hand container if held.
                 if let Some(child_of) = maybe_child_of
-                    && let Ok(mut hand_container) = containers.get_mut(child_of.parent()) {
-                        hand_container.remove(item_entity);
-                    }
+                    && let Ok(mut hand_container) = containers.get_mut(child_of.parent())
+                {
+                    hand_container.remove(item_entity);
+                }
                 // Strip physics if still present (e.g. for items received during initial sync).
                 if let (Some(col), Some(grav)) = (maybe_collider, maybe_gravity) {
                     commands
@@ -832,14 +837,18 @@ fn handle_item_event(
                 }
                 // Remove from the tracked source container (O(1) via StoredInContainer).
                 if let Some(&StoredInContainer(src_container)) = maybe_stored_in
-                    && let Ok(mut container) = containers.get_mut(src_container) {
-                        container.remove(item_entity);
-                    }
-                commands.entity(item_entity).remove::<StoredInContainer>().insert((
-                    Visibility::Inherited,
-                    Transform::IDENTITY,
-                    ChildOf(hand_entity),
-                ));
+                    && let Ok(mut container) = containers.get_mut(src_container)
+                {
+                    container.remove(item_entity);
+                }
+                commands
+                    .entity(item_entity)
+                    .remove::<StoredInContainer>()
+                    .insert((
+                        Visibility::Inherited,
+                        Transform::IDENTITY,
+                        ChildOf(hand_entity),
+                    ));
                 if let Ok(mut hand_container) = containers.get_mut(hand_entity) {
                     hand_container.insert(item_entity);
                 }
@@ -886,7 +895,10 @@ fn broadcast_item_event(
         let msg = match event {
             ItemActionEvent::PickedUp { item, hand } => {
                 let Ok(&item_net_id) = net_ids.get(*item) else {
-                    warn!("broadcast_item_event: PickedUp item {:?} has no NetId", item);
+                    warn!(
+                        "broadcast_item_event: PickedUp item {:?} has no NetId",
+                        item
+                    );
                     continue;
                 };
                 // holder = creature entity (parent of the HandSlot)
@@ -940,10 +952,7 @@ fn broadcast_item_event(
                 };
                 // holder = creature entity (parent of the HandSlot)
                 let Ok(hand_child_of) = child_of_q.get(*hand) else {
-                    warn!(
-                        "broadcast_item_event: Taken hand {:?} has no parent",
-                        hand
-                    );
+                    warn!("broadcast_item_event: Taken hand {:?} has no parent", hand);
                     continue;
                 };
                 let Ok(&holder_net_id) = net_ids.get(hand_child_of.parent()) else {
@@ -1202,10 +1211,7 @@ mod tests {
     /// infrastructure to update `Children` on the actor automatically.
     /// Returns (actor_entity, hand_slot_entity).
     fn spawn_actor(app: &mut App, pos: Vec3) -> (Entity, Entity) {
-        let actor = app
-            .world_mut()
-            .spawn(Transform::from_translation(pos))
-            .id();
+        let actor = app.world_mut().spawn(Transform::from_translation(pos)).id();
         let hand = app
             .world_mut()
             .spawn((
@@ -1296,7 +1302,10 @@ mod tests {
 
         // Hand container must record the item.
         let container = app.world().get::<Container>(hand).unwrap();
-        assert!(container.contains(item), "hand container should contain item");
+        assert!(
+            container.contains(item),
+            "hand container should contain item"
+        );
     }
 
     #[test]
@@ -1333,8 +1342,10 @@ mod tests {
             .id();
         app.update();
 
-        app.world_mut()
-            .write_message(ItemPickupRequest { actor, item: non_item });
+        app.world_mut().write_message(ItemPickupRequest {
+            actor,
+            item: non_item,
+        });
         app.update();
 
         let container = app.world().get::<Container>(hand).unwrap();
@@ -1385,8 +1396,10 @@ mod tests {
         app.update();
 
         // actor2 picks up the item first.
-        app.world_mut()
-            .write_message(ItemPickupRequest { actor: actor2, item });
+        app.world_mut().write_message(ItemPickupRequest {
+            actor: actor2,
+            item,
+        });
         app.update();
         assert!(app.world().get::<StashedPhysics>(item).is_some());
 
@@ -1663,9 +1676,7 @@ mod tests {
             ))
             .id();
         // Mark item as hidden (as it would be when stored).
-        app.world_mut()
-            .entity_mut(item)
-            .insert(Visibility::Hidden);
+        app.world_mut().entity_mut(item).insert(Visibility::Hidden);
         app.update();
 
         app.world_mut().write_message(ItemTakeRequest {
@@ -1690,11 +1701,7 @@ mod tests {
 
         // Visibility should be restored to Inherited.
         let vis = app.world().get::<Visibility>(item).unwrap();
-        assert_ne!(
-            *vis,
-            Visibility::Hidden,
-            "taken item should not be hidden"
-        );
+        assert_ne!(*vis, Visibility::Hidden, "taken item should not be hidden");
 
         // Item reparented to hand.
         let parent = app
@@ -1881,11 +1888,7 @@ mod tests {
 
     /// Spawn a creature with a hand slot and a registered NetId.
     /// Returns (creature_entity, hand_entity).
-    fn spawn_creature_with_net_id(
-        app: &mut App,
-        net_id: NetId,
-        pos: Vec3,
-    ) -> (Entity, Entity) {
+    fn spawn_creature_with_net_id(app: &mut App, net_id: NetId, pos: Vec3) -> (Entity, Entity) {
         let creature = app
             .world_mut()
             .spawn((Transform::from_translation(pos),))

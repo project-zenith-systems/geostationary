@@ -43,6 +43,7 @@ pub fn init_spawn_marker_assets(
 }
 
 /// System: left-click on a floor tile to place a spawn marker when in Entity tool mode.
+#[allow(clippy::too_many_arguments)]
 pub fn place_spawn_marker(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
@@ -65,10 +66,7 @@ pub fn place_spawn_marker(
     }
 
     // Skip placement when the pointer is over a UI element.
-    if ui_interactions
-        .iter()
-        .any(|i| *i != Interaction::None)
-    {
+    if ui_interactions.iter().any(|i| *i != Interaction::None) {
         return;
     }
 
@@ -78,11 +76,21 @@ pub fn place_spawn_marker(
     let Some(tilemap) = tilemap else { return };
     let Some(assets) = assets else { return };
 
-    let Ok(window) = window_query.single() else { return };
-    let Some(cursor_pos) = window.cursor_position() else { return };
-    let Ok((camera, camera_transform)) = camera_query.single() else { return };
-    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_pos) else { return };
-    let Some((_world_pos, grid_cell)) = grid::ray_to_grid_cell(ray) else { return };
+    let Ok(window) = window_query.single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        return;
+    };
+    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_pos) else {
+        return;
+    };
+    let Some((_world_pos, grid_cell)) = grid::ray_to_grid_cell(ray) else {
+        return;
+    };
 
     // Only place on floor tiles.
     if !tilemap.is_walkable(grid_cell) {
@@ -97,7 +105,9 @@ pub fn place_spawn_marker(
         MeshMaterial3d(assets.material.clone()),
         Transform::from_xyz(world_x, 0.0, world_z),
         SpawnMarker,
-        Thing { kind: selected.kind },
+        Thing {
+            kind: selected.kind,
+        },
         EditorSpawnMarker,
     ));
 
@@ -124,18 +134,25 @@ pub fn delete_spawn_marker(
     }
 
     // Skip deletion when the pointer is over a UI element.
-    if ui_interactions
-        .iter()
-        .any(|i| *i != Interaction::None)
-    {
+    if ui_interactions.iter().any(|i| *i != Interaction::None) {
         return;
     }
 
-    let Ok(window) = window_query.single() else { return };
-    let Some(cursor_pos) = window.cursor_position() else { return };
-    let Ok((camera, camera_transform)) = camera_query.single() else { return };
-    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_pos) else { return };
-    let Some((world_pos, _grid_cell)) = grid::ray_to_grid_cell(ray) else { return };
+    let Ok(window) = window_query.single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        return;
+    };
+    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_pos) else {
+        return;
+    };
+    let Some((world_pos, _grid_cell)) = grid::ray_to_grid_cell(ray) else {
+        return;
+    };
 
     // Find the closest marker within threshold.
     let threshold = 0.6;
@@ -146,10 +163,8 @@ pub fn delete_spawn_marker(
             transform.translation.z - world_pos.z,
         )
         .length();
-        if dist < threshold {
-            if closest.is_none() || dist < closest.unwrap().1 {
-                closest = Some((entity, dist));
-            }
+        if dist < threshold && (closest.is_none() || dist < closest.unwrap().1) {
+            closest = Some((entity, dist));
         }
     }
 

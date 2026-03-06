@@ -32,10 +32,7 @@ pub fn paint_tiles(
     }
 
     // Skip painting when the pointer is over a UI element.
-    if ui_interactions
-        .iter()
-        .any(|i| *i != Interaction::None)
-    {
+    if ui_interactions.iter().any(|i| *i != Interaction::None) {
         return;
     }
 
@@ -64,13 +61,13 @@ pub fn paint_tiles(
     };
 
     // Only paint if the cell is within the tilemap bounds and the kind differs.
-    if let Some(current_kind) = tilemap.get(grid_cell) {
-        if current_kind != selected.0 {
-            tilemap.set(grid_cell, selected.0);
-            mutation_events.write(TileMutated {
-                position: grid_cell,
-                kind: selected.0,
-            });
-        }
+    if let Some(current_kind) = tilemap.get(grid_cell)
+        && current_kind != selected.0
+    {
+        tilemap.set(grid_cell, selected.0);
+        mutation_events.write(TileMutated {
+            position: grid_cell,
+            kind: selected.0,
+        });
     }
 }

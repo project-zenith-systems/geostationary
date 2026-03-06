@@ -24,8 +24,7 @@ impl Plugin for UiPlugin {
         app.add_systems(PreUpdate, button::change_button_colors);
         app.add_systems(
             PostUpdate,
-            update_world_space_overlays
-                .after(TransformSystems::Propagate),
+            update_world_space_overlays.after(TransformSystems::Propagate),
         );
 
         for register in &self.messages {

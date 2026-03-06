@@ -48,10 +48,7 @@ pub fn load_map(world: &mut World) {
     let contents = match std::fs::read_to_string(&map_path) {
         Ok(c) => c,
         Err(e) => {
-            error!(
-                "WorldPlugin: failed to read map file {:?}: {}",
-                map_path, e
-            );
+            error!("WorldPlugin: failed to read map file {:?}: {}", map_path, e);
             return;
         }
     };
@@ -78,9 +75,8 @@ pub fn load_map(world: &mut World) {
 
     world.write_message(WorldLoading);
 
-    let result = world.resource_scope(|world, registry: Mut<MapLayerRegistry>| {
-        registry.load_all(&file, world)
-    });
+    let result = world
+        .resource_scope(|world, registry: Mut<MapLayerRegistry>| registry.load_all(&file, world));
 
     match result {
         Ok(()) => {
@@ -123,8 +119,7 @@ mod tests {
         /// return a guard that deletes the file when dropped.
         fn new(contents: &str) -> Self {
             let n = FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir()
-                .join(format!("loader_test_{}.station.ron", n));
+            let path = std::env::temp_dir().join(format!("loader_test_{}.station.ron", n));
             std::fs::write(&path, contents).expect("write temp map file");
             TempFile(path)
         }
@@ -141,8 +136,8 @@ mod tests {
         fn nonexistent_path() -> String {
             loop {
                 let n = FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let path = std::env::temp_dir()
-                    .join(format!("loader_test_{}_missing.station.ron", n));
+                let path =
+                    std::env::temp_dir().join(format!("loader_test_{}_missing.station.ron", n));
                 if !path.exists() {
                     return path.to_string_lossy().into_owned();
                 }
@@ -262,7 +257,11 @@ mod tests {
             .register(StubLayer);
         world.insert_resource(MapPath::new(file.path_str()));
         load_map(&mut world);
-        assert_eq!(world_ready_count(&world), 1, "WorldReady must be emitted after successful load");
+        assert_eq!(
+            world_ready_count(&world),
+            1,
+            "WorldReady must be emitted after successful load"
+        );
         assert!(
             world.contains_resource::<StubLoaded>(),
             "registered layer must have been called"
@@ -276,6 +275,10 @@ mod tests {
         let mut world = make_world();
         world.insert_resource(MapPath::new(file.path_str()));
         load_map(&mut world);
-        assert_eq!(world_ready_count(&world), 1, "WorldReady must be emitted even when no layers are registered");
+        assert_eq!(
+            world_ready_count(&world),
+            1,
+            "WorldReady must be emitted even when no layers are registered"
+        );
     }
 }

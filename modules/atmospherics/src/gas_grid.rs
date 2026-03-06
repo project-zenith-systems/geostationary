@@ -70,11 +70,7 @@ impl GasGrid {
 
     /// Creates a new gas grid with the given dimensions and diffusion rate.
     /// All cells are initialized with 0 moles and marked as passable.
-    pub fn with_tuning(
-        width: u32,
-        height: u32,
-        diffusion_rate: f32,
-    ) -> Self {
+    pub fn with_tuning(width: u32, height: u32, diffusion_rate: f32) -> Self {
         let size = (width * height) as usize;
         Self {
             width,
@@ -139,8 +135,7 @@ impl GasGrid {
     /// Pressure equals moles (unit cell volume, fixed temperature).
     /// Returns None if the position is out of bounds.
     pub fn pressure_at(&self, pos: IVec2) -> Option<f32> {
-        self.coord_to_index(pos)
-            .map(|idx| self.cells[idx].moles)
+        self.coord_to_index(pos).map(|idx| self.cells[idx].moles)
     }
 
     /// Computes the 2D pressure gradient at the given position using central differences.
@@ -167,10 +162,7 @@ impl GasGrid {
             .passable_pressure_at(IVec2::new(pos.x, pos.y - 1))
             .unwrap_or(center);
 
-        Vec2::new(
-            (p_x_pos - p_x_neg) / 2.0,
-            (p_y_pos - p_y_neg) / 2.0,
-        )
+        Vec2::new((p_x_pos - p_x_neg) / 2.0, (p_y_pos - p_y_neg) / 2.0)
     }
 
     /// Returns the pressure at `pos` only if the cell is in-bounds and passable; otherwise `None`.

@@ -836,7 +836,10 @@ impl<S: FreelyMutableState + Copy> Plugin for NetworkPlugin<S> {
 
         // Within NetworkReceive: Drain runs first, Commands runs last,
         // module systems run between them (no set annotation needed).
-        app.configure_sets(NetworkReceive, NetworkSet::Drain.before(NetworkSet::Commands));
+        app.configure_sets(
+            NetworkReceive,
+            NetworkSet::Drain.before(NetworkSet::Commands),
+        );
         app.add_systems(
             NetworkReceive,
             (drain_server_events, drain_client_events).in_set(NetworkSet::Drain),
@@ -1315,7 +1318,10 @@ mod tests {
 
         // After prepare_client_connect the channel is live
         let result = sender.send(&ServerMessage::InitialStateDone);
-        assert!(result.is_ok(), "send should succeed while client is connected");
+        assert!(
+            result.is_ok(),
+            "send should succeed while client is connected"
+        );
 
         // After on_client_disconnect the channel closes
         registry.on_client_disconnect();
@@ -1326,11 +1332,12 @@ mod tests {
     #[test]
     fn test_route_client_stream_frame_and_drain() {
         let mut registry = StreamRegistry::default();
-        let (_sender, mut reader): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
-            tag: 4,
-            name: "tile-input",
-            direction: StreamDirection::ClientToServer,
-        });
+        let (_sender, mut reader): (StreamSender<ServerMessage>, _) =
+            registry.register(StreamDef {
+                tag: 4,
+                name: "tile-input",
+                direction: StreamDirection::ClientToServer,
+            });
 
         // Simulate receiving a frame from a client
         let client = ClientId(7);

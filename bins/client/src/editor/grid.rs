@@ -1,7 +1,4 @@
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
-
-use super::camera::EditorCamera;
 
 /// Intersects a camera ray with the y = 0 plane (the tile grid surface) and
 /// returns the world-space hit position together with the integer grid cell.
@@ -39,32 +36,6 @@ pub fn ray_to_grid_cell(ray: Ray3d) -> Option<(Vec3, IVec2)> {
     Some((world_pos, grid_cell))
 }
 
-/// System: traces the cursor ray and logs the grid cell under the pointer.
-///
-/// In the full editor implementation this system drives tile painting; for the
-/// spike it confirms at runtime that orthographic + XZ raycasting resolves
-/// to the correct cell without requiring a running physics engine.
-pub fn log_hovered_cell(
-    window_query: Query<&Window, With<PrimaryWindow>>,
-    camera_query: Query<(&Camera, &GlobalTransform), With<EditorCamera>>,
-) {
-    let Ok(window) = window_query.single() else {
-        return;
-    };
-    let Some(cursor_pos) = window.cursor_position() else {
-        return;
-    };
-    let Ok((camera, camera_transform)) = camera_query.single() else {
-        return;
-    };
-    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_pos) else {
-        return;
-    };
-    if let Some((_world_pos, grid_cell)) = ray_to_grid_cell(ray) {
-        trace!("Editor cursor → grid cell {grid_cell}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,7 +54,11 @@ mod tests {
         // Camera 20 units above tile (3, 7): world x=3.5 z=7.5
         let ray = ray_down(Vec3::new(3.5, 20.0, 7.5));
         let (world_pos, grid_cell) = ray_to_grid_cell(ray).expect("downward ray must hit y=0");
-        assert!(world_pos.y.abs() < 1e-4, "hit must be on y=0 plane, got y={}", world_pos.y);
+        assert!(
+            world_pos.y.abs() < 1e-4,
+            "hit must be on y=0 plane, got y={}",
+            world_pos.y
+        );
         // round(3.5) == 4, round(7.5) == 8 (f32::round rounds half away from zero)
         assert_eq!(grid_cell, IVec2::new(4, 8));
     }

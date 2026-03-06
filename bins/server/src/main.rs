@@ -4,10 +4,10 @@ use bevy::app::AppExit;
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use interactions::InteractionsPlugin;
+use items::{InteractionRange, ItemsPlugin};
 use network::{Headless, NetCommand, NetServerSender, NetworkPlugin, ServerMessage};
 use physics::PhysicsPlugin;
 use shared::{app_state::AppState, config::AppConfig};
-use items::{InteractionRange, ItemsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
 use world::{MapPath, WorldPlugin};
@@ -29,9 +29,7 @@ fn main() {
     ctrlc::set_handler(|| {
         SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
     })
-    .expect(
-        "Failed to set CTRL-C handler: another signal handler may already be registered",
-    );
+    .expect("Failed to set CTRL-C handler: another signal handler may already be registered");
 
     let app_config = shared::config::load_config();
 
@@ -56,18 +54,14 @@ fn main() {
         .add_plugins(PhysicsPlugin)
         .add_plugins(WorldPlugin)
         .add_plugins(TilesPlugin)
-        .add_plugins(ThingsPlugin::<AppState>::in_state(
-            AppState::InGame,
-        ))
+        .add_plugins(ThingsPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(atmospherics::AtmosphericsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(souls::SoulsPlugin)
         .add_plugins(shared::world_init::WorldInitPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(ItemsPlugin)
-        .add_plugins(InteractionsPlugin::<AppState>::in_state(
-            AppState::InGame,
-        ))
+        .add_plugins(InteractionsPlugin::<AppState>::in_state(AppState::InGame))
         .insert_resource(InteractionRange(app_config.items.interaction_range))
         .insert_state(AppState::InGame)
         .add_systems(Startup, host_on_startup)

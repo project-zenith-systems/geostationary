@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use creatures::{Creature, MovementSpeed};
 use items::{Container, Item};
 use physics::{Collider, GravityScale, LockedAxes, Restitution, RigidBody};
-use things::{HandSide, HandSlot, InputDirection, ThingRegistry, HAND_OFFSET};
+use things::{HAND_OFFSET, HandSide, HandSlot, InputDirection, ThingRegistry};
 
 pub const BALL_RADIUS: f32 = 0.3;
 
@@ -60,7 +60,9 @@ impl Plugin for TemplatesPlugin {
             ));
             commands.entity(entity).with_children(|parent| {
                 parent.spawn((
-                    HandSlot { side: HandSide::Right },
+                    HandSlot {
+                        side: HandSide::Right,
+                    },
                     Transform::from_translation(HAND_OFFSET),
                 ));
             });
@@ -107,6 +109,5 @@ impl Plugin for TemplatesPlugin {
                 Container::with_capacity(6),
             ));
         });
-
     }
 }

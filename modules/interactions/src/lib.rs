@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 use input::{PointerAction, WorldHit};
-use items::{Container, InteractionRange, Item, ItemDropRequest, ItemPickupRequest, ItemStoreRequest, ItemTakeRequest};
+use items::{
+    Container, InteractionRange, Item, ItemDropRequest, ItemPickupRequest, ItemStoreRequest,
+    ItemTakeRequest,
+};
 use network::{
     ClientId, ControlledByClient, Headless, NetId, Server, StreamDef, StreamDirection,
     StreamReader, StreamRegistry, StreamSender,
@@ -21,10 +24,7 @@ pub const INTERACTIONS_STREAM_TAG: u8 = 4;
 #[derive(Message, Debug, Clone, SchemaRead, SchemaWrite)]
 pub enum InteractionRequest {
     /// Request to change a tile at the given grid position to a new kind.
-    TileToggle {
-        position: [i32; 2],
-        kind: TileKind,
-    },
+    TileToggle { position: [i32; 2], kind: TileKind },
     /// Request to pick up an item from the world.
     ItemPickup { item: NetId },
     /// Request to drop a held item at the given world position.
@@ -33,15 +33,9 @@ pub enum InteractionRequest {
         drop_position: [f32; 3],
     },
     /// Request to store a held item into a container.
-    StoreInContainer {
-        item: NetId,
-        container: NetId,
-    },
+    StoreInContainer { item: NetId, container: NetId },
     /// Request to take an item from a container into the player's hand.
-    TakeFromContainer {
-        item: NetId,
-        container: NetId,
-    },
+    TakeFromContainer { item: NetId, container: NetId },
 }
 
 /// Event fired when a context-menu action button is pressed.
@@ -53,10 +47,7 @@ pub enum InteractionRequest {
 #[derive(Message, Clone, Copy, Debug)]
 pub enum ContextMenuAction {
     /// Toggle a tile to a new kind (e.g. "Build Wall" / "Remove Wall").
-    TileToggle {
-        position: IVec2,
-        kind: TileKind,
-    },
+    TileToggle { position: IVec2, kind: TileKind },
     /// Pick up the identified item from the world.
     ItemPickup { item: NetId },
     /// Drop the held item at the given world position.
@@ -105,21 +96,21 @@ fn resolve_world_hits(
     }
 
     let Ok(cam_tf) = camera_q.single() else {
-        warn!("resolve_world_hits: expected exactly one Camera3d, found {}", camera_q.iter().count());
+        warn!(
+            "resolve_world_hits: expected exactly one Camera3d, found {}",
+            camera_q.iter().count()
+        );
         return;
     };
     let cam_pos = cam_tf.translation();
 
     // For each button that produced hits, pick the closest-to-camera hit.
     for button in [MouseButton::Left, MouseButton::Right] {
-        let closest = hits
-            .iter()
-            .filter(|h| h.button == button)
-            .min_by(|a, b| {
-                let da = cam_pos.distance_squared(a.world_pos);
-                let db = cam_pos.distance_squared(b.world_pos);
-                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-            });
+        let closest = hits.iter().filter(|h| h.button == button).min_by(|a, b| {
+            let da = cam_pos.distance_squared(a.world_pos);
+            let db = cam_pos.distance_squared(b.world_pos);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
         if let Some(&hit) = closest {
             resolved.write(ResolvedHit { hit });
         }
@@ -161,9 +152,10 @@ fn held_item(
         if let Ok(container) = hand_container_q.get(child) {
             for slot in &container.slots {
                 if let Some(item_entity) = slot
-                    && let Ok(&net_id) = net_id_q.get(*item_entity) {
-                        return Some(net_id);
-                    }
+                    && let Ok(&net_id) = net_id_q.get(*item_entity)
+                {
+                    return Some(net_id);
+                }
             }
         }
     }
@@ -223,9 +215,8 @@ fn build_context_menu(
         Some((e, gt)) => (Some(e), Some(gt.translation())),
         None => (None, None),
     };
-    let holding: Option<NetId> = player_entity.and_then(|p| {
-        held_item(p, &children_q, &hand_container_q, &net_id_q)
-    });
+    let holding: Option<NetId> =
+        player_entity.and_then(|p| held_item(p, &children_q, &hand_container_q, &net_id_q));
     let in_range = player_pos
         .map(|pos| pos.distance(hit.world_pos) <= interaction_range.0)
         .unwrap_or(false);
@@ -243,7 +234,10 @@ fn build_context_menu(
                     .build(&mut commands);
                 buttons.push(btn);
             } else {
-                warn!("build_context_menu: Item entity {:?} has no NetId", hit.entity);
+                warn!(
+                    "build_context_menu: Item entity {:?} has no NetId",
+                    hit.entity
+                );
             }
         }
     } else if let Ok((&container_net_id, container, display_name)) =
@@ -266,22 +260,25 @@ fn build_context_menu(
                 // Hand empty + container has items → "Take from {name}".
                 let first_item = container.slots.iter().find_map(|s| *s);
                 if let Some(item_entity) = first_item
-                    && let Ok(&item_net_id) = net_id_q.get(item_entity) {
-                        let label = format!("Take from {name}");
-                        let btn = build_button(&theme)
-                            .with_text(&label)
-                            .with_event(ContextMenuAction::TakeFromContainer {
-                                item: item_net_id,
-                                container: container_net_id,
-                            })
-                            .build(&mut commands);
-                        buttons.push(btn);
-                    }
+                    && let Ok(&item_net_id) = net_id_q.get(item_entity)
+                {
+                    let label = format!("Take from {name}");
+                    let btn = build_button(&theme)
+                        .with_text(&label)
+                        .with_event(ContextMenuAction::TakeFromContainer {
+                            item: item_net_id,
+                            container: container_net_id,
+                        })
+                        .build(&mut commands);
+                    buttons.push(btn);
+                }
             }
         }
     } else if let Ok(tile) = tile_query.get(hit.entity) {
         let Some(ref tilemap) = tilemap else { return };
-        let Some(kind) = tilemap.get(tile.position) else { return };
+        let Some(kind) = tilemap.get(tile.position) else {
+            return;
+        };
         let position = tile.position;
         match kind {
             TileKind::Wall => {
@@ -296,16 +293,17 @@ fn build_context_menu(
             }
             TileKind::Floor => {
                 if let Some(held_net_id) = holding
-                    && in_range {
-                        let drop_btn = build_button(&theme)
-                            .with_text("Drop")
-                            .with_event(ContextMenuAction::ItemDrop {
-                                item: held_net_id,
-                                drop_position: hit.world_pos,
-                            })
-                            .build(&mut commands);
-                        buttons.push(drop_btn);
-                    }
+                    && in_range
+                {
+                    let drop_btn = build_button(&theme)
+                        .with_text("Drop")
+                        .with_event(ContextMenuAction::ItemDrop {
+                            item: held_net_id,
+                            drop_position: hit.world_pos,
+                        })
+                        .build(&mut commands);
+                    buttons.push(drop_btn);
+                }
                 let wall_btn = build_button(&theme)
                     .with_text("Build Wall")
                     .with_event(ContextMenuAction::TileToggle {
@@ -356,14 +354,15 @@ fn handle_menu_selection(
 ) {
     for action in actions.read() {
         let req = match *action {
-            ContextMenuAction::TileToggle { position, kind } => {
-                InteractionRequest::TileToggle {
-                    position: [position.x, position.y],
-                    kind,
-                }
-            }
+            ContextMenuAction::TileToggle { position, kind } => InteractionRequest::TileToggle {
+                position: [position.x, position.y],
+                kind,
+            },
             ContextMenuAction::ItemPickup { item } => InteractionRequest::ItemPickup { item },
-            ContextMenuAction::ItemDrop { item, drop_position } => InteractionRequest::ItemDrop {
+            ContextMenuAction::ItemDrop {
+                item,
+                drop_position,
+            } => InteractionRequest::ItemDrop {
                 item,
                 drop_position: drop_position.to_array(),
             },
@@ -395,15 +394,12 @@ fn dismiss_context_menu(
     active_menu: Option<Res<ActiveMenu>>,
 ) {
     let dismiss = keys.just_pressed(KeyCode::Escape)
-        || pointer_events
-            .read()
-            .any(|a| a.button == MouseButton::Left);
+        || pointer_events.read().any(|a| a.button == MouseButton::Left);
 
-    if dismiss
-        && let Some(menu) = active_menu.as_deref() {
-            commands.entity(menu.0).despawn();
-            commands.remove_resource::<ActiveMenu>();
-        }
+    if dismiss && let Some(menu) = active_menu.as_deref() {
+        commands.entity(menu.0).despawn();
+        commands.remove_resource::<ActiveMenu>();
+    }
 }
 
 /// Client-side system that reads [`InteractionRequest`] messages and sends them to
@@ -482,17 +478,17 @@ fn dispatch_interaction(
                 tm.set(pos, kind);
 
                 // Fire local Bevy event so the listen-server updates its own visuals.
-                mutation_events.write(TileMutated { position: pos, kind });
+                mutation_events.write(TileMutated {
+                    position: pos,
+                    kind,
+                });
 
                 // Broadcast the mutation to all connected clients on stream 1.
                 let Some(ref ts) = tiles_sender else {
                     error!("dispatch_interaction: tiles stream sender not available");
                     continue;
                 };
-                if let Err(e) = ts.broadcast(&TilesStreamMessage::TileMutated {
-                    position,
-                    kind,
-                }) {
+                if let Err(e) = ts.broadcast(&TilesStreamMessage::TileMutated { position, kind }) {
                     error!("Failed to broadcast TileMutated: {}", e);
                 }
             }
@@ -504,17 +500,26 @@ fn dispatch_interaction(
                     continue;
                 };
                 let Some(&item) = idx.0.get(&item_id) else {
-                    warn!("dispatch_interaction ItemPickup: unknown NetId {:?}", item_id);
+                    warn!(
+                        "dispatch_interaction ItemPickup: unknown NetId {:?}",
+                        item_id
+                    );
                     continue;
                 };
                 let Some(actor) = resolve_actor(&actor_query, from) else {
-                    warn!("dispatch_interaction ItemPickup: no actor for client {:?}", from);
+                    warn!(
+                        "dispatch_interaction ItemPickup: no actor for client {:?}",
+                        from
+                    );
                     continue;
                 };
                 pickup_req.write(ItemPickupRequest { actor, item });
             }
 
-            InteractionRequest::ItemDrop { item: item_id, drop_position } => {
+            InteractionRequest::ItemDrop {
+                item: item_id,
+                drop_position,
+            } => {
                 let Some(ref idx) = net_id_index else {
                     warn!("dispatch_interaction: NetIdIndex not available for item request");
                     continue;
@@ -524,7 +529,10 @@ fn dispatch_interaction(
                     continue;
                 };
                 let Some(actor) = resolve_actor(&actor_query, from) else {
-                    warn!("dispatch_interaction ItemDrop: no actor for client {:?}", from);
+                    warn!(
+                        "dispatch_interaction ItemDrop: no actor for client {:?}",
+                        from
+                    );
                     continue;
                 };
                 let pos = Vec3::from_array(drop_position);
@@ -535,44 +543,76 @@ fn dispatch_interaction(
                 });
             }
 
-            InteractionRequest::StoreInContainer { item: item_id, container: container_id } => {
+            InteractionRequest::StoreInContainer {
+                item: item_id,
+                container: container_id,
+            } => {
                 let Some(ref idx) = net_id_index else {
                     warn!("dispatch_interaction: NetIdIndex not available for item request");
                     continue;
                 };
                 let Some(&item) = idx.0.get(&item_id) else {
-                    warn!("dispatch_interaction StoreInContainer: unknown item NetId {:?}", item_id);
+                    warn!(
+                        "dispatch_interaction StoreInContainer: unknown item NetId {:?}",
+                        item_id
+                    );
                     continue;
                 };
                 let Some(&container) = idx.0.get(&container_id) else {
-                    warn!("dispatch_interaction StoreInContainer: unknown container NetId {:?}", container_id);
+                    warn!(
+                        "dispatch_interaction StoreInContainer: unknown container NetId {:?}",
+                        container_id
+                    );
                     continue;
                 };
                 let Some(actor) = resolve_actor(&actor_query, from) else {
-                    warn!("dispatch_interaction StoreInContainer: no actor for client {:?}", from);
+                    warn!(
+                        "dispatch_interaction StoreInContainer: no actor for client {:?}",
+                        from
+                    );
                     continue;
                 };
-                store_req.write(ItemStoreRequest { actor, item, container });
+                store_req.write(ItemStoreRequest {
+                    actor,
+                    item,
+                    container,
+                });
             }
 
-            InteractionRequest::TakeFromContainer { item: item_id, container: container_id } => {
+            InteractionRequest::TakeFromContainer {
+                item: item_id,
+                container: container_id,
+            } => {
                 let Some(ref idx) = net_id_index else {
                     warn!("dispatch_interaction: NetIdIndex not available for item request");
                     continue;
                 };
                 let Some(&item) = idx.0.get(&item_id) else {
-                    warn!("dispatch_interaction TakeFromContainer: unknown item NetId {:?}", item_id);
+                    warn!(
+                        "dispatch_interaction TakeFromContainer: unknown item NetId {:?}",
+                        item_id
+                    );
                     continue;
                 };
                 let Some(&container) = idx.0.get(&container_id) else {
-                    warn!("dispatch_interaction TakeFromContainer: unknown container NetId {:?}", container_id);
+                    warn!(
+                        "dispatch_interaction TakeFromContainer: unknown container NetId {:?}",
+                        container_id
+                    );
                     continue;
                 };
                 let Some(actor) = resolve_actor(&actor_query, from) else {
-                    warn!("dispatch_interaction TakeFromContainer: no actor for client {:?}", from);
+                    warn!(
+                        "dispatch_interaction TakeFromContainer: no actor for client {:?}",
+                        from
+                    );
                     continue;
                 };
-                take_req.write(ItemTakeRequest { actor, item, container });
+                take_req.write(ItemTakeRequest {
+                    actor,
+                    item,
+                    container,
+                });
             }
         }
     }
@@ -832,10 +872,7 @@ mod tests {
         #[derive(Resource, Default)]
         struct Captured(Vec<InteractionRequest>);
 
-        fn capture(
-            mut reader: MessageReader<InteractionRequest>,
-            mut captured: ResMut<Captured>,
-        ) {
+        fn capture(mut reader: MessageReader<InteractionRequest>, mut captured: ResMut<Captured>) {
             for req in reader.read() {
                 captured.0.push(req.clone());
             }
@@ -854,7 +891,10 @@ mod tests {
                 kind: TileKind::Floor,
             });
 
-        app.add_systems(Update, (handle_menu_selection, capture.after(handle_menu_selection)));
+        app.add_systems(
+            Update,
+            (handle_menu_selection, capture.after(handle_menu_selection)),
+        );
         app.update();
 
         let captured = app.world().resource::<Captured>();
@@ -873,7 +913,7 @@ mod tests {
     /// stream reader as drained.
     #[test]
     fn dispatch_interaction_handles_tile_toggle() {
-        use network::{StreamRegistry, StreamDef, StreamDirection};
+        use network::{StreamDef, StreamDirection, StreamRegistry};
 
         #[derive(Resource, Default)]
         struct CapturedMutations(Vec<TileMutated>);
@@ -945,7 +985,13 @@ mod tests {
                 .route_client_stream_frame(from, INTERACTIONS_STREAM_TAG, Bytes::from(bytes));
         }
 
-        app.add_systems(Update, (dispatch_interaction, capture_mutations.after(dispatch_interaction)));
+        app.add_systems(
+            Update,
+            (
+                dispatch_interaction,
+                capture_mutations.after(dispatch_interaction),
+            ),
+        );
         app.update();
 
         // Tilemap should now have Floor at (1, 1).
@@ -967,7 +1013,7 @@ mod tests {
     /// tile is already the requested kind (no-op guard).
     #[test]
     fn dispatch_interaction_rejects_no_op_tile_toggle() {
-        use network::{StreamRegistry, StreamDef, StreamDirection};
+        use network::{StreamDef, StreamDirection, StreamRegistry};
 
         #[derive(Resource, Default)]
         struct CapturedMutations(Vec<TileMutated>);
@@ -1035,7 +1081,13 @@ mod tests {
                 .route_client_stream_frame(from, INTERACTIONS_STREAM_TAG, Bytes::from(bytes));
         }
 
-        app.add_systems(Update, (dispatch_interaction, capture_mutations.after(dispatch_interaction)));
+        app.add_systems(
+            Update,
+            (
+                dispatch_interaction,
+                capture_mutations.after(dispatch_interaction),
+            ),
+        );
         app.update();
 
         // Tilemap unchanged.
@@ -1044,7 +1096,11 @@ mod tests {
 
         // No TileMutated event.
         let captured = app.world().resource::<CapturedMutations>();
-        assert_eq!(captured.0.len(), 0, "No mutation event expected for no-op toggle");
+        assert_eq!(
+            captured.0.len(),
+            0,
+            "No mutation event expected for no-op toggle"
+        );
     }
 
     /// Verifies that [`resolve_actor`] returns the correct entity for a matching
@@ -1067,21 +1123,32 @@ mod tests {
         let entity_a = app.world_mut().spawn(ControlledByClient(client_a)).id();
         app.world_mut().spawn(ControlledByClient(ClientId(20)));
 
-        app.add_systems(Update, move |q: Query<(Entity, &ControlledByClient)>, mut res: ResMut<Result>| {
-            res.found = resolve_actor(&q, client_a);
-            res.not_found = resolve_actor(&q, unknown).is_none();
-        });
+        app.add_systems(
+            Update,
+            move |q: Query<(Entity, &ControlledByClient)>, mut res: ResMut<Result>| {
+                res.found = resolve_actor(&q, client_a);
+                res.not_found = resolve_actor(&q, unknown).is_none();
+            },
+        );
         app.update();
 
         let result = app.world().resource::<Result>();
-        assert_eq!(result.found, Some(entity_a), "Should find entity for client_a");
+        assert_eq!(
+            result.found,
+            Some(entity_a),
+            "Should find entity for client_a"
+        );
         assert!(result.not_found, "Should return None for unknown client");
     }
 
     // ── resolve_world_hits ──────────────────────────────────────────────────
 
     fn make_world_hit(button: MouseButton, entity: Entity, world_pos: Vec3) -> WorldHit {
-        WorldHit { button, entity, world_pos }
+        WorldHit {
+            button,
+            entity,
+            world_pos,
+        }
     }
 
     fn make_resolve_app() -> App {
@@ -1090,7 +1157,8 @@ mod tests {
         app.add_message::<WorldHit>();
         app.add_message::<ResolvedHit>();
         // Spawn a Camera3d at the origin so resolve_world_hits can query it.
-        app.world_mut().spawn((Camera3d::default(), GlobalTransform::IDENTITY));
+        app.world_mut()
+            .spawn((Camera3d::default(), GlobalTransform::IDENTITY));
         app
     }
 
@@ -1106,15 +1174,22 @@ mod tests {
         let entity = app.world_mut().spawn_empty().id();
         app.world_mut()
             .resource_mut::<Messages<WorldHit>>()
-            .write(make_world_hit(MouseButton::Left, entity, Vec3::new(0.0, 0.0, 3.0)));
+            .write(make_world_hit(
+                MouseButton::Left,
+                entity,
+                Vec3::new(0.0, 0.0, 3.0),
+            ));
 
-        app.add_systems(Update, (
-            resolve_world_hits,
-            (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
-                c.0.extend(r.read().copied());
-            })
-            .after(resolve_world_hits),
-        ));
+        app.add_systems(
+            Update,
+            (
+                resolve_world_hits,
+                (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
+                    c.0.extend(r.read().copied());
+                })
+                .after(resolve_world_hits),
+            ),
+        );
         app.update();
 
         let captured = app.world().resource::<Captured>();
@@ -1139,18 +1214,29 @@ mod tests {
         // Camera is at the origin; near_entity is closer.
         app.world_mut()
             .resource_mut::<Messages<WorldHit>>()
-            .write(make_world_hit(MouseButton::Left, near_entity, Vec3::new(0.0, 0.0, 2.0)));
+            .write(make_world_hit(
+                MouseButton::Left,
+                near_entity,
+                Vec3::new(0.0, 0.0, 2.0),
+            ));
         app.world_mut()
             .resource_mut::<Messages<WorldHit>>()
-            .write(make_world_hit(MouseButton::Left, far_entity, Vec3::new(0.0, 0.0, 10.0)));
+            .write(make_world_hit(
+                MouseButton::Left,
+                far_entity,
+                Vec3::new(0.0, 0.0, 10.0),
+            ));
 
-        app.add_systems(Update, (
-            resolve_world_hits,
-            (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
-                c.0.extend(r.read().copied());
-            })
-            .after(resolve_world_hits),
-        ));
+        app.add_systems(
+            Update,
+            (
+                resolve_world_hits,
+                (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
+                    c.0.extend(r.read().copied());
+                })
+                .after(resolve_world_hits),
+            ),
+        );
         app.update();
 
         let captured = app.world().resource::<Captured>();
@@ -1170,17 +1256,23 @@ mod tests {
         let mut app = make_resolve_app();
         app.init_resource::<Captured>();
 
-        app.add_systems(Update, (
-            resolve_world_hits,
-            (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
-                c.0.extend(r.read().copied());
-            })
-            .after(resolve_world_hits),
-        ));
+        app.add_systems(
+            Update,
+            (
+                resolve_world_hits,
+                (|mut r: MessageReader<ResolvedHit>, mut c: ResMut<Captured>| {
+                    c.0.extend(r.read().copied());
+                })
+                .after(resolve_world_hits),
+            ),
+        );
         app.update();
 
         let captured = app.world().resource::<Captured>();
-        assert!(captured.0.is_empty(), "No ResolvedHit expected when there are no WorldHits");
+        assert!(
+            captured.0.is_empty(),
+            "No ResolvedHit expected when there are no WorldHits"
+        );
     }
 
     // ── default_interaction ─────────────────────────────────────────────────
@@ -1211,13 +1303,16 @@ mod tests {
                 },
             });
 
-        app.add_systems(Update, (
-            default_interaction,
-            (|mut r: MessageReader<InteractionRequest>, mut c: ResMut<Captured>| {
-                c.0.extend(r.read().cloned());
-            })
-            .after(default_interaction),
-        ));
+        app.add_systems(
+            Update,
+            (
+                default_interaction,
+                (|mut r: MessageReader<InteractionRequest>, mut c: ResMut<Captured>| {
+                    c.0.extend(r.read().cloned());
+                })
+                .after(default_interaction),
+            ),
+        );
         app.update();
 
         let captured = app.world().resource::<Captured>();
@@ -1252,17 +1347,23 @@ mod tests {
                 },
             });
 
-        app.add_systems(Update, (
-            default_interaction,
-            (|mut r: MessageReader<InteractionRequest>, mut c: ResMut<Captured>| {
-                c.0.extend(r.read().cloned());
-            })
-            .after(default_interaction),
-        ));
+        app.add_systems(
+            Update,
+            (
+                default_interaction,
+                (|mut r: MessageReader<InteractionRequest>, mut c: ResMut<Captured>| {
+                    c.0.extend(r.read().cloned());
+                })
+                .after(default_interaction),
+            ),
+        );
         app.update();
 
         let captured = app.world().resource::<Captured>();
-        assert!(captured.0.is_empty(), "No InteractionRequest expected for non-Item hit");
+        assert!(
+            captured.0.is_empty(),
+            "No InteractionRequest expected for non-Item hit"
+        );
     }
 
     // ── context menu entries ─────────────────────────────────────────────────
@@ -1296,7 +1397,8 @@ mod tests {
         let mut app = make_context_menu_app();
 
         // Player at the origin — within range of the item.
-        app.world_mut().spawn((PlayerControlled, GlobalTransform::IDENTITY));
+        app.world_mut()
+            .spawn((PlayerControlled, GlobalTransform::IDENTITY));
 
         let net_id = NetId(7);
         let item_entity = app.world_mut().spawn((Item, net_id)).id();
@@ -1324,7 +1426,12 @@ mod tests {
         hand_container.insert(item_entity);
         let hand = app
             .world_mut()
-            .spawn((HandSlot { side: things::HandSide::Right }, hand_container))
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                hand_container,
+            ))
             .id();
 
         let player = app
@@ -1337,7 +1444,9 @@ mod tests {
         // Spawn a floor tile within interaction range of the player at origin.
         let tile_entity = app
             .world_mut()
-            .spawn(Tile { position: IVec2::new(1, 0) })
+            .spawn(Tile {
+                position: IVec2::new(1, 0),
+            })
             .id();
         let tilemap = Tilemap::new(5, 5, TileKind::Floor);
         app.insert_resource(tilemap);
@@ -1359,7 +1468,10 @@ mod tests {
             .get::<Children>(menu_entity)
             .map(|c| c.len())
             .unwrap_or(0);
-        assert_eq!(child_count, 2, "Expected two buttons (Drop + Build Wall) in the context menu");
+        assert_eq!(
+            child_count, 2,
+            "Expected two buttons (Drop + Build Wall) in the context menu"
+        );
     }
 
     /// Right-clicking a [`Container`] while holding an item shows "Store in {name}".
@@ -1375,7 +1487,12 @@ mod tests {
         hand_container.insert(item_entity);
         let hand = app
             .world_mut()
-            .spawn((HandSlot { side: things::HandSide::Right }, hand_container))
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                hand_container,
+            ))
             .id();
         app.world_mut()
             .spawn((PlayerControlled, GlobalTransform::IDENTITY))
@@ -1412,7 +1529,12 @@ mod tests {
         // Spawn player with empty hand slot.
         let hand = app
             .world_mut()
-            .spawn((HandSlot { side: things::HandSide::Right }, Container::with_capacity(1)))
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                Container::with_capacity(1),
+            ))
             .id();
         app.world_mut()
             .spawn((PlayerControlled, GlobalTransform::IDENTITY))
@@ -1444,4 +1566,3 @@ mod tests {
         );
     }
 }
-

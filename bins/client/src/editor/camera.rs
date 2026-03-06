@@ -150,10 +150,10 @@ pub fn camera_zoom(
         };
     }
 
-    if scroll_delta != 0.0 {
-        if let Projection::Orthographic(ref mut ortho) = *projection {
-            // Scroll up → zoom in (decrease scale).
-            ortho.scale = (ortho.scale - scroll_delta * ZOOM_SPEED).clamp(MIN_SCALE, MAX_SCALE);
-        }
+    if scroll_delta != 0.0
+        && let Projection::Orthographic(ref mut ortho) = *projection
+    {
+        // Scroll up → zoom in (decrease scale).
+        ortho.scale = (ortho.scale - scroll_delta * ZOOM_SPEED).clamp(MIN_SCALE, MAX_SCALE);
     }
 }

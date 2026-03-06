@@ -4,7 +4,10 @@ pub mod map_file;
 
 pub use lifecycle::{WorldLoading, WorldReady, WorldTeardown};
 pub use loader::MapPath;
-pub use map_file::{CURRENT_MAP_VERSION, MapFile, MapLayer, MapLayerRegistry, MapLayerRegistryExt, from_layer_value, to_layer_value};
+pub use map_file::{
+    CURRENT_MAP_VERSION, MapFile, MapLayer, MapLayerRegistry, MapLayerRegistryExt,
+    from_layer_value, to_layer_value,
+};
 
 use bevy::prelude::*;
 

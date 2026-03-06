@@ -74,10 +74,7 @@ pub(crate) fn register_orchestrate_systems<S: FreelyMutableState + Copy>(
         NetworkReceive,
         handle_server_events.run_if(resource_exists::<Server>),
     );
-    app.add_systems(
-        Update,
-        track_module_ready.run_if(resource_exists::<Server>),
-    );
+    app.add_systems(Update, track_module_ready.run_if(resource_exists::<Server>));
 
     // Store the state values so the generic system can read them.
     app.insert_resource(OrchestrationStates {

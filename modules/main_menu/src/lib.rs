@@ -1,4 +1,6 @@
-use bevy::{app::AppExit, prelude::*, state::state::FreelyMutableState, state::state_scoped::DespawnOnExit};
+use bevy::{
+    app::AppExit, prelude::*, state::state::FreelyMutableState, state::state_scoped::DespawnOnExit,
+};
 use network::{ClientEvent, NetCommand, NetworkReceive, ServerEvent};
 use ui::*;
 
@@ -58,7 +60,11 @@ enum MenuEventResult {
     CloseMenu,
 }
 
-fn menu_setup<S: States + Copy>(mut commands: Commands, theme: Res<UiTheme>, active_state: Res<MainMenuActiveState<S>>) {
+fn menu_setup<S: States + Copy>(
+    mut commands: Commands,
+    theme: Res<UiTheme>,
+    active_state: Res<MainMenuActiveState<S>>,
+) {
     commands.spawn((
         Node {
             justify_content: JustifyContent::Start,
@@ -128,9 +134,7 @@ fn menu_message_reader<S: FreelyMutableState + Copy>(
                 theme.as_ref(),
             )),
             MenuEvent::Play => {
-                net_commands.write(NetCommand::Host {
-                    port: config.port,
-                });
+                net_commands.write(NetCommand::Host { port: config.port });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,
                     theme.as_ref(),
