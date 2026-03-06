@@ -115,10 +115,19 @@ pub fn delete_spawn_marker(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<EditorCamera>>,
+    ui_interactions: Query<&Interaction>,
     markers: Query<(Entity, &Transform), With<EditorSpawnMarker>>,
     mut commands: Commands,
 ) {
     if !mouse_buttons.just_pressed(MouseButton::Right) {
+        return;
+    }
+
+    // Skip deletion when the pointer is over a UI element.
+    if ui_interactions
+        .iter()
+        .any(|i| *i != Interaction::None)
+    {
         return;
     }
 

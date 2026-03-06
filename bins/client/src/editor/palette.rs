@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use bevy::ui::FocusPolicy;
 use shared::app_state::AppState;
 use things::ThingRegistry;
 use tiles::TileKind;
@@ -64,6 +65,8 @@ pub fn spawn_palette_ui(mut commands: Commands, registry: Res<ThingRegistry>) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.1, 0.1, 0.15, 0.9)),
+            Interaction::None,
+            FocusPolicy::Block,
             DespawnOnExit(AppState::Editor),
             EditorPaletteRoot,
         ))
