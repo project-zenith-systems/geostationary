@@ -195,6 +195,11 @@ impl ThingRegistry {
     pub fn name_by_kind(&self, kind: u16) -> Option<&str> {
         self.kind_to_name.get(&kind).map(String::as_str)
     }
+
+    /// Returns an iterator over all named templates as `(name, kind)` pairs.
+    pub fn named_templates(&self) -> impl Iterator<Item = (&str, u16)> {
+        self.name_to_kind.iter().map(|(name, &kind)| (name.as_str(), kind))
+    }
 }
 
 /// `MapLayer` implementation for the `"spawns"` layer.
@@ -963,6 +968,31 @@ mod tests {
             result.is_err(),
             "load should return Err for an unknown template"
         );
+    }
+
+    #[test]
+    fn named_templates_returns_registered_name_kind_pairs() {
+        let mut registry = ThingRegistry::default();
+
+        registry.register_named("foo", 1, |_, _, _| {});
+        registry.register_named("bar", 2, |_, _, _| {});
+
+        let mut named: Vec<(&str, u16)> = registry.named_templates().collect();
+        named.sort_by_key(|(_, kind)| *kind);
+
+        assert_eq!(named, vec![("foo", 1), ("bar", 2)]);
+    }
+
+    #[test]
+    fn named_templates_excludes_unnamed_registrations() {
+        let mut registry = ThingRegistry::default();
+
+        registry.register(0, |_, _, _| {});
+        registry.register_named("named", 1, |_, _, _| {});
+
+        let named: Vec<(&str, u16)> = registry.named_templates().collect();
+        assert_eq!(named.len(), 1, "only named templates should appear");
+        assert_eq!(named[0], ("named", 1));
     }
 
 }

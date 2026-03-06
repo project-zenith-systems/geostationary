@@ -19,6 +19,8 @@ use world::WorldPlugin;
 mod editor;
 
 fn main() {
+    let start_in_editor = std::env::args().any(|a| a == "--editor");
+
     let app_config = shared::config::load_config();
 
     let mut app = App::new();
@@ -60,8 +62,13 @@ fn main() {
         .add_plugins(InteractionsPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(ItemsPlugin)
         .insert_resource(InteractionRange(app_config.items.interaction_range))
-        .add_systems(NetworkReceive, listen_server_self_connect)
-        .init_state::<AppState>();
+        .add_systems(NetworkReceive, listen_server_self_connect);
+
+    if start_in_editor {
+        app.insert_state(AppState::Editor);
+    } else {
+        app.init_state::<AppState>();
+    }
 
     app.run();
 }
