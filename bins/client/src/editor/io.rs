@@ -17,7 +17,7 @@
 use bevy::prelude::*;
 use shared::config::AppConfig;
 use things::{SpawnMarker, SpawnPoint, Thing, ThingRegistry};
-use tiles::{Tile, TileKind, Tilemap};
+use tiles::{Tile, Tilemap};
 use world::{CURRENT_MAP_VERSION, MapFile, MapLayerRegistry, from_layer_value};
 
 use super::spawns::{EditorSpawnMarker, SpawnMarkerAssets};
@@ -162,15 +162,15 @@ pub fn handle_load(world: &mut World) {
             Ok(true) => info!("Editor: tiles layer loaded"),
             Ok(false) => {
                 warn!("Editor: no tiles MapLayer registered, inserting default tilemap");
-                world.insert_resource(Tilemap::new(32, 32, TileKind::Floor));
+                world.insert_resource(super::default_editor_tilemap());
             }
             Err(e) => {
                 error!("Editor: failed to load tiles layer: {e}");
-                world.insert_resource(Tilemap::new(32, 32, TileKind::Floor));
+                world.insert_resource(super::default_editor_tilemap());
             }
         }
     } else {
-        world.insert_resource(Tilemap::new(32, 32, TileKind::Floor));
+        world.insert_resource(super::default_editor_tilemap());
     }
 
     // Load the spawns layer manually to create lightweight editor markers

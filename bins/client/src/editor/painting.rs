@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use tiles::{TileKind, TileMutated, Tilemap};
+use tiles::{TileMutated, Tilemap};
 
 use super::camera::EditorCamera;
 use super::grid;
@@ -22,11 +22,20 @@ pub fn paint_tiles(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<EditorCamera>>,
+    ui_interactions: Query<&Interaction>,
     mut tilemap: Option<ResMut<Tilemap>>,
     selected_tile: Option<Res<EditorSelectedTile>>,
     mut mutation_events: MessageWriter<TileMutated>,
 ) {
     if !mouse_buttons.pressed(MouseButton::Left) {
+        return;
+    }
+
+    // Skip painting when the pointer is over a UI element.
+    if ui_interactions
+        .iter()
+        .any(|i| *i != Interaction::None)
+    {
         return;
     }
 

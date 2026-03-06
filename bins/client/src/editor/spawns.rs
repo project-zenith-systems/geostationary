@@ -47,6 +47,7 @@ pub fn place_spawn_marker(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<EditorCamera>>,
+    ui_interactions: Query<&Interaction>,
     tilemap: Option<Res<Tilemap>>,
     selected_entity: Option<Res<EditorSelectedEntity>>,
     tool: Option<Res<EditorTool>>,
@@ -60,6 +61,14 @@ pub fn place_spawn_marker(
     }
 
     if !mouse_buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+
+    // Skip placement when the pointer is over a UI element.
+    if ui_interactions
+        .iter()
+        .any(|i| *i != Interaction::None)
+    {
         return;
     }
 

@@ -64,15 +64,19 @@ impl Plugin for EditorPlugin {
         );
 
         // Painting, spawns, and palette UI.
+        // UI systems run first so that tool selection is processed before
+        // world-editing systems, preventing a click from both selecting a
+        // tool and painting/placing in the same frame.
         app.add_systems(
             Update,
             (
+                palette::handle_palette_buttons,
+                palette::process_palette_events,
                 painting::paint_tiles.run_if(is_tile_tool),
                 spawns::place_spawn_marker,
                 spawns::delete_spawn_marker,
-                palette::handle_palette_buttons,
-                palette::process_palette_events,
             )
+                .chain()
                 .run_if(in_editor.clone()),
         );
 
@@ -94,6 +98,11 @@ fn is_tile_tool(tool: Option<Res<palette::EditorTool>>) -> bool {
 ///
 /// Creates a room with perimeter walls and interior floor tiles.
 fn setup_editor_tilemap(mut commands: Commands) {
+    commands.insert_resource(default_editor_tilemap());
+}
+
+/// Creates a default 32×32 tilemap with perimeter walls and floor interior.
+pub fn default_editor_tilemap() -> Tilemap {
     let size = 32_u32;
     let mut tilemap = Tilemap::new(size, size, TileKind::Floor);
 
@@ -107,7 +116,7 @@ fn setup_editor_tilemap(mut commands: Commands) {
         tilemap.set(IVec2::new(size as i32 - 1, y), TileKind::Wall);
     }
 
-    commands.insert_resource(tilemap);
+    tilemap
 }
 
 /// Removes editor resources and despawns all tile and spawn marker entities

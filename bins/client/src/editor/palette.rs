@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use shared::app_state::AppState;
+use things::ThingRegistry;
 use tiles::TileKind;
 
 /// Currently selected tile kind for painting.
@@ -50,7 +51,7 @@ pub enum EditorUiEvent {
 struct EditorPaletteRoot;
 
 /// Spawns the editor palette UI on entering the editor.
-pub fn spawn_palette_ui(mut commands: Commands) {
+pub fn spawn_palette_ui(mut commands: Commands, registry: Res<ThingRegistry>) {
     let root = commands
         .spawn((
             Node {
@@ -80,7 +81,7 @@ pub fn spawn_palette_ui(mut commands: Commands) {
     let floor_btn = spawn_palette_button(&mut commands, "Floor", EditorUiEvent::SelectFloor);
     let wall_btn = spawn_palette_button(&mut commands, "Wall", EditorUiEvent::SelectWall);
 
-    // Section: Entities
+    // Section: Entities — built from ThingRegistry::named_templates()
     let entity_header = commands
         .spawn((
             Text::new("— Entities —"),
@@ -89,15 +90,22 @@ pub fn spawn_palette_ui(mut commands: Commands) {
         ))
         .id();
 
-    let ball_btn =
-        spawn_palette_button(&mut commands, "Ball", EditorUiEvent::SelectEntity("ball".into(), 1));
-    let can_btn =
-        spawn_palette_button(&mut commands, "Can", EditorUiEvent::SelectEntity("can".into(), 2));
-    let toolbox_btn = spawn_palette_button(
-        &mut commands,
-        "Toolbox",
-        EditorUiEvent::SelectEntity("toolbox".into(), 3),
-    );
+    // Collect named templates from the registry, sort by kind for stable ordering.
+    let mut templates: Vec<(&str, u16)> = registry.named_templates().collect();
+    templates.sort_by_key(|&(_, kind)| kind);
+
+    let entity_btns: Vec<Entity> = templates
+        .iter()
+        .filter(|(name, _)| *name != "creature") // skip creature (player template)
+        .map(|(name, kind)| {
+            let label = capitalise(name);
+            spawn_palette_button(
+                &mut commands,
+                &label,
+                EditorUiEvent::SelectEntity(name.to_string(), *kind),
+            )
+        })
+        .collect();
 
     // Section: File
     let file_header = commands
@@ -111,18 +119,20 @@ pub fn spawn_palette_ui(mut commands: Commands) {
     let save_btn = spawn_palette_button(&mut commands, "Save", EditorUiEvent::Save);
     let load_btn = spawn_palette_button(&mut commands, "Load", EditorUiEvent::Load);
 
-    commands.entity(root).add_children(&[
-        tile_header,
-        floor_btn,
-        wall_btn,
-        entity_header,
-        ball_btn,
-        can_btn,
-        toolbox_btn,
-        file_header,
-        save_btn,
-        load_btn,
-    ]);
+    let mut children = vec![tile_header, floor_btn, wall_btn, entity_header];
+    children.extend(entity_btns);
+    children.extend([file_header, save_btn, load_btn]);
+
+    commands.entity(root).add_children(&children);
+}
+
+/// Capitalise the first letter of a string (for display labels).
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+    }
 }
 
 fn spawn_palette_button(commands: &mut Commands, label: &str, event: EditorUiEvent) -> Entity {
