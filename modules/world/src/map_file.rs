@@ -681,4 +681,90 @@ mod tests {
         let loaded: TilesLayerData = from_layer_value(&raw).expect("deserialize");
         assert_eq!(data, loaded);
     }
+
+    // ---------------------------------------------------------------------------
+    // MapLayerRegistry::load_layer tests
+    // ---------------------------------------------------------------------------
+
+    struct DummyLayer {
+        key: &'static str,
+        load_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl MapLayer for DummyLayer {
+        fn key(&self) -> &'static str {
+            self.key
+        }
+
+        fn save(
+            &self,
+            _world: &World,
+        ) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+            to_layer_value(&())
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        }
+
+        fn load(
+            &self,
+            _data: &RawValue,
+            _world: &mut World,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.load_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn load_layer_returns_true_and_invokes_load_for_matching_key() {
+        let load_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let layer = DummyLayer {
+            key: "dummy",
+            load_calls: load_calls.clone(),
+        };
+
+        let mut registry = MapLayerRegistry::new();
+        registry.register(layer);
+
+        let mut world = World::new();
+        let data = to_layer_value(&()).expect("valid RON");
+
+        let found = registry
+            .load_layer("dummy", &data, &mut world)
+            .expect("load_layer should not error");
+        assert!(found, "expected true for matching key");
+        assert_eq!(
+            1,
+            load_calls.load(std::sync::atomic::Ordering::SeqCst),
+            "expected exactly one load() call"
+        );
+    }
+
+    #[test]
+    fn load_layer_returns_false_for_non_matching_key() {
+        let load_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let layer = DummyLayer {
+            key: "dummy",
+            load_calls: load_calls.clone(),
+        };
+
+        let mut registry = MapLayerRegistry::new();
+        registry.register(layer);
+
+        let mut world = World::new();
+        let data = to_layer_value(&()).expect("valid RON");
+
+        let not_found = registry
+            .load_layer("other", &data, &mut world)
+            .expect("load_layer should not error");
+        assert!(
+            !not_found,
+            "expected false for non-matching key"
+        );
+        assert_eq!(
+            0,
+            load_calls.load(std::sync::atomic::Ordering::SeqCst),
+            "expected load() not to be called"
+        );
+    }
 }
