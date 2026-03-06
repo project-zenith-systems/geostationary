@@ -8,8 +8,8 @@ use crate::map_file::{CURRENT_MAP_VERSION, MapFile, MapLayerRegistry};
 ///
 /// Insert this resource before the app starts so [`load_map`] can locate the
 /// map file. If the resource is absent when [`load_map`] runs, loading is
-/// skipped and a warning is logged — this allows the editor to run without a
-/// pre-existing map file.
+/// skipped and an info message is logged — this allows the editor and
+/// pure-client launches to run without a pre-existing map file.
 #[derive(Resource, Debug, Clone)]
 pub struct MapPath(pub String);
 
@@ -25,8 +25,8 @@ impl MapPath {
 ///
 /// # Lifecycle
 ///
-/// 1. Reads [`MapPath`] to locate the map file on disk. If absent, logs a
-///    warning and returns early — the app continues in an uninitialised state.
+/// 1. Reads [`MapPath`] to locate the map file on disk. If absent, logs an
+///    info message and returns early — the app continues in an uninitialised state.
 /// 2. Reads and parses the RON map file into a [`MapFile`].
 /// 3. Validates that `file.version <= CURRENT_MAP_VERSION`. If the file was
 ///    written by a newer build (unknown version), loading is aborted to avoid
@@ -41,7 +41,7 @@ impl MapPath {
 /// This system runs at [`Startup`] and is registered by [`crate::WorldPlugin`].
 pub fn load_map(world: &mut World) {
     let Some(map_path) = world.get_resource::<MapPath>().map(|r| r.0.clone()) else {
-        warn!("WorldPlugin: no MapPath resource found, skipping map load");
+        info!("WorldPlugin: no MapPath resource found, skipping map load");
         return;
     };
 

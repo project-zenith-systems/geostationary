@@ -10,6 +10,7 @@ use shared::{app_state::AppState, config::AppConfig};
 use items::{InteractionRange, ItemsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
+use world::{MapPath, WorldPlugin};
 
 /// Set to `true` by the CTRL-C / SIGINT handler.
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -36,6 +37,7 @@ fn main() {
 
     let mut app = App::new();
     app.insert_resource(app_config.clone());
+    app.insert_resource(MapPath::new(&app_config.world.map_path));
 
     // Dedicated headless server: minimal plugin set for physics + networking.
     // No window or rendering. Mesh/scene asset support is retained for physics.
@@ -52,6 +54,7 @@ fn main() {
             disconnected: AppState::MainMenu,
         })
         .add_plugins(PhysicsPlugin)
+        .add_plugins(WorldPlugin)
         .add_plugins(TilesPlugin)
         .add_plugins(ThingsPlugin::<AppState>::in_state(
             AppState::InGame,
@@ -59,7 +62,7 @@ fn main() {
         .add_plugins(atmospherics::AtmosphericsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(souls::SoulsPlugin)
-        .add_plugins(shared::world_setup::WorldSetupPlugin)
+        .add_plugins(shared::world_init::WorldInitPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(ItemsPlugin)
         .add_plugins(InteractionsPlugin::<AppState>::in_state(
