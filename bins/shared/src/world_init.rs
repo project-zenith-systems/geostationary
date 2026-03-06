@@ -6,18 +6,31 @@ use world::MapPath;
 use crate::app_state::AppState;
 use crate::config::AppConfig;
 
+/// Marker resource inserted after [`load_map_on_host`] has attempted to load
+/// the map.  Prevents the system from retrying every frame when the load fails
+/// (missing file, parse error, unsupported version, etc.).
+#[derive(Resource)]
+struct MapLoadAttempted;
+
 /// Exclusive system that loads the map on a listen-server when the [`Server`]
 /// resource appears but no [`Tilemap`] has been inserted yet.
 ///
-/// Gated by `run_if(resource_exists::<Server>.and(not(resource_exists::<Tilemap>)))`.
+/// Gated by `run_if(resource_exists::<Server>
+///     .and(not(resource_exists::<Tilemap>))
+///     .and(not(resource_exists::<MapLoadAttempted>)))`.
 ///
 /// On a dedicated server `load_map` already ran at `Startup` (because
 /// [`MapPath`] was present), so the [`Tilemap`] guard prevents re-loading.
 /// On a pure client (no [`Server`] resource) this system never fires.
+///
+/// The [`MapLoadAttempted`] guard ensures that if the load fails the system
+/// does not retry every frame.  The guard is removed by [`cleanup_world`] on
+/// `OnExit(AppState::InGame)` so a subsequent host session gets a fresh
+/// attempt.
 fn load_map_on_host(world: &mut World) {
-    if !world.contains_resource::<Server>() || world.contains_resource::<Tilemap>() {
-        return;
-    }
+    // Insert the one-shot guard before attempting to load so that failures
+    // do not cause a tight retry loop.
+    world.insert_resource(MapLoadAttempted);
 
     // Insert MapPath from config if it wasn't set already.
     if !world.contains_resource::<MapPath>() {
@@ -59,6 +72,7 @@ fn cleanup_world(mut commands: Commands) {
     commands.remove_resource::<Tilemap>();
     commands.remove_resource::<atmospherics::GasGrid>();
     commands.remove_resource::<atmospherics::PressureForceScale>();
+    commands.remove_resource::<MapLoadAttempted>();
 }
 
 /// Post-load world initialization plugin.
@@ -80,7 +94,9 @@ impl Plugin for WorldInitPlugin {
         app.add_systems(
             Update,
             load_map_on_host.run_if(
-                resource_exists::<Server>.and(not(resource_exists::<Tilemap>)),
+                resource_exists::<Server>
+                    .and(not(resource_exists::<Tilemap>))
+                    .and(not(resource_exists::<MapLoadAttempted>)),
             ),
         );
         app.add_systems(
