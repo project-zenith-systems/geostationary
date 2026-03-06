@@ -126,7 +126,10 @@ mod tests {
     fn test_is_hosting() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
-        let handle = rt.spawn(async {});
+        let token_clone = cancel_token.clone();
+        let handle = rt.spawn(async move {
+            token_clone.cancelled().await;
+        });
 
         let mut tasks = NetworkTasks::default();
         assert!(!tasks.is_hosting());
@@ -139,7 +142,10 @@ mod tests {
     fn test_is_connected() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
-        let handle = rt.spawn(async {});
+        let token_clone = cancel_token.clone();
+        let handle = rt.spawn(async move {
+            token_clone.cancelled().await;
+        });
 
         let mut tasks = NetworkTasks::default();
         assert!(!tasks.is_connected());

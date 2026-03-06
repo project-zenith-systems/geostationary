@@ -65,6 +65,9 @@ pub struct Tilemap {
     width: u32,
     height: u32,
     tiles: Vec<TileKind>,
+    /// Per-tile atmosphere override.  `None` = default for the tile kind
+    /// (Pressurised for Floor, no atmos for Wall).
+    atmosphere: Vec<Option<Atmo>>,
 }
 
 impl Tilemap {
@@ -74,6 +77,7 @@ impl Tilemap {
             width,
             height,
             tiles: vec![fill; size],
+            atmosphere: vec![None; size],
         }
     }
 
@@ -108,6 +112,34 @@ impl Tilemap {
 
     pub fn is_walkable(&self, pos: IVec2) -> bool {
         self.get(pos).is_some_and(|kind| kind.is_walkable())
+    }
+
+    /// Returns the atmosphere override for a tile, or `None` if unset (use kind default).
+    pub fn get_atmosphere(&self, pos: IVec2) -> Option<Atmo> {
+        self.coord_to_index(pos)
+            .and_then(|idx| self.atmosphere[idx])
+    }
+
+    /// Sets the atmosphere override for a tile.
+    pub fn set_atmosphere(&mut self, pos: IVec2, atmo: Option<Atmo>) -> bool {
+        if let Some(idx) = self.coord_to_index(pos) {
+            self.atmosphere[idx] = atmo;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the effective atmosphere for a tile: the explicit override if set,
+    /// otherwise `Pressurised` for walkable tiles and `None` for walls.
+    pub fn effective_atmosphere(&self, pos: IVec2) -> Option<Atmo> {
+        if let Some(atmo) = self.get_atmosphere(pos) {
+            Some(atmo)
+        } else if self.is_walkable(pos) {
+            Some(Atmo::Pressurised)
+        } else {
+            None
+        }
     }
 
     /// Returns an iterator over all tiles with their positions and kinds
@@ -155,7 +187,7 @@ pub struct TileDef {
 }
 
 /// Atmosphere state baked into a tile definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
 pub enum Atmo {
     Pressurised,
     Vacuum,
@@ -278,7 +310,9 @@ impl MapLayer for TilesLayer {
 
                     let global_x = chunk_x * chunk_size as i32 + local_x as i32;
                     let global_y = chunk_y * chunk_size as i32 + local_y as i32;
-                    tilemap.set(IVec2::new(global_x, global_y), tile_def.kind);
+                    let pos = IVec2::new(global_x, global_y);
+                    tilemap.set(pos, tile_def.kind);
+                    tilemap.set_atmosphere(pos, tile_def.atmosphere);
                 }
             }
         }
@@ -327,7 +361,7 @@ impl MapLayer for TilesLayer {
                         let kind = tilemap.get(pos).unwrap_or(TileKind::Floor);
                         let def = TileDef {
                             kind,
-                            atmosphere: None,
+                            atmosphere: tilemap.get_atmosphere(pos),
                         };
                         let key = match def_to_key.entry(def.clone()) {
                             std::collections::hash_map::Entry::Occupied(e) => *e.get(),
@@ -422,10 +456,12 @@ impl TryFrom<TilesStreamMessage> for Tilemap {
                         tiles.len()
                     ));
                 }
+                let size = tiles.len();
                 Ok(Tilemap {
                     width,
                     height,
                     tiles,
+                    atmosphere: vec![None; size],
                 })
             }
             TilesStreamMessage::TileMutated { .. } => {

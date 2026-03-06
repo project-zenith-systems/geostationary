@@ -4,7 +4,7 @@ use network::{
     StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{ConstantForce, RigidBody};
-use tiles::{TileMutated, Tilemap};
+use tiles::{Atmo, TileMutated, Tilemap};
 use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
@@ -51,15 +51,16 @@ pub enum AtmosStreamMessage {
 }
 
 /// Creates and initializes a GasGrid from a Tilemap.
-/// All floor cells are filled with the given standard atmospheric pressure,
-/// except cells inside `vacuum_region` (inclusive bounding rect) which start at 0.0 moles.
+///
+/// Each walkable cell's initial pressure is determined by the tile's effective
+/// atmosphere: `Pressurised` cells receive `standard_pressure`, `Vacuum` cells
+/// start at 0.0 moles.
 ///
 /// `diffusion_rate` is a simulation tuning parameter stored on the grid and used
 /// during `step()`.
 pub fn initialize_gas_grid(
     tilemap: &Tilemap,
     standard_pressure: f32,
-    vacuum_region: Option<(IVec2, IVec2)>,
     diffusion_rate: f32,
 ) -> GasGrid {
     let mut gas_grid = GasGrid::with_tuning(tilemap.width(), tilemap.height(), diffusion_rate);
@@ -67,16 +68,16 @@ pub fn initialize_gas_grid(
     // Sync walls from tilemap to mark impassable cells
     gas_grid.sync_walls(tilemap);
 
-    // Fill all floor cells with standard pressure, skipping those in the vacuum region
+    // Fill walkable cells based on per-tile atmosphere data
     for y in 0..tilemap.height() {
         for x in 0..tilemap.width() {
             let pos = IVec2::new(x as i32, y as i32);
-            if tilemap.is_walkable(pos) {
-                let in_vacuum = vacuum_region.is_some_and(|(min, max)| {
-                    pos.x >= min.x && pos.x <= max.x && pos.y >= min.y && pos.y <= max.y
-                });
-                if !in_vacuum {
+            match tilemap.effective_atmosphere(pos) {
+                Some(Atmo::Pressurised) => {
                     gas_grid.set_moles(pos, standard_pressure);
+                }
+                Some(Atmo::Vacuum) | None => {
+                    // Vacuum tiles and walls start at 0.0 (the grid default)
                 }
             }
         }

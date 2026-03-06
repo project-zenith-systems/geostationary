@@ -1,18 +1,5 @@
 # TODO
 
-## things: `SpawnThing` uses `EntityEvent` but is triggered globally
-
-`SpawnThing` derives `EntityEvent` but is always fired via `commands.trigger()` /
-`world.trigger()` (global) rather than entity-targeted
-(`commands.trigger_targets()` / `world.trigger_targets()`). It carries the target
-entity ID manually in its `entity` field.
-
-Either switch to `trigger_targets` and use the observer's `event_target()`, or
-change the derive to `Event` / `Message` if entity-targeting is not needed.
-
-Source: `modules/things/src/lib.rs` — `SpawnThing` struct and all call sites
-(`spawn_thing`, `handle_entity_lifecycle`, `SpawnsLayer::load`).
-
 ## Persist `SpawnPoint.contents` through load-save round-trip
 
 `SpawnsLayer::save` currently writes an empty `contents` vec for every spawn
@@ -37,18 +24,6 @@ fixup system.
 
 Source: deleted `bins/shared/src/world_setup.rs`; `SpawnPoint.contents` field in
 `modules/things/src/lib.rs:107`.
-
-## Read `Atmo::Vacuum` from tile data during atmosphere initialization
-
-The tile layer format already supports per-tile atmosphere via `TileDef.atmosphere`
-(`Atmo::Pressurised` / `Atmo::Vacuum`), and `default.station.ron` can encode
-vacuum tiles. However, `init_atmosphere` in `WorldInitPlugin` currently passes
-`None` for the vacuum region and fills all walkable cells with standard pressure
-uniformly. It should read the `Atmo` field from the loaded `Tilemap` / tile
-definitions and initialize vacuum cells at 0.0 moles.
-
-Source: `bins/shared/src/world_init.rs:59` — inline comment; `modules/tiles/src/lib.rs:149`
-— `Atmo::Vacuum` variant; `docs/map-format.md` — "Atmosphere initialisation" section.
 
 ## Network: refactor module streams from `open_uni()` to bidirectional `open_bi()`
 

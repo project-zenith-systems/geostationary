@@ -45,15 +45,12 @@ fn load_map_on_host(world: &mut World) {
 /// Initializes the [`atmospherics::GasGrid`] and [`atmospherics::PressureForceScale`]
 /// resources from the loaded [`Tilemap`] once the server is running.
 ///
-/// All walkable cells are filled with `standard_pressure` from config (no
-/// vacuum region — vacuum regions were an artifact of the old hardcoded test
-/// room and will be expressed as a map layer in the future).
+/// Per-tile atmosphere is read from the tilemap: `Pressurised` tiles get standard
+/// pressure, `Vacuum` tiles start at 0.0 moles.
 fn init_atmosphere(mut commands: Commands, tilemap: Res<Tilemap>, config: Res<AppConfig>) {
     let gas_grid = atmospherics::initialize_gas_grid(
         &tilemap,
         config.atmospherics.standard_pressure,
-        None, // No vacuum region — uniform standard pressure for now.
-        // Vacuum regions will be expressed via an "atmospherics" map layer.
         config.atmospherics.diffusion_rate,
     );
     commands.insert_resource(gas_grid);
