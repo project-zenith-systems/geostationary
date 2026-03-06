@@ -45,7 +45,7 @@ impl Plugin for TemplatesPlugin {
         let mut registry = app.world_mut().resource_mut::<ThingRegistry>();
 
         // Kind 0: Creature — player-controlled entity with locked axes, hand slot.
-        registry.register(0, move |entity, _event, commands| {
+        registry.register_named("creature", 0, move |entity, _event, commands| {
             debug!("Template kind 0 (creature): applying to {entity:?}");
             commands.entity(entity).insert((
                 Mesh3d(creature_mesh.clone()),
@@ -67,7 +67,7 @@ impl Plugin for TemplatesPlugin {
         });
 
         // Kind 1: Ball — bouncy physics object.
-        registry.register(1, move |entity, _event, commands| {
+        registry.register_named("ball", 1, move |entity, _event, commands| {
             debug!("Template kind 1 (ball): applying to {entity:?}");
             commands.entity(entity).insert((
                 Mesh3d(ball_mesh.clone()),
@@ -80,7 +80,7 @@ impl Plugin for TemplatesPlugin {
         });
 
         // Kind 2: Can — pickable item.
-        registry.register(2, move |entity, _event, commands| {
+        registry.register_named("can", 2, move |entity, _event, commands| {
             debug!("Template kind 2 (can): applying to {entity:?}");
             commands.entity(entity).insert((
                 Mesh3d(can_mesh.clone()),
@@ -94,7 +94,7 @@ impl Plugin for TemplatesPlugin {
         });
 
         // Kind 3: Toolbox — pickable container.
-        registry.register(3, move |entity, _event, commands| {
+        registry.register_named("toolbox", 3, move |entity, _event, commands| {
             debug!("Template kind 3 (toolbox): applying to {entity:?}");
             commands.entity(entity).insert((
                 Mesh3d(toolbox_mesh.clone()),
