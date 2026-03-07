@@ -45,6 +45,7 @@ fn main() {
         editor_state: AppState::Editor,
     })
     .add_plugins(NetworkPlugin {
+        loading: AppState::Loading,
         in_game: AppState::InGame,
         disconnected: AppState::MainMenu,
     })

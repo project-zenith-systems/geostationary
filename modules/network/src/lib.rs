@@ -791,17 +791,21 @@ static CAP_WARNING_LOGGED: AtomicBool = AtomicBool::new(false);
 /// Generic over the application state type `S` so the network module remains
 /// game-agnostic while still driving state transitions:
 ///
-/// - `in_game`      — the state to enter once initial sync is complete.
-/// - `disconnected`  — the state to fall back to on disconnect / error.
+/// - `loading`       — entered when `NetCommand::Host` or `NetCommand::Connect`
+///                      is processed (map loading + network sync).
+/// - `in_game`       — entered once initial sync is complete.
+/// - `disconnected`  — fall-back on disconnect / error.
 ///
 /// # Example
 /// ```ignore
 /// NetworkPlugin {
+///     loading: AppState::Loading,
 ///     in_game: AppState::InGame,
 ///     disconnected: AppState::MainMenu,
 /// }
 /// ```
 pub struct NetworkPlugin<S: FreelyMutableState + Copy> {
+    pub loading: S,
     pub in_game: S,
     pub disconnected: S,
 }
@@ -846,11 +850,11 @@ impl<S: FreelyMutableState + Copy> Plugin for NetworkPlugin<S> {
         );
         app.add_systems(
             NetworkReceive,
-            process_net_commands.in_set(NetworkSet::Commands),
+            process_net_commands::<S>.in_set(NetworkSet::Commands),
         );
 
         // Register orchestration systems that manage sync barriers and state transitions.
-        orchestrate::register_orchestrate_systems(app, self.in_game, self.disconnected);
+        orchestrate::register_orchestrate_systems(app, self.loading, self.in_game, self.disconnected);
     }
 }
 
@@ -962,7 +966,7 @@ fn drain_client_events(
 }
 
 /// Reads NetCommand Bevy messages and spawns async tasks accordingly.
-fn process_net_commands(
+fn process_net_commands<S: FreelyMutableState + Copy>(
     mut commands: Commands,
     mut commands_reader: MessageReader<NetCommand>,
     runtime: Res<NetworkRuntime>,
@@ -970,6 +974,9 @@ fn process_net_commands(
     client_event_tx: Res<ClientEventSender>,
     mut tasks: ResMut<NetworkTasks>,
     mut registry: ResMut<StreamRegistry>,
+    states: Res<orchestrate::OrchestrationStates<S>>,
+    state: Res<State<S>>,
+    mut next_state: ResMut<NextState<S>>,
 ) {
     // Clean up any finished tasks before processing new commands
     tasks.cleanup_finished();
@@ -1005,6 +1012,9 @@ fn process_net_commands(
                     stream_cmd_rx,
                 ));
                 tasks.server_task = Some((handle, cancel_token));
+
+                // Transition to Loading (no-op if already in Loading, e.g. dedicated server).
+                states.transition_to_loading(&state, &mut next_state);
             }
             NetCommand::Connect { addr, name } => {
                 // Prevent duplicate connections
@@ -1038,6 +1048,9 @@ fn process_net_commands(
                     client_stream_rxs,
                 ));
                 tasks.client_task = Some((handle, cancel_token));
+
+                // Transition to Loading (no-op if already in Loading).
+                states.transition_to_loading(&state, &mut next_state);
             }
             NetCommand::StopHosting => {
                 tasks.stop_hosting();

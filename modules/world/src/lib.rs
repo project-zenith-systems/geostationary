@@ -3,7 +3,7 @@ pub mod loader;
 pub mod map_file;
 
 pub use lifecycle::{WorldLoading, WorldReady, WorldTeardown};
-pub use loader::{MapLoaded, MapPath};
+pub use loader::MapPath;
 pub use map_file::{
     CURRENT_MAP_VERSION, MapFile, MapLayer, MapLayerRegistry, MapLayerRegistryExt,
     from_layer_value, to_layer_value,
@@ -27,6 +27,7 @@ impl Plugin for WorldPlugin {
         app.add_message::<WorldLoading>();
         app.add_message::<WorldReady>();
         app.add_message::<WorldTeardown>();
-        app.add_systems(Startup, loader::load_map);
+        // Map loading is driven by the application's Loading state
+        // (see WorldInitPlugin), not by Startup.
     }
 }

@@ -48,6 +48,7 @@ fn main() {
         .add_plugins(bevy::state::app::StatesPlugin)
         .insert_resource(Headless)
         .add_plugins(NetworkPlugin {
+            loading: AppState::Loading,
             in_game: AppState::InGame,
             disconnected: AppState::MainMenu,
         })
@@ -68,7 +69,7 @@ fn main() {
         .add_plugins(ItemsPlugin)
         .add_plugins(InteractionsPlugin::<AppState>::in_state(AppState::InGame))
         .insert_resource(InteractionRange(app_config.items.interaction_range))
-        .insert_state(AppState::InGame)
+        .insert_state(AppState::Loading)
         .add_systems(Startup, host_on_startup)
         .add_systems(Update, check_shutdown_signal);
 

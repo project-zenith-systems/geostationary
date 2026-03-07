@@ -61,6 +61,7 @@ struct ClientInitSyncState {
 /// application state `S`.
 pub(crate) fn register_orchestrate_systems<S: FreelyMutableState + Copy>(
     app: &mut App,
+    loading: S,
     in_game: S,
     disconnected: S,
 ) {
@@ -78,6 +79,7 @@ pub(crate) fn register_orchestrate_systems<S: FreelyMutableState + Copy>(
 
     // Store the state values so the generic system can read them.
     app.insert_resource(OrchestrationStates {
+        loading,
         in_game,
         disconnected,
     });
@@ -85,9 +87,19 @@ pub(crate) fn register_orchestrate_systems<S: FreelyMutableState + Copy>(
 
 /// Resource storing the state values used for transitions.
 #[derive(Resource)]
-struct OrchestrationStates<S: FreelyMutableState> {
+pub(crate) struct OrchestrationStates<S: FreelyMutableState> {
+    loading: S,
     in_game: S,
     disconnected: S,
+}
+
+impl<S: FreelyMutableState + Copy> OrchestrationStates<S> {
+    /// Transition to the `loading` state unless we're already in `loading` or `in_game`.
+    pub(crate) fn transition_to_loading(&self, state: &State<S>, next_state: &mut NextState<S>) {
+        if *state.get() != self.loading && *state.get() != self.in_game {
+            next_state.set(self.loading);
+        }
+    }
 }
 
 fn handle_client_events<S: FreelyMutableState + Copy>(
@@ -159,16 +171,16 @@ fn handle_client_events<S: FreelyMutableState + Copy>(
     }
 }
 
-/// Transitions to the `in_game` state if the initial-sync barrier is complete and the app
-/// is not already in that state.  Guards against redundant state changes that would trigger
-/// a spurious [`OnExit`]/[`OnEnter`] cycle.
+/// Transitions from `Loading` to `InGame` once the initial-sync barrier is complete.
+/// Only fires when the app is in the `loading` state — prevents spurious transitions
+/// from other states (e.g. `Editor`).
 fn try_enter_in_game<S: FreelyMutableState + Copy>(
     sync: &PendingSync,
     state: &State<S>,
     next_state: &mut NextState<S>,
     states: &OrchestrationStates<S>,
 ) {
-    if sync.is_complete() && *state.get() != states.in_game {
+    if sync.is_complete() && *state.get() == states.loading {
         info!("Initial sync complete, entering InGame");
         next_state.set(states.in_game);
     }

@@ -1,77 +1,55 @@
 use bevy::prelude::*;
-use network::Server;
-use world::{MapLoaded, MapPath};
+use network::{Headless, Server};
+use world::MapPath;
 
 use crate::app_state::AppState;
 use crate::config::AppConfig;
 
-/// Marker resource inserted after [`load_map_on_host`] has attempted to load
-/// the map.  Prevents the system from retrying every frame when the load fails
-/// (missing file, parse error, unsupported version, etc.).
-#[derive(Resource)]
-struct MapLoadAttempted;
-
-/// Exclusive system that loads the map on a listen-server when the [`Server`]
-/// resource appears but no map has been loaded yet.
+/// Exclusive system that runs on [`OnEnter(AppState::Loading)`].
 ///
-/// Gated by `run_if(resource_exists::<Server>
-///     .and(not(resource_exists::<MapLoaded>))
-///     .and(not(resource_exists::<MapLoadAttempted>)))`.
-///
-/// On a dedicated server `load_map` already ran at `Startup` (because
-/// [`MapPath`] was present), so the [`MapLoaded`] guard prevents re-loading.
-/// On a pure client (no [`Server`] resource) this system never fires.
-///
-/// The [`MapLoadAttempted`] guard ensures that if the load fails the system
-/// does not retry every frame.  The guard is removed by [`cleanup_world`] on
-/// `OnExit(AppState::InGame)` so a subsequent host session gets a fresh
-/// attempt.
-fn load_map_on_host(world: &mut World) {
-    // Insert the one-shot guard before attempting to load so that failures
-    // do not cause a tight retry loop.
-    world.insert_resource(MapLoadAttempted);
-
-    // Insert MapPath from config if it wasn't set already.
-    if !world.contains_resource::<MapPath>() {
-        let config = world.resource::<AppConfig>();
-        let map_path = config.world.map_path.clone();
-        world.insert_resource(MapPath::new(map_path));
+/// * **Hosting (listen-server or dedicated):** loads the map from disk via
+///   [`world::loader::load_map`].  Inserts [`MapPath`] from [`AppConfig`] if
+///   it wasn't already present.
+/// * **Headless (dedicated server):** skips the network sync barrier and
+///   transitions straight to [`AppState::InGame`].
+/// * **Pure client (no [`Server`] resource):** does nothing — the network
+///   sync barrier in the orchestration layer handles the `Loading → InGame`
+///   transition.
+fn on_enter_loading(world: &mut World) {
+    if world.contains_resource::<Server>() {
+        if !world.contains_resource::<MapPath>() {
+            let config = world.resource::<AppConfig>();
+            let map_path = config.world.map_path.clone();
+            world.insert_resource(MapPath::new(map_path));
+        }
+        world::loader::load_map(world);
     }
 
-    world::loader::load_map(world);
+    // Dedicated server: no client-side sync barrier, go straight to InGame.
+    if world.contains_resource::<Headless>() {
+        world
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::InGame);
+    }
 }
 
-/// Cleans up load-related guards when exiting `InGame` so a subsequent
+/// Cleans up load-related resources when exiting `InGame` so a subsequent
 /// host session gets a fresh attempt.
 fn cleanup_world(mut commands: Commands) {
-    commands.remove_resource::<MapLoadAttempted>();
-    commands.remove_resource::<MapLoaded>();
     commands.remove_resource::<MapPath>();
 }
 
-/// Post-load world initialization plugin.
+/// World-loading glue plugin.
 ///
-/// Provides glue logic for listen-server map loading and cleanup:
-///
-/// * **Listen-server map loading** — triggers [`world::loader::load_map`]
-///   when the [`Server`] resource appears but no [`MapLoaded`] marker exists
-///   yet (the dedicated server already loads at `Startup` via
-///   [`world::WorldPlugin`]).
-/// * **Load-attempt guard cleanup** — removes [`MapLoadAttempted`] on
-///   `OnExit(AppState::InGame)` so a subsequent host session gets a fresh
-///   attempt.
+/// * **`OnEnter(AppState::Loading)`** — runs [`on_enter_loading`] to load
+///   the map (if hosting) and shortcut to `InGame` (if headless).
+/// * **`OnExit(AppState::InGame)`** — removes [`MapPath`] so re-hosting
+///   picks up fresh config.
 pub struct WorldInitPlugin;
 
 impl Plugin for WorldInitPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            load_map_on_host.run_if(
-                resource_exists::<Server>
-                    .and(not(resource_exists::<MapLoaded>))
-                    .and(not(resource_exists::<MapLoadAttempted>)),
-            ),
-        );
+        app.add_systems(OnEnter(AppState::Loading), on_enter_loading);
         app.add_systems(OnExit(AppState::InGame), cleanup_world);
     }
 }
