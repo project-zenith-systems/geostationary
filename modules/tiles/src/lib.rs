@@ -639,10 +639,19 @@ impl TileGrid<TileKind> {
     }
 }
 
-pub struct TilesPlugin;
+pub struct TilesPlugin<S: States + Copy> {
+    state: S,
+}
 
-impl Plugin for TilesPlugin {
+impl<S: States + Copy> TilesPlugin<S> {
+    pub fn in_state(state: S) -> Self {
+        Self { state }
+    }
+}
+
+impl<S: States + Copy> Plugin for TilesPlugin<S> {
     fn build(&self, app: &mut App) {
+        let state = self.state;
         app.register_type::<TileKind>();
         app.register_map_layer(TilesLayer);
         app.register_type::<GridSize>();
@@ -714,7 +723,16 @@ impl Plugin for TilesPlugin {
         });
         app.insert_resource(sender);
         app.insert_resource(reader);
+
+        app.add_systems(OnExit(state), cleanup_tiles);
     }
+}
+
+fn cleanup_tiles(mut commands: Commands) {
+    commands.remove_resource::<TileGrid<TileKind>>();
+    commands.remove_resource::<GridSize>();
+    commands.remove_resource::<TileFlags>();
+    commands.remove_resource::<AtmoSeed>();
 }
 
 #[derive(Resource)]

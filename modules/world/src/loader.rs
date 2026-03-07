@@ -3,6 +3,14 @@ use bevy::prelude::*;
 use crate::lifecycle::{WorldLoading, WorldReady};
 use crate::map_file::{CURRENT_MAP_VERSION, MapFile, MapLayerRegistry};
 
+/// Marker resource inserted by [`load_map`] after a successful load.
+///
+/// Other systems can use `resource_exists::<MapLoaded>` as a run condition to
+/// avoid re-triggering map loading when the map has already been loaded (e.g.
+/// by the [`Startup`] system on a dedicated server).
+#[derive(Resource, Debug)]
+pub struct MapLoaded;
+
 /// Resource that specifies the path to the `.station.ron` map file to load on
 /// startup.
 ///
@@ -81,6 +89,7 @@ pub fn load_map(world: &mut World) {
     match result {
         Ok(()) => {
             info!("WorldPlugin: map loaded from {:?}", map_path);
+            world.insert_resource(MapLoaded);
             world.write_message(WorldReady);
         }
         Err(e) => {

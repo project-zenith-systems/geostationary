@@ -225,13 +225,70 @@ fn apply_pressure_forces(
     }
 }
 
+/// Configuration for atmosphere initialization, passed at plugin construction
+/// time so the module doesn't depend on the app-level config crate.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct AtmosInitConfig {
+    pub standard_pressure: f32,
+    pub pressure_force_scale: f32,
+    pub diffusion_rate: f32,
+}
+
+/// Initializes the [`GasGrid`] and [`PressureForceScale`] resources from the
+/// loaded [`TileGrid<TileKind>`] once the server is running.
+fn init_atmosphere(
+    mut commands: Commands,
+    grid: Res<TileGrid<TileKind>>,
+    atmo_seed: Option<Res<AtmoSeed>>,
+    config: Res<AtmosInitConfig>,
+) {
+    let gas_grid = initialize_gas_grid(
+        &grid,
+        atmo_seed.as_deref(),
+        config.standard_pressure,
+        config.diffusion_rate,
+    );
+    commands.insert_resource(gas_grid);
+    commands.remove_resource::<AtmoSeed>();
+    commands.insert_resource(PressureForceScale(config.pressure_force_scale));
+    info!("AtmosphericsPlugin: atmosphere initialized");
+}
+
+fn cleanup_atmos(mut commands: Commands) {
+    commands.remove_resource::<GasGrid>();
+    commands.remove_resource::<PressureForceScale>();
+}
+
 /// Plugin that manages atmospheric simulation in the game.
 /// Registers the GasGrid as a Bevy resource and provides the infrastructure
 /// for gas diffusion across the tilemap.
-pub struct AtmosphericsPlugin;
+pub struct AtmosphericsPlugin<S: States + Copy> {
+    state: S,
+    config: AtmosInitConfig,
+}
 
-impl Plugin for AtmosphericsPlugin {
+impl<S: States + Copy> AtmosphericsPlugin<S> {
+    pub fn new(
+        state: S,
+        standard_pressure: f32,
+        pressure_force_scale: f32,
+        diffusion_rate: f32,
+    ) -> Self {
+        Self {
+            state,
+            config: AtmosInitConfig {
+                standard_pressure,
+                pressure_force_scale,
+                diffusion_rate,
+            },
+        }
+    }
+}
+
+impl<S: States + Copy> Plugin for AtmosphericsPlugin<S> {
     fn build(&self, app: &mut App) {
+        let state = self.state;
+        app.insert_resource(self.config);
         app.register_type::<GasGrid>();
         app.init_resource::<AtmosDebugOverlay>();
         app.init_resource::<AtmosSimPaused>();
@@ -310,6 +367,16 @@ impl Plugin for AtmosphericsPlugin {
         });
         app.insert_resource(sender);
         app.insert_resource(reader);
+
+        app.add_systems(
+            Update,
+            init_atmosphere.run_if(
+                resource_exists::<Server>
+                    .and(resource_exists::<TileGrid<TileKind>>)
+                    .and(not(resource_exists::<GasGrid>)),
+            ),
+        );
+        app.add_systems(OnExit(state), cleanup_atmos);
     }
 }
 

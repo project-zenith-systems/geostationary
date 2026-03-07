@@ -55,9 +55,14 @@ fn main() {
     }
 
     app.add_plugins(WorldPlugin)
-        .add_plugins(TilesPlugin)
+        .add_plugins(TilesPlugin::in_state(AppState::InGame))
         .add_plugins(ThingsPlugin::<AppState>::in_state(AppState::InGame))
-        .add_plugins(atmospherics::AtmosphericsPlugin)
+        .add_plugins(atmospherics::AtmosphericsPlugin::new(
+            AppState::InGame,
+            app_config.atmospherics.standard_pressure,
+            app_config.atmospherics.pressure_force_scale,
+            app_config.atmospherics.diffusion_rate,
+        ))
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(souls::SoulsPlugin)
         .add_plugins(player::PlayerPlugin)
