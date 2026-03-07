@@ -1,11 +1,18 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use bevy::prelude::*;
 use network::{
     Client, ModuleReadySent, NetId, NetworkReceive, NetworkSend, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
+use ron::value::RawValue;
 use serde::{Deserialize, Serialize};
-use things::{HandSlot, NetIdIndex, ThingsSet};
+use things::{
+    HandSlot, NetIdIndex, PropertyEntry, SpawnMarker, SpawnPoint, SpawnThing, Thing,
+    ThingPropertyRegistry, ThingRegistry, ThingsSet, apply_properties, serialize_entity_properties,
+};
 use wincode::{SchemaRead, SchemaWrite};
 
 // ── Components ────────────────────────────────────────────────────────────────
@@ -1088,6 +1095,115 @@ fn send_items_stream_ready_on_join(
     }
 }
 
+// ── Contents property ─────────────────────────────────────────────────────────
+
+/// Register the `"contents"` custom property on [`ThingPropertyRegistry`].
+///
+/// **Serialize:** reads `Container.slots`, builds a nested `Vec<SpawnPoint>` for
+/// each occupied slot (including recursive properties).  Returns `None` if no
+/// slots are occupied.
+///
+/// **Deserialize:** for each child `SpawnPoint`, spawns the child entity via
+/// `SpawnThing`, flushes deferred commands, stashes physics, hides the entity,
+/// and inserts it into the parent's `Container`.
+fn register_contents_property(app: &mut App) {
+    let entry = PropertyEntry {
+        serialize: Arc::new(|entity, world| {
+            let container = world.get::<Container>(entity)?;
+            let occupied: Vec<Entity> = container.slots.iter().filter_map(|slot| *slot).collect();
+            if occupied.is_empty() {
+                return None;
+            }
+            let registry = world.resource::<ThingRegistry>();
+            let mut child_points = Vec::new();
+            for child_entity in occupied {
+                let Some(thing) = world.get::<Thing>(child_entity) else {
+                    continue;
+                };
+                let Some(name) = registry.name_by_kind(thing.kind) else {
+                    continue;
+                };
+                let transform = world
+                    .get::<Transform>(child_entity)
+                    .map(|t| t.translation.to_array())
+                    .unwrap_or([0.0, 0.0, 0.0]);
+                let properties = serialize_entity_properties(child_entity, world);
+                child_points.push(SpawnPoint::with_properties(transform, name, properties));
+            }
+            if child_points.is_empty() {
+                return None;
+            }
+            Some(
+                world::to_layer_value(&child_points)
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
+            )
+        }),
+        deserialize_and_apply: Arc::new(|parent_entity, raw, world| {
+            let child_points: Vec<SpawnPoint> = world::from_layer_value(raw)?;
+
+            // Phase 1: spawn all children and trigger SpawnThing.
+            let mut pending: Vec<(Entity, HashMap<String, Box<RawValue>>)> =
+                Vec::with_capacity(child_points.len());
+            for sp in &child_points {
+                let kind = {
+                    let registry = world.resource::<ThingRegistry>();
+                    registry.kind_by_name(&sp.template).ok_or_else(|| {
+                        format!("contents: unknown spawn template \"{}\"", sp.template)
+                    })?
+                };
+                let position = Vec3::from_array(sp.position);
+                let entity = world.spawn(SpawnMarker).id();
+                world.trigger(SpawnThing {
+                    entity,
+                    kind,
+                    position,
+                });
+                pending.push((entity, sp.properties.clone()));
+            }
+
+            // Phase 2: flush so template components (Container, Collider, etc.) are applied.
+            world.flush();
+
+            // Phase 3: stash physics, hide, and insert each child into parent's Container.
+            for (child_entity, properties) in &pending {
+                // Apply any nested properties (e.g. recursive contents).
+                if !properties.is_empty() {
+                    apply_properties(*child_entity, properties, world)?;
+                }
+
+                // Stash physics.
+                let collider = world.get::<Collider>(*child_entity).cloned();
+                let gravity = world.get::<GravityScale>(*child_entity).copied();
+                if let (Some(col), Some(grav)) = (collider, gravity) {
+                    world
+                        .entity_mut(*child_entity)
+                        .insert(StashedPhysics {
+                            collider: col,
+                            gravity: grav,
+                        })
+                        .remove::<(RigidBody, Collider, LinearVelocity, GravityScale)>();
+                }
+
+                // Hide and mark as stored.
+                world
+                    .entity_mut(*child_entity)
+                    .insert((Visibility::Hidden, StoredInContainer(parent_entity)));
+
+                // Insert into parent's container.
+                if let Some(mut container) = world.get_mut::<Container>(parent_entity) {
+                    container.insert(*child_entity);
+                }
+            }
+
+            Ok(())
+        }),
+    };
+
+    app.world_mut()
+        .resource_mut::<ThingPropertyRegistry>()
+        .register_custom("contents", entry);
+}
+
 // ── Plugin ────────────────────────────────────────────────────────────────────
 
 /// Plugin that registers all item components, resources, events, and systems.
@@ -1113,6 +1229,9 @@ impl Plugin for ItemsPlugin {
 
         app.init_resource::<InteractionRange>();
         app.init_resource::<PendingItemEvents>();
+
+        // Register the "contents" property for container pre-loading.
+        register_contents_property(app);
 
         // Register stream 5 (server→client) with StreamRegistry.
         let (sender, reader) = app

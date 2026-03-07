@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
@@ -9,7 +10,8 @@ use network::{
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
-use serde::{Deserialize, Serialize};
+use ron::value::RawValue;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wincode::{SchemaRead, SchemaWrite};
 use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 
@@ -91,20 +93,59 @@ pub struct InputDirection(pub Vec3);
 #[reflect(Component)]
 pub struct SpawnMarker;
 
+/// Opaque property bag stored on editor spawn marker entities.
+///
+/// The editor does not interpret property values — it preserves them as raw
+/// RON across load/save round-trips.  [`SpawnsLayer::save`] merges these
+/// with any live-serialized properties, giving precedence to real components.
+#[derive(Component, Debug, Clone, Default)]
+pub struct SpawnProperties(pub HashMap<String, Box<RawValue>>);
+
 /// One entry in the `"spawns"` map layer.
 ///
 /// Template names keep the file stable across registry-order changes.
-/// The `contents` field is reserved for containers that are pre-loaded with
-/// item templates at map load time.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Per-instance data is stored in [`properties`](SpawnPoint::properties) as
+/// a map of registered [`ThingPropertyRegistry`] keys to RON values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpawnPoint {
     pub position: [f32; 3],
     /// Name of the [`ThingRegistry`] template (registered via
     /// [`ThingRegistry::register_named`]).
     pub template: String,
-    /// Optional pre-loaded contents for container entities.
-    #[serde(default)]
-    pub contents: Vec<String>,
+    /// Deprecated — kept for backward compatibility with old map files that
+    /// may contain `contents: []`.  Never written.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    contents: Vec<String>,
+    /// Per-instance property overrides keyed by [`ThingPropertyRegistry`] name.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub properties: HashMap<String, Box<RawValue>>,
+}
+
+impl SpawnPoint {
+    /// Create a new spawn point with no property overrides.
+    pub fn new(position: [f32; 3], template: impl Into<String>) -> Self {
+        Self {
+            position,
+            template: template.into(),
+            contents: vec![],
+            properties: HashMap::new(),
+        }
+    }
+
+    /// Create a new spawn point with property overrides.
+    pub fn with_properties(
+        position: [f32; 3],
+        template: impl Into<String>,
+        properties: HashMap<String, Box<RawValue>>,
+    ) -> Self {
+        Self {
+            position,
+            template: template.into(),
+            contents: vec![],
+            properties,
+        }
+    }
 }
 
 /// Entity event to construct the visual and physical representation of a thing.
@@ -204,6 +245,132 @@ impl ThingRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ThingPropertyRegistry — type-erased per-instance property storage
+// ---------------------------------------------------------------------------
+
+type SerializeFn = Arc<
+    dyn Fn(
+            Entity,
+            &World,
+        ) -> Option<Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>>>
+        + Send
+        + Sync,
+>;
+
+type DeserializeFn = Arc<
+    dyn Fn(Entity, &RawValue, &mut World) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+        + Send
+        + Sync,
+>;
+
+/// Type-erased operations for a single registered property.
+pub struct PropertyEntry {
+    /// Read a component from an entity and serialize it to a [`RawValue`].
+    /// Returns `None` if the entity does not have the component.
+    pub serialize: SerializeFn,
+    /// Deserialize a [`RawValue`] and insert the component onto an entity.
+    pub deserialize_and_apply: DeserializeFn,
+}
+
+/// Registry mapping string keys to type-erased property operations.
+///
+/// Used by [`SpawnsLayer`] to persist per-instance data on things, and later
+/// by network replication and scripting for the same purpose.
+#[derive(Resource, Default)]
+pub struct ThingPropertyRegistry {
+    entries: HashMap<String, Arc<PropertyEntry>>,
+}
+
+impl ThingPropertyRegistry {
+    /// Register a simple component as a named property.
+    ///
+    /// The component is serialized/deserialized via `ron` and inserted/read
+    /// through the ECS.  The `key` is the string used in map files and on the
+    /// wire.
+    pub fn register_property<T>(&mut self, key: impl Into<String>)
+    where
+        T: Component + Serialize + DeserializeOwned + Clone,
+    {
+        let key = key.into();
+        let entry = PropertyEntry {
+            serialize: Arc::new(|entity, world| {
+                let component = world.get::<T>(entity)?;
+                Some(
+                    to_layer_value(component)
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
+                )
+            }),
+            deserialize_and_apply: Arc::new(|entity, raw, world| {
+                let value: T = from_layer_value(raw)?;
+                world.entity_mut(entity).insert(value);
+                Ok(())
+            }),
+        };
+        self.entries.insert(key, Arc::new(entry));
+    }
+
+    /// Register a property with custom serialize/deserialize logic.
+    ///
+    /// Use this for complex properties like container contents that need
+    /// world traversal during serialization.
+    pub fn register_custom(&mut self, key: impl Into<String>, entry: PropertyEntry) {
+        self.entries.insert(key.into(), Arc::new(entry));
+    }
+
+    /// Returns an iterator over all registered property keys.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+}
+
+/// Serialize all registered properties present on `entity` into a map.
+///
+/// Reads [`ThingPropertyRegistry`] from the world.  Returns an empty map
+/// when no properties are present.
+pub fn serialize_entity_properties(
+    entity: Entity,
+    world: &World,
+) -> HashMap<String, Box<RawValue>> {
+    let registry = world.resource::<ThingPropertyRegistry>();
+    let mut properties = HashMap::new();
+    for (key, entry) in &registry.entries {
+        if let Some(Ok(raw)) = (entry.serialize)(entity, world) {
+            properties.insert(key.clone(), raw);
+        }
+    }
+    properties
+}
+
+/// Apply property overrides from a map onto an entity.
+///
+/// Clones [`Arc`] references out of the registry before mutating the world,
+/// avoiding borrow conflicts.  Unknown keys are logged as warnings.
+pub fn apply_properties(
+    entity: Entity,
+    properties: &HashMap<String, Box<RawValue>>,
+    world: &mut World,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Clone Arc refs to avoid holding a borrow on the world.
+    let entries: Vec<(String, Arc<PropertyEntry>)> = {
+        let registry = world.resource::<ThingPropertyRegistry>();
+        registry
+            .entries
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect()
+    };
+
+    for (key, raw_value) in properties {
+        if let Some((_, entry)) = entries.iter().find(|(k, _)| k == key) {
+            (entry.deserialize_and_apply)(entity, raw_value, world)?;
+        } else {
+            warn!("ThingPropertyRegistry: unknown property key \"{key}\", skipping");
+        }
+    }
+    Ok(())
+}
+
 /// `MapLayer` implementation for the `"spawns"` layer.
 ///
 /// **Load:** deserializes a list of [`SpawnPoint`]s and, for each one, spawns
@@ -262,13 +429,19 @@ impl MapLayer for SpawnsLayer {
                     );
                     continue;
                 };
-                // TODO: persist original SpawnPoint.contents through load→save round-trip
-                // once container pre-loading is implemented.
-                spawn_points.push(SpawnPoint {
-                    position: transform.translation.to_array(),
-                    template: name.to_owned(),
-                    contents: vec![],
-                });
+                let mut properties = serialize_entity_properties(entity, world);
+                // Merge in opaque editor properties for keys not already
+                // covered by a live-serialized component.
+                if let Some(stored) = entity_ref.get::<SpawnProperties>() {
+                    for (key, raw) in &stored.0 {
+                        properties.entry(key.clone()).or_insert_with(|| raw.clone());
+                    }
+                }
+                spawn_points.push(SpawnPoint::with_properties(
+                    transform.translation.to_array(),
+                    name,
+                    properties,
+                ));
             }
         }
 
@@ -277,10 +450,15 @@ impl MapLayer for SpawnsLayer {
 
     fn load(
         &self,
-        data: &ron::value::RawValue,
+        data: &RawValue,
         world: &mut World,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let spawn_points: Vec<SpawnPoint> = from_layer_value(data)?;
+
+        // Phase 1: spawn all entities and trigger SpawnThing for each.
+        // Collect (Entity, properties) pairs for phase 2.
+        let mut pending: Vec<(Entity, HashMap<String, Box<RawValue>>)> =
+            Vec::with_capacity(spawn_points.len());
         for sp in spawn_points {
             let kind = {
                 let registry = world.resource::<ThingRegistry>();
@@ -295,7 +473,20 @@ impl MapLayer for SpawnsLayer {
                 kind,
                 position,
             });
+            if !sp.properties.is_empty() {
+                pending.push((entity, sp.properties));
+            }
         }
+
+        // Phase 2: flush deferred commands so template components are applied,
+        // then apply property overrides.
+        if !pending.is_empty() {
+            world.flush();
+            for (entity, properties) in pending {
+                apply_properties(entity, &properties, world)?;
+            }
+        }
+
         Ok(())
     }
 }
@@ -418,6 +609,7 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
         app.register_type::<DisplayName>();
         app.register_type::<SpawnMarker>();
         app.init_resource::<ThingRegistry>();
+        app.init_resource::<ThingPropertyRegistry>();
         app.init_resource::<NetIdIndex>();
         app.init_resource::<StateBroadcastTimer>();
         app.insert_resource(ThingsActiveState(state));
@@ -871,16 +1063,8 @@ mod tests {
             .register_named("crate", 1, |_entity, _event, _commands| {});
 
         let data = world::to_layer_value(&vec![
-            SpawnPoint {
-                position: [1.0, 0.0, 2.0],
-                template: "crate".to_owned(),
-                contents: vec![],
-            },
-            SpawnPoint {
-                position: [3.0, 0.0, 4.0],
-                template: "crate".to_owned(),
-                contents: vec![],
-            },
+            SpawnPoint::new([1.0, 0.0, 2.0], "crate"),
+            SpawnPoint::new([3.0, 0.0, 4.0], "crate"),
         ])
         .expect("to_layer_value");
 
@@ -923,6 +1107,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ThingRegistry>();
+        app.init_resource::<ThingPropertyRegistry>();
         app.add_observer(on_spawn_thing);
 
         app.world_mut()
@@ -943,7 +1128,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].template, "barrel");
         assert_eq!(loaded[0].position, [5.0, 0.0, 7.0]);
-        assert!(loaded[0].contents.is_empty());
+        assert!(loaded[0].properties.is_empty());
     }
 
     /// Verifies that SpawnsLayer::load returns an error for an unregistered
@@ -955,12 +1140,8 @@ mod tests {
         app.init_resource::<ThingRegistry>();
         app.add_observer(on_spawn_thing);
 
-        let data = world::to_layer_value(&vec![SpawnPoint {
-            position: [0.0, 0.0, 0.0],
-            template: "no_such_thing".to_owned(),
-            contents: vec![],
-        }])
-        .expect("to_layer_value");
+        let data = world::to_layer_value(&vec![SpawnPoint::new([0.0, 0.0, 0.0], "no_such_thing")])
+            .expect("to_layer_value");
 
         let result = SpawnsLayer.load(&data, app.world_mut());
         assert!(

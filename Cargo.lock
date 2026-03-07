@@ -3428,9 +3428,11 @@ dependencies = [
  "bevy",
  "network",
  "physics",
+ "ron",
  "serde",
  "things",
  "wincode",
+ "world",
 ]
 
 [[package]]

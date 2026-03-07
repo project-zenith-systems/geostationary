@@ -5,8 +5,10 @@ edition = "2024"
 
 [dependencies]
 bevy = { workspace = true }
+ron = { workspace = true }
 serde = { workspace = true }
 wincode = { workspace = true }
 things = { path = "../things" }
 physics = { path = "../physics" }
 network = { path = "../network" }
+world = { path = "../world" }

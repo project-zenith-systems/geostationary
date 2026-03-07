@@ -16,7 +16,7 @@
 
 use bevy::prelude::*;
 use shared::config::AppConfig;
-use things::{SpawnMarker, SpawnPoint, Thing, ThingRegistry};
+use things::{SpawnMarker, SpawnPoint, SpawnProperties, Thing, ThingRegistry};
 use tiles::{AtmoSeed, GridSize, Tile, TileGrid, TileKind};
 use world::{CURRENT_MAP_VERSION, MapFile, MapLayerRegistry, from_layer_value};
 
@@ -205,6 +205,7 @@ pub fn handle_load(world: &mut World) {
                         SpawnMarker,
                         Thing { kind },
                         EditorSpawnMarker,
+                        SpawnProperties(sp.properties.clone()),
                     ));
                     if let (Some(m), Some(mat)) = (&mesh, &material) {
                         entity_commands.insert((Mesh3d(m.clone()), MeshMaterial3d(mat.clone())));
