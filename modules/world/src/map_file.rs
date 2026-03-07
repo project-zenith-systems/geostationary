@@ -83,7 +83,7 @@ pub trait MapLayer: Send + Sync + 'static {
     /// Deserialize `data` and apply it to `world`.
     ///
     /// `world` provides direct access to all resources and entities, which
-    /// is sufficient for the `tiles` layer (insert `Tilemap` resource) and
+    /// is sufficient for the `tiles` layer (insert `TileGrid` resource) and
     /// the `things` layer (read `ThingRegistry`, spawn entities).
     /// Use [`from_layer_value`] as a helper.
     fn load(
@@ -450,7 +450,7 @@ mod tests {
     // Spike Q3: What context does MapLayer::load() need?
     //
     // Finding: &mut World is sufficient. It allows reading existing resources
-    // (e.g. ThingRegistry) and inserting new ones (e.g. Tilemap). Commands
+    // (e.g. ThingRegistry) and inserting new ones (e.g. TileGrid). Commands
     // are not needed because simulation hasn't started — no observers need to
     // fire.  Deferred Commands would require an extra `world.flush()` call and
     // add complexity without benefit at load time.

@@ -9,7 +9,7 @@ use network::{
     StreamReader, StreamRegistry, StreamSender,
 };
 use things::{DisplayName, HandSlot, NetIdIndex, PlayerControlled};
-use tiles::{Tile, TileKind, TileMutated, Tilemap, TilesStreamMessage};
+use tiles::{Tile, TileGrid, TileKind, TileMutated, TilesStreamMessage};
 use ui::{UiTheme, WorldSpaceOverlay, build_button};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -180,7 +180,7 @@ fn build_context_menu(
     tile_query: Query<&Tile>,
     item_q: Query<(), With<Item>>,
     world_container_q: Query<(&NetId, &Container, Option<&DisplayName>), Without<HandSlot>>,
-    tilemap: Option<Res<Tilemap>>,
+    grid: Option<Res<TileGrid<TileKind>>>,
     active_menu: Option<Res<ActiveMenu>>,
     theme: Res<UiTheme>,
     player_q: Query<(Entity, &GlobalTransform), With<PlayerControlled>>,
@@ -275,8 +275,8 @@ fn build_context_menu(
             }
         }
     } else if let Ok(tile) = tile_query.get(hit.entity) {
-        let Some(ref tilemap) = tilemap else { return };
-        let Some(kind) = tilemap.get(tile.position) else {
+        let Some(ref grid) = grid else { return };
+        let Some(kind) = grid.get_copy(tile.position) else {
             return;
         };
         let position = tile.position;
@@ -425,7 +425,7 @@ fn send_interaction(
 /// Server-side system that drains [`InteractionRequest`] messages from stream 4.
 ///
 /// - **`TileToggle`:** Validates the request (bounds check, no-op guard), applies
-///   the mutation to [`Tilemap`], broadcasts [`TilesStreamMessage::TileMutated`] on
+///   the mutation to [`TileGrid<TileKind>`], broadcasts [`TilesStreamMessage::TileMutated`] on
 ///   stream 1 to all clients, and fires a local [`TileMutated`] Bevy event so the
 ///   listen-server's [`apply_tile_mutation`] system can update visuals.
 /// - **Item operations:** Resolves actor and item entities from [`NetIdIndex`] and
@@ -437,7 +437,7 @@ fn send_interaction(
 #[allow(clippy::too_many_arguments)]
 fn dispatch_interaction(
     mut reader: ResMut<StreamReader<InteractionRequest>>,
-    mut tilemap: Option<ResMut<Tilemap>>,
+    mut grid: Option<ResMut<TileGrid<TileKind>>>,
     tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
     mut mutation_events: MessageWriter<TileMutated>,
     net_id_index: Option<Res<NetIdIndex>>,
@@ -452,13 +452,13 @@ fn dispatch_interaction(
             InteractionRequest::TileToggle { position, kind } => {
                 let pos = IVec2::new(position[0], position[1]);
 
-                let Some(ref mut tm) = tilemap else {
-                    warn!("dispatch_interaction TileToggle: Tilemap resource not available");
+                let Some(ref mut g) = grid else {
+                    warn!("dispatch_interaction TileToggle: TileGrid resource not available");
                     continue;
                 };
 
-                // Validate: position must be within the tilemap bounds.
-                let Some(current) = tm.get(pos) else {
+                // Validate: position must be within the grid bounds.
+                let Some(&current) = g.get(pos) else {
                     warn!(
                         "TileToggle from {:?}: position {:?} is out of bounds",
                         from, pos
@@ -475,7 +475,7 @@ fn dispatch_interaction(
                     continue;
                 }
 
-                tm.set(pos, kind);
+                g.set(pos, kind);
 
                 // Fire local Bevy event so the listen-server updates its own visuals.
                 mutation_events.write(TileMutated {
@@ -732,7 +732,7 @@ mod tests {
             .id();
 
         // Insert a tilemap with that tile as a wall.
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        let mut tilemap = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         app.insert_resource(tilemap);
 
@@ -771,7 +771,7 @@ mod tests {
         // Spawn an entity WITHOUT a Tile, Item, or Container component.
         let non_tile = app.world_mut().spawn_empty().id();
 
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        let mut tilemap = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         app.insert_resource(tilemap);
 
@@ -814,7 +814,7 @@ mod tests {
             .id();
 
         // Insert a tilemap with that tile as a wall.
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        let mut tilemap = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         app.insert_resource(tilemap);
 
@@ -967,7 +967,7 @@ mod tests {
         app.insert_resource(tiles_reader);
 
         // Insert a tilemap with a wall at (1, 1).
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        let mut tilemap = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
         tilemap.set(IVec2::new(1, 1), TileKind::Wall);
         app.insert_resource(tilemap);
 
@@ -994,12 +994,12 @@ mod tests {
         );
         app.update();
 
-        // Tilemap should now have Floor at (1, 1).
-        let tilemap = app.world().resource::<Tilemap>();
+        // Grid should now have Floor at (1, 1).
+        let grid = app.world().resource::<TileGrid<TileKind>>();
         assert_eq!(
-            tilemap.get(IVec2::new(1, 1)),
+            grid.get_copy(IVec2::new(1, 1)),
             Some(TileKind::Floor),
-            "Tilemap should be mutated to Floor after TileToggle"
+            "Grid should be mutated to Floor after TileToggle"
         );
 
         // TileMutated event should have been fired.
@@ -1064,8 +1064,8 @@ mod tests {
         app.insert_resource(tiles_sender);
         app.insert_resource(tiles_reader);
 
-        // Tilemap with Floor at (1, 1) — request also asks for Floor → no-op.
-        let tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        // Grid with Floor at (1, 1) — request also asks for Floor → no-op.
+        let tilemap = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
         app.insert_resource(tilemap);
 
         let from = ClientId(1);
@@ -1090,9 +1090,9 @@ mod tests {
         );
         app.update();
 
-        // Tilemap unchanged.
-        let tilemap = app.world().resource::<Tilemap>();
-        assert_eq!(tilemap.get(IVec2::new(1, 1)), Some(TileKind::Floor));
+        // Grid unchanged.
+        let grid = app.world().resource::<TileGrid<TileKind>>();
+        assert_eq!(grid.get_copy(IVec2::new(1, 1)), Some(TileKind::Floor));
 
         // No TileMutated event.
         let captured = app.world().resource::<CapturedMutations>();
@@ -1448,7 +1448,7 @@ mod tests {
                 position: IVec2::new(1, 0),
             })
             .id();
-        let tilemap = Tilemap::new(5, 5, TileKind::Floor);
+        let tilemap = TileGrid::<TileKind>::new_fill(5, 5, TileKind::Floor);
         app.insert_resource(tilemap);
 
         emit_right_click(&mut app, tile_entity, Vec3::new(1.0, 0.0, 0.0));

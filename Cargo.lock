@@ -5810,6 +5810,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "bevy",
+ "bitflags 2.11.0",
  "input",
  "network",
  "physics",

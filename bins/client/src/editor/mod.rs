@@ -10,7 +10,7 @@
 
 use bevy::prelude::*;
 use shared::app_state::AppState;
-use tiles::{Tile, TileKind, Tilemap};
+use tiles::{GridSize, Tile, TileFlags, TileGrid, TileKind};
 
 pub mod camera;
 pub mod grid;
@@ -93,29 +93,34 @@ fn is_tile_tool(tool: Option<Res<palette::EditorTool>>) -> bool {
     tool.is_some_and(|t| *t == palette::EditorTool::Tile)
 }
 
-/// Inserts a default 32×32 `Tilemap` resource for the editor.
+/// Inserts a default 32×32 tile grid resource for the editor.
 ///
 /// Creates a room with perimeter walls and interior floor tiles.
 fn setup_editor_tilemap(mut commands: Commands) {
-    commands.insert_resource(default_editor_tilemap());
+    let size = 32_u32;
+    commands.insert_resource(GridSize {
+        width: size,
+        height: size,
+    });
+    commands.insert_resource(default_editor_grid());
 }
 
-/// Creates a default 32×32 tilemap with perimeter walls and floor interior.
-pub fn default_editor_tilemap() -> Tilemap {
+/// Creates a default 32×32 tile grid with perimeter walls and floor interior.
+pub fn default_editor_grid() -> TileGrid<TileKind> {
     let size = 32_u32;
-    let mut tilemap = Tilemap::new(size, size, TileKind::Floor);
+    let mut grid = TileGrid::<TileKind>::new_fill(size, size, TileKind::Floor);
 
     // Build perimeter walls.
     for x in 0..size as i32 {
-        tilemap.set(IVec2::new(x, 0), TileKind::Wall);
-        tilemap.set(IVec2::new(x, size as i32 - 1), TileKind::Wall);
+        grid.set(IVec2::new(x, 0), TileKind::Wall);
+        grid.set(IVec2::new(x, size as i32 - 1), TileKind::Wall);
     }
     for y in 0..size as i32 {
-        tilemap.set(IVec2::new(0, y), TileKind::Wall);
-        tilemap.set(IVec2::new(size as i32 - 1, y), TileKind::Wall);
+        grid.set(IVec2::new(0, y), TileKind::Wall);
+        grid.set(IVec2::new(size as i32 - 1, y), TileKind::Wall);
     }
 
-    tilemap
+    grid
 }
 
 /// Removes editor resources and despawns all tile and spawn marker entities
@@ -125,7 +130,9 @@ fn teardown_editor_world(
     tile_entities: Query<Entity, With<Tile>>,
     spawn_marker_entities: Query<Entity, With<spawns::EditorSpawnMarker>>,
 ) {
-    commands.remove_resource::<Tilemap>();
+    commands.remove_resource::<TileGrid<TileKind>>();
+    commands.remove_resource::<GridSize>();
+    commands.remove_resource::<TileFlags>();
     commands.remove_resource::<spawns::SpawnMarkerAssets>();
 
     for entity in &tile_entities {

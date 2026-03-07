@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine as _;
 use bevy::prelude::*;
+use bitflags::bitflags;
 use input::{PointerAction, WorldHit};
 use network::{
     ClientId, Headless, ModuleReadySent, NetworkReceive, PlayerEvent, Server, StreamDef,
@@ -16,12 +17,13 @@ use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 /// Other modules can use this for explicit ordering relative to tiles systems.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TilesSet {
-    /// Sends the full tilemap snapshot and [`StreamReady`] sentinel to a joining client.
+    /// Sends the full tile grid snapshot and [`StreamReady`] sentinel to a joining client.
     ///
     /// Runs in `PreUpdate` so that ordering constraints against other modules'
     /// on-connect sends (e.g. [`things::ThingsSet::HandleClientJoined`]) can be
-    /// expressed within the same schedule.  If the [`Tilemap`] resource is not yet
-    /// available the client is queued in [`PendingTilesSyncs`] and retried each frame.
+    /// expressed within the same schedule.  If the [`TileGrid<TileKind>`] resource
+    /// is not yet available the client is queued in [`PendingTilesSyncs`] and
+    /// retried each frame.
     SendOnConnect,
 }
 
@@ -59,26 +61,78 @@ impl TileKind {
     }
 }
 
-#[derive(Debug, Clone, Resource, Reflect)]
-#[reflect(Debug, Resource)]
-pub struct Tilemap {
-    width: u32,
-    height: u32,
-    tiles: Vec<TileKind>,
-    /// Per-tile atmosphere override.  `None` = default for the tile kind
-    /// (Pressurised for Floor, no atmos for Wall).
-    atmosphere: Vec<Option<Atmo>>,
+// ---------------------------------------------------------------------------
+// TileData trait + TileGrid<T> generic grid
+// ---------------------------------------------------------------------------
+
+/// Marker trait for per-tile cell data stored in a [`TileGrid<T>`].
+pub trait TileData: Clone + Send + Sync + 'static {
+    /// Value used to fill newly created grids.
+    fn empty() -> Self;
 }
 
-impl Tilemap {
-    pub fn new(width: u32, height: u32, fill: TileKind) -> Self {
-        let size = (width * height) as usize;
+impl TileData for TileKind {
+    fn empty() -> Self {
+        TileKind::Floor
+    }
+}
+
+/// Shared grid dimensions.  All [`TileGrid<T>`] resources must match.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[reflect(Debug, Resource)]
+pub struct GridSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A typed grid resource storing per-tile data of type `T`.
+///
+/// Bevy treats `TileGrid<TileKind>` and any future `TileGrid<Foo>` as distinct
+/// resources — no trait objects or downcasting needed.
+#[derive(Resource, Debug, Clone)]
+pub struct TileGrid<T: TileData> {
+    width: u32,
+    height: u32,
+    cells: Vec<T>,
+}
+
+impl<T: TileData> TileGrid<T> {
+    /// Create a grid filled with [`TileData::empty()`].
+    pub fn new(width: u32, height: u32) -> Self {
+        let size = (width as usize) * (height as usize);
         Self {
             width,
             height,
-            tiles: vec![fill; size],
-            atmosphere: vec![None; size],
+            cells: vec![T::empty(); size],
         }
+    }
+
+    /// Create a grid filled with a specific value.
+    pub fn new_fill(width: u32, height: u32, fill: T) -> Self {
+        let size = (width as usize) * (height as usize);
+        Self {
+            width,
+            height,
+            cells: vec![fill; size],
+        }
+    }
+
+    /// Construct from a pre-built cells vec, validating length.
+    pub fn from_cells(width: u32, height: u32, cells: Vec<T>) -> Result<Self, String> {
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| format!("TileGrid dimensions {width}×{height} overflow"))?;
+        if cells.len() != expected {
+            return Err(format!(
+                "cell data length mismatch: expected {expected}, got {}",
+                cells.len()
+            ));
+        }
+        Ok(Self {
+            width,
+            height,
+            cells,
+        })
     }
 
     pub fn width(&self) -> u32 {
@@ -97,62 +151,166 @@ impl Tilemap {
         }
     }
 
-    pub fn get(&self, pos: IVec2) -> Option<TileKind> {
-        self.coord_to_index(pos).map(|idx| self.tiles[idx])
+    /// Returns a reference to the cell at `pos`, or `None` if out of bounds.
+    pub fn get(&self, pos: IVec2) -> Option<&T> {
+        self.coord_to_index(pos).map(|idx| &self.cells[idx])
     }
 
-    pub fn set(&mut self, pos: IVec2, kind: TileKind) -> bool {
+    /// Sets the cell at `pos`. Returns `true` if in bounds.
+    pub fn set(&mut self, pos: IVec2, value: T) -> bool {
         if let Some(idx) = self.coord_to_index(pos) {
-            self.tiles[idx] = kind;
+            self.cells[idx] = value;
             true
         } else {
             false
         }
     }
 
-    pub fn is_walkable(&self, pos: IVec2) -> bool {
-        self.get(pos).is_some_and(|kind| kind.is_walkable())
+    /// Returns an iterator over all cells with their positions.
+    pub fn iter(&self) -> impl Iterator<Item = (IVec2, &T)> + '_ {
+        (0..self.height).flat_map(move |y| {
+            (0..self.width).map(move |x| {
+                let idx = (y * self.width + x) as usize;
+                (IVec2::new(x as i32, y as i32), &self.cells[idx])
+            })
+        })
     }
 
-    /// Returns the atmosphere override for a tile, or `None` if unset (use kind default).
-    pub fn get_atmosphere(&self, pos: IVec2) -> Option<Atmo> {
-        self.coord_to_index(pos)
-            .and_then(|idx| self.atmosphere[idx])
+    /// Direct access to the underlying cells slice.
+    pub fn cells(&self) -> &[T] {
+        &self.cells
     }
+}
 
-    /// Sets the atmosphere override for a tile.
-    pub fn set_atmosphere(&mut self, pos: IVec2, atmo: Option<Atmo>) -> bool {
-        if let Some(idx) = self.coord_to_index(pos) {
-            self.atmosphere[idx] = atmo;
-            true
-        } else {
-            false
+impl<T: TileData + Copy> TileGrid<T> {
+    /// Returns a copy of the cell at `pos`, or `None` if out of bounds.
+    pub fn get_copy(&self, pos: IVec2) -> Option<T> {
+        self.coord_to_index(pos).map(|idx| self.cells[idx])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TileFlags — derived bitmask cache
+// ---------------------------------------------------------------------------
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct TileFlag: u8 {
+        const WALKABLE = 0b0001;
+        const GAS_PASS = 0b0010;
+    }
+}
+
+/// Derived per-tile bitmask cache.  Rebuilt from [`TileGrid<TileKind>`] (and
+/// in the future, entity components like `BlocksGas`).
+///
+/// Consumers like atmospherics and pathfinding read this instead of querying
+/// the source grid directly.
+#[derive(Resource, Debug, Clone)]
+pub struct TileFlags {
+    width: u32,
+    height: u32,
+    flags: Vec<TileFlag>,
+}
+
+impl TileFlags {
+    pub fn new(width: u32, height: u32) -> Self {
+        let size = (width as usize) * (height as usize);
+        Self {
+            width,
+            height,
+            flags: vec![TileFlag::empty(); size],
         }
     }
 
-    /// Returns the effective atmosphere for a tile: the explicit override if set,
-    /// otherwise `Pressurised` for walkable tiles and `None` for walls.
-    pub fn effective_atmosphere(&self, pos: IVec2) -> Option<Atmo> {
-        if let Some(atmo) = self.get_atmosphere(pos) {
-            Some(atmo)
-        } else if self.is_walkable(pos) {
-            Some(Atmo::Pressurised)
+    fn coord_to_index(&self, pos: IVec2) -> Option<usize> {
+        if pos.x >= 0 && pos.x < self.width as i32 && pos.y >= 0 && pos.y < self.height as i32 {
+            Some((pos.y * self.width as i32 + pos.x) as usize)
         } else {
             None
         }
     }
 
-    /// Returns an iterator over all tiles with their positions and kinds
-    pub fn iter(&self) -> impl Iterator<Item = (IVec2, TileKind)> + '_ {
-        (0..self.height).flat_map(move |y| {
-            (0..self.width).map(move |x| {
-                let pos = IVec2::new(x as i32, y as i32);
-                let kind = self
-                    .get(pos)
-                    .expect("iterator should only visit valid positions");
-                (pos, kind)
-            })
-        })
+    pub fn get(&self, pos: IVec2) -> Option<TileFlag> {
+        self.coord_to_index(pos).map(|idx| self.flags[idx])
+    }
+
+    pub fn set(&mut self, pos: IVec2, flag: TileFlag) {
+        if let Some(idx) = self.coord_to_index(pos) {
+            self.flags[idx] = flag;
+        }
+    }
+
+    pub fn is_walkable(&self, pos: IVec2) -> bool {
+        self.get(pos)
+            .is_some_and(|f| f.contains(TileFlag::WALKABLE))
+    }
+
+    pub fn is_gas_passable(&self, pos: IVec2) -> bool {
+        self.get(pos)
+            .is_some_and(|f| f.contains(TileFlag::GAS_PASS))
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+}
+
+/// Rebuilds [`TileFlags`] whenever [`TileGrid<TileKind>`] changes.
+fn rebuild_tile_flags(
+    grid: Option<Res<TileGrid<TileKind>>>,
+    existing_flags: Option<Res<TileFlags>>,
+    mut commands: Commands,
+) {
+    let Some(grid) = grid else {
+        return;
+    };
+    // Skip if flags already exist and the grid hasn't changed.
+    if existing_flags.is_some() && !grid.is_changed() {
+        return;
+    }
+
+    let mut flags = TileFlags::new(grid.width(), grid.height());
+    for (pos, kind) in grid.iter() {
+        let flag = match kind {
+            TileKind::Floor => TileFlag::WALKABLE | TileFlag::GAS_PASS,
+            TileKind::Wall => TileFlag::empty(),
+        };
+        flags.set(pos, flag);
+    }
+    commands.insert_resource(flags);
+}
+
+// ---------------------------------------------------------------------------
+// AtmoSeed — temporary per-tile atmosphere data from map file
+// ---------------------------------------------------------------------------
+
+/// Temporary resource holding per-tile atmosphere overrides from the map file.
+///
+/// Inserted by [`TilesLayer::load`], consumed by `init_atmosphere` during
+/// world setup, then removed.  Not needed at runtime.
+#[derive(Resource)]
+pub struct AtmoSeed {
+    pub overrides: HashMap<IVec2, Atmo>,
+}
+
+impl AtmoSeed {
+    /// Returns the effective atmosphere for a tile position given its kind.
+    ///
+    /// Uses the explicit override if present, otherwise defaults to
+    /// `Pressurised` for walkable tiles and `None` for walls.
+    pub fn effective_atmosphere(&self, pos: IVec2, kind: TileKind) -> Option<Atmo> {
+        if let Some(&atmo) = self.overrides.get(&pos) {
+            Some(atmo)
+        } else if kind.is_walkable() {
+            Some(Atmo::Pressurised)
+        } else {
+            None
+        }
     }
 }
 
@@ -197,13 +355,14 @@ pub enum Atmo {
 // TilesLayer — MapLayer implementation
 // ---------------------------------------------------------------------------
 
-/// Chunk size used when saving a [`Tilemap`] to disk.
+/// Chunk size used when saving a [`TileGrid`] to disk.
 const SAVE_CHUNK_SIZE: u32 = 32;
 
 /// `MapLayer` implementation for the `"tiles"` layer.
 ///
-/// **load**: Decodes key-dictionary + base64 chunks → inserts [`Tilemap`] resource.
-/// **save**: Reads [`Tilemap`] resource → builds key-dictionary + base64 chunks.
+/// **load**: Decodes key-dictionary + base64 chunks → inserts [`TileGrid<TileKind>`],
+/// [`GridSize`], and [`AtmoSeed`] resources.
+/// **save**: Reads [`TileGrid<TileKind>`] resource → builds key-dictionary + base64 chunks.
 pub struct TilesLayer;
 
 impl MapLayer for TilesLayer {
@@ -233,7 +392,14 @@ impl MapLayer for TilesLayer {
 
         // Handle the empty-map case before doing any chunk work.
         if layer.chunks.is_empty() {
-            world.insert_resource(Tilemap::new(0, 0, TileKind::Floor));
+            world.insert_resource(GridSize {
+                width: 0,
+                height: 0,
+            });
+            world.insert_resource(TileGrid::<TileKind>::new(0, 0));
+            world.insert_resource(AtmoSeed {
+                overrides: HashMap::new(),
+            });
             return Ok(());
         }
 
@@ -262,7 +428,7 @@ impl MapLayer for TilesLayer {
             .ok_or("tiles layer: map dimensions overflow u32")?;
 
         // Validate that chunk_size, width, and height are within the ranges expected
-        // by Tilemap and the subsequent i32 casts, and that the total tile count
+        // by TileGrid and the subsequent i32 casts, and that the total tile count
         // fits in usize to avoid overflows and incorrect allocations.
         if chunk_size > i32::MAX as u32 {
             return Err("tiles layer: chunk_size exceeds i32 range".into());
@@ -273,12 +439,12 @@ impl MapLayer for TilesLayer {
         let total_tiles = (width as usize)
             .checked_mul(height as usize)
             .ok_or("tiles layer: total tile count overflows usize")?;
-        // total_tiles is validated here; Tilemap::new allocates this many tiles internally.
         let _ = total_tiles;
 
-        let mut tilemap = Tilemap::new(width, height, TileKind::Floor);
+        let mut grid = TileGrid::<TileKind>::new_fill(width, height, TileKind::Floor);
+        let mut atmo_overrides = HashMap::new();
 
-        // Decode each chunk and write directly into the tilemap.
+        // Decode each chunk and write directly into the grid.
         for (&(chunk_x, chunk_y), b64) in &layer.chunks {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(b64)
@@ -297,8 +463,6 @@ impl MapLayer for TilesLayer {
 
             for local_y in 0..chunk_size {
                 for local_x in 0..chunk_size {
-                    // Compute the byte offset in usize arithmetic to avoid u32 overflow
-                    // for large (but still valid) chunk sizes.
                     let offset = (local_y as usize * chunk_size as usize + local_x as usize) * 2;
                     let key = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
 
@@ -311,13 +475,19 @@ impl MapLayer for TilesLayer {
                     let global_x = chunk_x * chunk_size as i32 + local_x as i32;
                     let global_y = chunk_y * chunk_size as i32 + local_y as i32;
                     let pos = IVec2::new(global_x, global_y);
-                    tilemap.set(pos, tile_def.kind);
-                    tilemap.set_atmosphere(pos, tile_def.atmosphere);
+                    grid.set(pos, tile_def.kind);
+                    if let Some(atmo) = tile_def.atmosphere {
+                        atmo_overrides.insert(pos, atmo);
+                    }
                 }
             }
         }
 
-        world.insert_resource(tilemap);
+        world.insert_resource(GridSize { width, height });
+        world.insert_resource(grid);
+        world.insert_resource(AtmoSeed {
+            overrides: atmo_overrides,
+        });
         Ok(())
     }
 
@@ -325,19 +495,18 @@ impl MapLayer for TilesLayer {
         &self,
         world: &World,
     ) -> Result<Box<ron::value::RawValue>, Box<dyn std::error::Error + Send + Sync>> {
-        let tilemap = world
-            .get_resource::<Tilemap>()
-            .ok_or("tiles layer: Tilemap resource not found")?;
+        let grid = world
+            .get_resource::<TileGrid<TileKind>>()
+            .ok_or("tiles layer: TileGrid<TileKind> resource not found")?;
 
         let chunk_size = SAVE_CHUNK_SIZE;
 
-        // Tilemap coordinates are i32; reject maps too wide/tall to address safely.
-        if tilemap.width() > i32::MAX as u32 || tilemap.height() > i32::MAX as u32 {
+        if grid.width() > i32::MAX as u32 || grid.height() > i32::MAX as u32 {
             return Err("tiles layer: map dimensions exceed i32 range and cannot be saved".into());
         }
 
-        let num_chunks_x = tilemap.width().div_ceil(chunk_size);
-        let num_chunks_y = tilemap.height().div_ceil(chunk_size);
+        let num_chunks_x = grid.width().div_ceil(chunk_size);
+        let num_chunks_y = grid.height().div_ceil(chunk_size);
         let tiles_per_chunk = chunk_size as usize * chunk_size as usize;
 
         let mut key_dict: BTreeMap<u16, TileDef> = BTreeMap::new();
@@ -357,11 +526,11 @@ impl MapLayer for TilesLayer {
                             chunk_x as i32 * chunk_size as i32 + local_x as i32,
                             chunk_y as i32 * chunk_size as i32 + local_y as i32,
                         );
-                        // Pad out-of-bounds positions with Floor (the Tilemap default fill).
-                        let kind = tilemap.get(pos).unwrap_or(TileKind::Floor);
+                        // Pad out-of-bounds positions with Floor (the grid default fill).
+                        let kind = grid.get_copy(pos).unwrap_or(TileKind::Floor);
                         let def = TileDef {
                             kind,
-                            atmosphere: tilemap.get_atmosphere(pos),
+                            atmosphere: None,
                         };
                         let key = match def_to_key.entry(def.clone()) {
                             std::collections::hash_map::Entry::Occupied(e) => *e.get(),
@@ -426,17 +595,17 @@ pub fn decode_tiles_message(bytes: &[u8]) -> Result<TilesStreamMessage, String> 
     wincode::deserialize(bytes).map_err(|e| e.to_string())
 }
 
-impl From<&Tilemap> for TilesStreamMessage {
-    fn from(tilemap: &Tilemap) -> Self {
+impl From<&TileGrid<TileKind>> for TilesStreamMessage {
+    fn from(grid: &TileGrid<TileKind>) -> Self {
         TilesStreamMessage::TilemapData {
-            width: tilemap.width,
-            height: tilemap.height,
-            tiles: tilemap.tiles.clone(),
+            width: grid.width,
+            height: grid.height,
+            tiles: grid.cells.clone(),
         }
     }
 }
 
-impl TryFrom<TilesStreamMessage> for Tilemap {
+impl TryFrom<TilesStreamMessage> for TileGrid<TileKind> {
     type Error = String;
 
     fn try_from(msg: TilesStreamMessage) -> Result<Self, Self::Error> {
@@ -445,25 +614,7 @@ impl TryFrom<TilesStreamMessage> for Tilemap {
                 width,
                 height,
                 tiles,
-            } => {
-                let expected = width
-                    .checked_mul(height)
-                    .and_then(|n| usize::try_from(n).ok())
-                    .ok_or_else(|| format!("Tilemap dimensions {width}×{height} overflow"))?;
-                if tiles.len() != expected {
-                    return Err(format!(
-                        "tile data length mismatch: expected {expected}, got {}",
-                        tiles.len()
-                    ));
-                }
-                let size = tiles.len();
-                Ok(Tilemap {
-                    width,
-                    height,
-                    tiles,
-                    atmosphere: vec![None; size],
-                })
-            }
+            } => TileGrid::from_cells(width, height, tiles),
             TilesStreamMessage::TileMutated { .. } => {
                 Err("TileMutated is not a full tilemap snapshot".to_string())
             }
@@ -471,20 +622,20 @@ impl TryFrom<TilesStreamMessage> for Tilemap {
     }
 }
 
-impl Tilemap {
-    /// Serialize the tilemap to bytes using the `TilesStreamMessage::TilemapData` wire format.
+impl TileGrid<TileKind> {
+    /// Serialize the grid to bytes using the `TilesStreamMessage::TilemapData` wire format.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
         wincode::serialize(&TilesStreamMessage::from(self)).map_err(|e| {
             format!(
-                "Failed to serialize Tilemap ({}×{}): {e}",
+                "Failed to serialize TileGrid ({}×{}): {e}",
                 self.width, self.height
             )
         })
     }
 
-    /// Deserialize a tilemap from bytes produced by [`Tilemap::to_bytes`].
+    /// Deserialize a grid from bytes produced by [`TileGrid::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        decode_tiles_message(bytes).and_then(Tilemap::try_from)
+        decode_tiles_message(bytes).and_then(TileGrid::try_from)
     }
 }
 
@@ -494,7 +645,7 @@ impl Plugin for TilesPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<TileKind>();
         app.register_map_layer(TilesLayer);
-        app.register_type::<Tilemap>();
+        app.register_type::<GridSize>();
         app.register_type::<Tile>();
 
         app.add_message::<TileMutated>();
@@ -503,6 +654,9 @@ impl Plugin for TilesPlugin {
         // so the resources exist even when InputPlugin is not added (e.g. headless tests).
         app.add_message::<PointerAction>();
         app.add_message::<WorldHit>();
+
+        // Rebuild TileFlags whenever the tile grid changes.
+        app.add_systems(PostUpdate, rebuild_tile_flags);
 
         let headless = app.world().contains_resource::<Headless>();
         if headless {
@@ -534,7 +688,7 @@ impl Plugin for TilesPlugin {
             handle_tiles_stream.run_if(not(resource_exists::<Server>)),
         );
         // Runs in NetworkReceive (after Drain) so PlayerEvent::Joined is
-        // readable.  If the Tilemap resource is not yet available (e.g.
+        // readable.  If the TileGrid resource is not yet available (e.g.
         // listen-server: setup_world hasn't run yet) the client is queued in
         // PendingTilesSyncs and retried each frame.
         app.init_resource::<PendingTilesSyncs>();
@@ -637,12 +791,12 @@ fn spawn_tile_entity(
 
 fn spawn_tile_meshes(
     mut commands: Commands,
-    tilemap: Option<Res<Tilemap>>,
+    grid: Option<Res<TileGrid<TileKind>>>,
     existing_tiles: Query<Entity, With<Tile>>,
     tile_meshes: Res<TileMeshes>,
 ) {
-    let Some(tilemap) = tilemap else {
-        // If the Tilemap resource is missing, ensure any previously spawned
+    let Some(grid) = grid else {
+        // If the grid resource is missing, ensure any previously spawned
         // Tile entities are cleaned up so they don't persist indefinitely.
         for entity in &existing_tiles {
             commands.entity(entity).despawn();
@@ -656,8 +810,8 @@ fn spawn_tile_meshes(
         return;
     }
 
-    // Spawn tile entities for the full initial tilemap.
-    for (pos, kind) in tilemap.iter() {
+    // Spawn tile entities for the full initial grid.
+    for (pos, &kind) in grid.iter() {
         spawn_tile_entity(&mut commands, pos, kind, &tile_meshes);
     }
 }
@@ -666,10 +820,10 @@ fn spawn_tile_meshes(
 /// (no meshes or materials) so physics entities have a floor to stand on.
 fn spawn_tile_colliders(
     mut commands: Commands,
-    tilemap: Option<Res<Tilemap>>,
+    grid: Option<Res<TileGrid<TileKind>>>,
     existing_tiles: Query<Entity, With<Tile>>,
 ) {
-    let Some(tilemap) = tilemap else {
+    let Some(grid) = grid else {
         for entity in &existing_tiles {
             commands.entity(entity).despawn();
         }
@@ -680,7 +834,7 @@ fn spawn_tile_colliders(
         return;
     }
 
-    for (pos, kind) in tilemap.iter() {
+    for (pos, kind) in grid.iter() {
         let world_x = pos.x as f32;
         let world_z = pos.y as f32;
         match kind {
@@ -704,37 +858,45 @@ fn spawn_tile_colliders(
     }
 }
 
-/// Bevy system that handles incoming tilemap messages from the server on stream 1.
+/// Bevy system that handles incoming tile grid messages from the server on stream 1.
 /// Drains [`StreamReader<TilesStreamMessage>`], explicitly matches on each variant:
 /// - [`TilesStreamMessage::TilemapData`]: validates dimensions via [`TryFrom`] and
-///   inserts the [`Tilemap`] resource (initial full snapshot).
-/// - [`TilesStreamMessage::TileMutated`]: applies [`Tilemap::set`] for the affected
-///   cell and fires a [`TileMutated`] Bevy event so [`apply_tile_mutation`] can update
-///   the visual representation incrementally.
+///   inserts the [`TileGrid<TileKind>`] + [`GridSize`] resources (initial full snapshot).
+/// - [`TilesStreamMessage::TileMutated`]: applies the set for the affected cell and
+///   fires a [`TileMutated`] Bevy event so [`apply_tile_mutation`] can update the
+///   visual representation incrementally.
 fn handle_tiles_stream(
     mut commands: Commands,
     mut reader: ResMut<StreamReader<TilesStreamMessage>>,
-    mut tilemap: Option<ResMut<Tilemap>>,
+    mut grid: Option<ResMut<TileGrid<TileKind>>>,
     mut mutation_events: MessageWriter<TileMutated>,
 ) {
     for msg in reader.drain() {
         match msg {
-            variant @ TilesStreamMessage::TilemapData { .. } => match Tilemap::try_from(variant) {
-                Ok(tm) => {
-                    info!("Received tilemap {}×{} from server", tm.width, tm.height);
-                    commands.insert_resource(tm);
+            variant @ TilesStreamMessage::TilemapData { .. } => {
+                match TileGrid::<TileKind>::try_from(variant) {
+                    Ok(g) => {
+                        info!(
+                            "Received tile grid {}×{} from server",
+                            g.width(),
+                            g.height()
+                        );
+                        commands.insert_resource(GridSize {
+                            width: g.width(),
+                            height: g.height(),
+                        });
+                        commands.insert_resource(g);
+                    }
+                    Err(e) => error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}"),
                 }
-                Err(e) => error!("Invalid tilemap data on stream {TILES_STREAM_TAG}: {e}"),
-            },
+            }
             TilesStreamMessage::TileMutated { position, kind } => {
                 let pos = IVec2::new(position[0], position[1]);
-                if let Some(ref mut tm) = tilemap {
-                    tm.set(pos, kind);
-                    // Only emit the mutation event once the Tilemap resource exists.
+                if let Some(ref mut g) = grid {
+                    g.set(pos, kind);
+                    // Only emit the mutation event once the grid resource exists.
                     // This prevents spawning partial tile entities before the initial
-                    // TilemapData snapshot arrives. If entities were spawned early,
-                    // spawn_tile_meshes would see a non-empty tile query and skip
-                    // the full initial map spawn, leaving most tiles missing.
+                    // TilemapData snapshot arrives.
                     mutation_events.write(TileMutated {
                         position: pos,
                         kind,
@@ -745,22 +907,23 @@ fn handle_tiles_stream(
     }
 }
 
-/// Clients that joined before the [`Tilemap`] resource was available (e.g. on a
-/// listen-server where `PlayerEvent::Joined` fires before `OnEnter(InGame)`).
-/// Drained once the resource exists.
+/// Clients that joined before the [`TileGrid<TileKind>`] resource was available
+/// (e.g. on a listen-server where `PlayerEvent::Joined` fires before
+/// `OnEnter(InGame)`).  Drained once the resource exists.
 #[derive(Resource, Default)]
 struct PendingTilesSyncs(Vec<ClientId>);
 
-/// Server-side system: sends a full tilemap snapshot + [`StreamReady`] to each joining client.
-/// Listens to [`PlayerEvent::Joined`] so `TilesPlugin` is decoupled from
-/// internal network events ([`ServerEvent`]).
+/// Server-side system: sends a full tile grid snapshot + [`StreamReady`] to each
+/// joining client.  Listens to [`PlayerEvent::Joined`] so `TilesPlugin` is
+/// decoupled from internal network events ([`ServerEvent`]).
 ///
-/// If the [`Tilemap`] resource does not exist yet (listen-server startup), the
-/// client ID is queued in [`PendingTilesSyncs`] and retried each frame.
+/// If the [`TileGrid<TileKind>`] resource does not exist yet (listen-server
+/// startup), the client ID is queued in [`PendingTilesSyncs`] and retried each
+/// frame.
 fn send_tilemap_on_connect(
     mut events: MessageReader<PlayerEvent>,
     tiles_sender: Option<Res<StreamSender<TilesStreamMessage>>>,
-    tilemap: Option<Res<Tilemap>>,
+    grid: Option<Res<TileGrid<TileKind>>>,
     mut module_ready: MessageWriter<ModuleReadySent>,
     mut pending: ResMut<PendingTilesSyncs>,
 ) {
@@ -785,7 +948,7 @@ fn send_tilemap_on_connect(
         return;
     };
 
-    let Some(map) = tilemap.as_deref() else {
+    let Some(grid) = grid.as_deref() else {
         // Resource not yet inserted (listen-server: setup_world hasn't run).
         // Keep clients queued; we'll retry next frame.
         return;
@@ -793,7 +956,7 @@ fn send_tilemap_on_connect(
 
     let clients = std::mem::take(&mut pending.0);
     for from in clients {
-        if let Err(e) = ts.send_to(from, &TilesStreamMessage::from(map)) {
+        if let Err(e) = ts.send_to(from, &TilesStreamMessage::from(grid)) {
             error!("Failed to send TilemapData to ClientId({}): {}", from.0, e);
             continue;
         }
@@ -804,9 +967,9 @@ fn send_tilemap_on_connect(
         }
 
         info!(
-            "Sent tilemap snapshot {}×{} + StreamReady to ClientId({})",
-            map.width(),
-            map.height(),
+            "Sent tile grid snapshot {}×{} + StreamReady to ClientId({})",
+            grid.width(),
+            grid.height(),
             from.0
         );
         module_ready.write(ModuleReadySent { client: from });
@@ -823,10 +986,10 @@ fn raycast_tiles(
     mut pointer_events: MessageReader<PointerAction>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     tile_query: Query<(Entity, &Tile)>,
-    tilemap: Option<Res<Tilemap>>,
+    grid: Option<Res<TileGrid<TileKind>>>,
     mut hit_events: MessageWriter<WorldHit>,
 ) {
-    let Some(tilemap) = tilemap else { return };
+    let Some(grid) = grid else { return };
     let Ok((camera, cam_transform)) = camera_query.single() else {
         return;
     };
@@ -844,8 +1007,6 @@ fn raycast_tiles(
         let dir = Vec3::from(ray.direction);
 
         // Intersect with the y = 0 ground plane: origin.y + t * dir.y = 0.
-        // Use a practical threshold rather than f32::EPSILON to avoid rejecting
-        // near-horizontal rays while still preventing division by near-zero.
         if dir.y.abs() < 1e-4 {
             continue; // Ray is effectively parallel to the ground plane.
         }
@@ -858,7 +1019,7 @@ fn raycast_tiles(
         // Grid coordinates: world X → column, world Z → row.
         let grid_pos = IVec2::new(world_pos.x.round() as i32, world_pos.z.round() as i32);
 
-        if tilemap.get(grid_pos).is_some()
+        if grid.get(grid_pos).is_some()
             && let Some((entity, _)) = tile_query.iter().find(|(_, t)| t.position == grid_pos)
         {
             hit_events.write(WorldHit {
@@ -910,70 +1071,92 @@ mod tests {
     }
 
     #[test]
-    fn test_tilemap_creation() {
-        let tilemap = Tilemap::new(10, 10, TileKind::Floor);
-        assert_eq!(tilemap.width(), 10);
-        assert_eq!(tilemap.height(), 10);
+    fn test_grid_creation() {
+        let grid = TileGrid::<TileKind>::new_fill(10, 10, TileKind::Floor);
+        assert_eq!(grid.width(), 10);
+        assert_eq!(grid.height(), 10);
     }
 
     #[test]
-    fn test_tilemap_get_set() {
-        let mut tilemap = Tilemap::new(5, 5, TileKind::Floor);
+    fn test_grid_get_set() {
+        let mut grid = TileGrid::<TileKind>::new_fill(5, 5, TileKind::Floor);
 
-        assert_eq!(tilemap.get(IVec2::new(0, 0)), Some(TileKind::Floor));
-        assert_eq!(tilemap.get(IVec2::new(4, 4)), Some(TileKind::Floor));
+        assert_eq!(grid.get_copy(IVec2::new(0, 0)), Some(TileKind::Floor));
+        assert_eq!(grid.get_copy(IVec2::new(4, 4)), Some(TileKind::Floor));
 
-        assert!(tilemap.set(IVec2::new(2, 2), TileKind::Wall));
-        assert_eq!(tilemap.get(IVec2::new(2, 2)), Some(TileKind::Wall));
+        assert!(grid.set(IVec2::new(2, 2), TileKind::Wall));
+        assert_eq!(grid.get_copy(IVec2::new(2, 2)), Some(TileKind::Wall));
 
-        assert_eq!(tilemap.get(IVec2::new(-1, 0)), None);
-        assert_eq!(tilemap.get(IVec2::new(0, -1)), None);
-        assert_eq!(tilemap.get(IVec2::new(5, 0)), None);
-        assert_eq!(tilemap.get(IVec2::new(0, 5)), None);
-        assert!(!tilemap.set(IVec2::new(-1, 0), TileKind::Wall));
-        assert!(!tilemap.set(IVec2::new(10, 10), TileKind::Wall));
+        assert_eq!(grid.get_copy(IVec2::new(-1, 0)), None);
+        assert_eq!(grid.get_copy(IVec2::new(0, -1)), None);
+        assert_eq!(grid.get_copy(IVec2::new(5, 0)), None);
+        assert_eq!(grid.get_copy(IVec2::new(0, 5)), None);
+        assert!(!grid.set(IVec2::new(-1, 0), TileKind::Wall));
+        assert!(!grid.set(IVec2::new(10, 10), TileKind::Wall));
     }
 
     #[test]
-    fn test_tilemap_is_walkable() {
-        let mut tilemap = Tilemap::new(5, 5, TileKind::Floor);
+    fn test_grid_is_walkable() {
+        let mut grid = TileGrid::<TileKind>::new_fill(5, 5, TileKind::Floor);
 
-        assert!(tilemap.is_walkable(IVec2::new(0, 0)));
-        assert!(tilemap.is_walkable(IVec2::new(4, 4)));
+        assert!(
+            grid.get_copy(IVec2::new(0, 0))
+                .is_some_and(|k| k.is_walkable())
+        );
+        assert!(
+            grid.get_copy(IVec2::new(4, 4))
+                .is_some_and(|k| k.is_walkable())
+        );
 
-        tilemap.set(IVec2::new(2, 2), TileKind::Wall);
-        assert!(!tilemap.is_walkable(IVec2::new(2, 2)));
+        grid.set(IVec2::new(2, 2), TileKind::Wall);
+        assert!(
+            !grid
+                .get_copy(IVec2::new(2, 2))
+                .is_some_and(|k| k.is_walkable())
+        );
 
-        assert!(!tilemap.is_walkable(IVec2::new(-1, 0)));
-        assert!(!tilemap.is_walkable(IVec2::new(5, 0)));
-        assert!(!tilemap.is_walkable(IVec2::new(0, 5)));
+        assert!(
+            !grid
+                .get_copy(IVec2::new(-1, 0))
+                .is_some_and(|k| k.is_walkable())
+        );
+        assert!(
+            !grid
+                .get_copy(IVec2::new(5, 0))
+                .is_some_and(|k| k.is_walkable())
+        );
+        assert!(
+            !grid
+                .get_copy(IVec2::new(0, 5))
+                .is_some_and(|k| k.is_walkable())
+        );
     }
 
     #[test]
-    fn test_tilemap_coordinates() {
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+    fn test_grid_coordinates() {
+        let mut grid = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
 
-        tilemap.set(IVec2::new(0, 0), TileKind::Wall);
-        tilemap.set(IVec2::new(1, 1), TileKind::Wall);
-        tilemap.set(IVec2::new(2, 2), TileKind::Wall);
+        grid.set(IVec2::new(0, 0), TileKind::Wall);
+        grid.set(IVec2::new(1, 1), TileKind::Wall);
+        grid.set(IVec2::new(2, 2), TileKind::Wall);
 
-        assert_eq!(tilemap.get(IVec2::new(0, 0)), Some(TileKind::Wall));
-        assert_eq!(tilemap.get(IVec2::new(1, 0)), Some(TileKind::Floor));
-        assert_eq!(tilemap.get(IVec2::new(2, 0)), Some(TileKind::Floor));
-        assert_eq!(tilemap.get(IVec2::new(0, 1)), Some(TileKind::Floor));
-        assert_eq!(tilemap.get(IVec2::new(1, 1)), Some(TileKind::Wall));
-        assert_eq!(tilemap.get(IVec2::new(2, 1)), Some(TileKind::Floor));
-        assert_eq!(tilemap.get(IVec2::new(0, 2)), Some(TileKind::Floor));
-        assert_eq!(tilemap.get(IVec2::new(1, 2)), Some(TileKind::Floor));
-        assert_eq!(tilemap.get(IVec2::new(2, 2)), Some(TileKind::Wall));
+        assert_eq!(grid.get_copy(IVec2::new(0, 0)), Some(TileKind::Wall));
+        assert_eq!(grid.get_copy(IVec2::new(1, 0)), Some(TileKind::Floor));
+        assert_eq!(grid.get_copy(IVec2::new(2, 0)), Some(TileKind::Floor));
+        assert_eq!(grid.get_copy(IVec2::new(0, 1)), Some(TileKind::Floor));
+        assert_eq!(grid.get_copy(IVec2::new(1, 1)), Some(TileKind::Wall));
+        assert_eq!(grid.get_copy(IVec2::new(2, 1)), Some(TileKind::Floor));
+        assert_eq!(grid.get_copy(IVec2::new(0, 2)), Some(TileKind::Floor));
+        assert_eq!(grid.get_copy(IVec2::new(1, 2)), Some(TileKind::Floor));
+        assert_eq!(grid.get_copy(IVec2::new(2, 2)), Some(TileKind::Wall));
     }
 
     #[test]
-    fn test_tilemap_iter() {
-        let mut tilemap = Tilemap::new(2, 2, TileKind::Floor);
-        tilemap.set(IVec2::new(1, 1), TileKind::Wall);
+    fn test_grid_iter() {
+        let mut grid = TileGrid::<TileKind>::new_fill(2, 2, TileKind::Floor);
+        grid.set(IVec2::new(1, 1), TileKind::Wall);
 
-        let tiles: Vec<_> = tilemap.iter().collect();
+        let tiles: Vec<_> = grid.iter().map(|(pos, &kind)| (pos, kind)).collect();
         assert_eq!(tiles.len(), 4);
 
         assert_eq!(tiles[0], (IVec2::new(0, 0), TileKind::Floor));
@@ -983,8 +1166,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tilemap_to_from_bytes_roundtrip() {
-        let mut original = Tilemap::new(16, 10, TileKind::Floor);
+    fn test_grid_to_from_bytes_roundtrip() {
+        let mut original = TileGrid::<TileKind>::new_fill(16, 10, TileKind::Floor);
         for x in 0..16 {
             original.set(IVec2::new(x, 0), TileKind::Wall);
             original.set(IVec2::new(x, 9), TileKind::Wall);
@@ -994,50 +1177,46 @@ mod tests {
             original.set(IVec2::new(15, y), TileKind::Wall);
         }
         let bytes = original.to_bytes().expect("to_bytes should succeed");
-        let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
+        let restored = TileGrid::<TileKind>::from_bytes(&bytes).expect("from_bytes should succeed");
 
         assert_eq!(restored.width(), original.width());
         assert_eq!(restored.height(), original.height());
-        for (pos, kind) in original.iter() {
-            assert_eq!(restored.get(pos), Some(kind));
+        for (pos, &kind) in original.iter() {
+            assert_eq!(restored.get_copy(pos), Some(kind));
         }
     }
 
     #[test]
-    fn test_tilemap_to_from_bytes_small() {
-        let mut tilemap = Tilemap::new(3, 2, TileKind::Floor);
-        tilemap.set(IVec2::new(0, 0), TileKind::Wall);
-        tilemap.set(IVec2::new(2, 1), TileKind::Wall);
+    fn test_grid_to_from_bytes_small() {
+        let mut grid = TileGrid::<TileKind>::new_fill(3, 2, TileKind::Floor);
+        grid.set(IVec2::new(0, 0), TileKind::Wall);
+        grid.set(IVec2::new(2, 1), TileKind::Wall);
 
-        let bytes = tilemap.to_bytes().expect("to_bytes should succeed");
-        let restored = Tilemap::from_bytes(&bytes).expect("from_bytes should succeed");
+        let bytes = grid.to_bytes().expect("to_bytes should succeed");
+        let restored = TileGrid::<TileKind>::from_bytes(&bytes).expect("from_bytes should succeed");
 
         assert_eq!(restored.width(), 3);
         assert_eq!(restored.height(), 2);
-        assert_eq!(restored.get(IVec2::new(0, 0)), Some(TileKind::Wall));
-        assert_eq!(restored.get(IVec2::new(1, 0)), Some(TileKind::Floor));
-        assert_eq!(restored.get(IVec2::new(2, 1)), Some(TileKind::Wall));
+        assert_eq!(restored.get_copy(IVec2::new(0, 0)), Some(TileKind::Wall));
+        assert_eq!(restored.get_copy(IVec2::new(1, 0)), Some(TileKind::Floor));
+        assert_eq!(restored.get_copy(IVec2::new(2, 1)), Some(TileKind::Wall));
     }
 
     #[test]
     fn test_from_bytes_invalid() {
-        let result = Tilemap::from_bytes(&[0xFF, 0x00]);
+        let result = TileGrid::<TileKind>::from_bytes(&[0xFF, 0x00]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_try_from_dimension_overflow() {
+    fn test_try_from_dimension_mismatch() {
         let msg = TilesStreamMessage::TilemapData {
             width: u32::MAX,
             height: 2,
             tiles: vec![TileKind::Floor; 4],
         };
-        let result = Tilemap::try_from(msg);
-        assert!(result.is_err());
-        assert!(
-            result.unwrap_err().contains("overflow"),
-            "error should mention overflow"
-        );
+        let result = TileGrid::<TileKind>::try_from(msg);
+        assert!(result.is_err(), "should reject mismatched dimensions");
     }
 
     #[test]
@@ -1046,10 +1225,10 @@ mod tests {
             position: [2, 3],
             kind: TileKind::Floor,
         };
-        let result = Tilemap::try_from(msg);
+        let result = TileGrid::<TileKind>::try_from(msg);
         assert!(
             result.is_err(),
-            "TileMutated should not convert to a Tilemap"
+            "TileMutated should not convert to a TileGrid"
         );
     }
 
@@ -1076,20 +1255,20 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     /// Helper: build a minimal World with the resources needed by TilesLayer::save.
-    fn world_with_tilemap(tilemap: Tilemap) -> World {
+    fn world_with_grid(grid: TileGrid<TileKind>) -> World {
         let mut world = World::new();
-        world.insert_resource(tilemap);
+        world.insert_resource(grid);
         world
     }
 
-    /// A 2×2 tilemap survives a save→load round-trip through TilesLayer.
+    /// A 2×2 grid survives a save→load round-trip through TilesLayer.
     #[test]
     fn tiles_layer_roundtrip_small() {
-        let mut original = Tilemap::new(2, 2, TileKind::Floor);
+        let mut original = TileGrid::<TileKind>::new_fill(2, 2, TileKind::Floor);
         original.set(IVec2::new(0, 0), TileKind::Wall);
         original.set(IVec2::new(1, 1), TileKind::Wall);
 
-        let world = world_with_tilemap(original.clone());
+        let world = world_with_grid(original.clone());
         let raw = TilesLayer.save(&world).expect("save must succeed");
 
         let mut load_world = World::new();
@@ -1098,26 +1277,26 @@ mod tests {
             .expect("load must succeed");
 
         let loaded = load_world
-            .get_resource::<Tilemap>()
-            .expect("Tilemap resource must be present after load");
+            .get_resource::<TileGrid<TileKind>>()
+            .expect("TileGrid resource must be present after load");
 
         // The loaded map must cover at least the original 2×2 extent (it may
         // be padded to the nearest chunk boundary).
-        for (pos, kind) in original.iter() {
+        for (pos, &kind) in original.iter() {
             assert_eq!(
-                loaded.get(pos),
+                loaded.get_copy(pos),
                 Some(kind),
                 "tile at {pos:?} must match after round-trip"
             );
         }
     }
 
-    /// A tilemap with only Floor tiles serializes to a single key and
+    /// A grid with only Floor tiles serializes to a single key and
     /// round-trips correctly.
     #[test]
     fn tiles_layer_all_floor() {
-        let original = Tilemap::new(4, 4, TileKind::Floor);
-        let world = world_with_tilemap(original.clone());
+        let original = TileGrid::<TileKind>::new_fill(4, 4, TileKind::Floor);
+        let world = world_with_grid(original.clone());
 
         let raw = TilesLayer.save(&world).expect("save must succeed");
         let data: TilesLayerData =
@@ -1129,30 +1308,30 @@ mod tests {
         TilesLayer
             .load(&raw, &mut load_world)
             .expect("load must succeed");
-        let loaded = load_world.resource::<Tilemap>();
-        for (pos, kind) in original.iter() {
-            assert_eq!(loaded.get(pos), Some(kind));
+        let loaded = load_world.resource::<TileGrid<TileKind>>();
+        for (pos, &kind) in original.iter() {
+            assert_eq!(loaded.get_copy(pos), Some(kind));
         }
     }
 
-    /// A tilemap with Floor and Wall tiles produces exactly two keys.
+    /// A grid with Floor and Wall tiles produces exactly two keys.
     #[test]
     fn tiles_layer_two_kinds_produce_two_keys() {
-        let mut original = Tilemap::new(3, 3, TileKind::Floor);
+        let mut original = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
         original.set(IVec2::new(0, 0), TileKind::Wall);
 
-        let world = world_with_tilemap(original);
+        let world = world_with_grid(original);
         let raw = TilesLayer.save(&world).expect("save must succeed");
         let data: TilesLayerData = world::from_layer_value(&raw).expect("deserialize");
         assert_eq!(data.keys.len(), 2, "Floor and Wall → two keys");
     }
 
-    /// Saving when no Tilemap resource is present returns an error.
+    /// Saving when no TileGrid resource is present returns an error.
     #[test]
-    fn tiles_layer_save_without_tilemap_errors() {
+    fn tiles_layer_save_without_grid_errors() {
         let world = World::new();
         let result = TilesLayer.save(&world);
-        assert!(result.is_err(), "save without Tilemap must fail");
+        assert!(result.is_err(), "save without TileGrid must fail");
     }
 
     /// Loading corrupt base64 returns an error.
@@ -1255,9 +1434,9 @@ mod tests {
         assert!(result.is_err(), "unknown key must cause a load error");
     }
 
-    /// An empty chunks map loads as an empty Tilemap (0×0).
+    /// An empty chunks map loads as an empty TileGrid (0×0).
     #[test]
-    fn tiles_layer_load_empty_chunks_gives_empty_tilemap() {
+    fn tiles_layer_load_empty_chunks_gives_empty_grid() {
         use std::collections::BTreeMap;
 
         let data = TilesLayerData {
@@ -1270,9 +1449,9 @@ mod tests {
         TilesLayer
             .load(&raw, &mut w)
             .expect("empty map must load without error");
-        let tm = w.resource::<Tilemap>();
-        assert_eq!(tm.width(), 0);
-        assert_eq!(tm.height(), 0);
+        let grid = w.resource::<TileGrid<TileKind>>();
+        assert_eq!(grid.width(), 0);
+        assert_eq!(grid.height(), 0);
     }
 
     /// chunk_size: 0 is rejected with an error.

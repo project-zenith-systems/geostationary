@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use network::Server;
-use tiles::Tilemap;
+use tiles::{AtmoSeed, GridSize, TileFlags, TileGrid, TileKind};
 use world::MapPath;
 
 use crate::app_state::AppState;
@@ -13,14 +13,14 @@ use crate::config::AppConfig;
 struct MapLoadAttempted;
 
 /// Exclusive system that loads the map on a listen-server when the [`Server`]
-/// resource appears but no [`Tilemap`] has been inserted yet.
+/// resource appears but no [`TileGrid<TileKind>`] has been inserted yet.
 ///
 /// Gated by `run_if(resource_exists::<Server>
-///     .and(not(resource_exists::<Tilemap>))
+///     .and(not(resource_exists::<TileGrid<TileKind>>))
 ///     .and(not(resource_exists::<MapLoadAttempted>)))`.
 ///
 /// On a dedicated server `load_map` already ran at `Startup` (because
-/// [`MapPath`] was present), so the [`Tilemap`] guard prevents re-loading.
+/// [`MapPath`] was present), so the grid guard prevents re-loading.
 /// On a pure client (no [`Server`] resource) this system never fires.
 ///
 /// The [`MapLoadAttempted`] guard ensures that if the load fails the system
@@ -43,17 +43,24 @@ fn load_map_on_host(world: &mut World) {
 }
 
 /// Initializes the [`atmospherics::GasGrid`] and [`atmospherics::PressureForceScale`]
-/// resources from the loaded [`Tilemap`] once the server is running.
+/// resources from the loaded [`TileGrid<TileKind>`] once the server is running.
 ///
-/// Per-tile atmosphere is read from the tilemap: `Pressurised` tiles get standard
-/// pressure, `Vacuum` tiles start at 0.0 moles.
-fn init_atmosphere(mut commands: Commands, tilemap: Res<Tilemap>, config: Res<AppConfig>) {
+/// Per-tile atmosphere is read from the [`AtmoSeed`] overrides: `Pressurised`
+/// tiles get standard pressure, `Vacuum` tiles start at 0.0 moles.
+fn init_atmosphere(
+    mut commands: Commands,
+    grid: Res<TileGrid<TileKind>>,
+    atmo_seed: Option<Res<AtmoSeed>>,
+    config: Res<AppConfig>,
+) {
     let gas_grid = atmospherics::initialize_gas_grid(
-        &tilemap,
+        &grid,
+        atmo_seed.as_deref(),
         config.atmospherics.standard_pressure,
         config.atmospherics.diffusion_rate,
     );
     commands.insert_resource(gas_grid);
+    commands.remove_resource::<AtmoSeed>();
     commands.insert_resource(atmospherics::PressureForceScale(
         config.atmospherics.pressure_force_scale,
     ));
@@ -62,7 +69,10 @@ fn init_atmosphere(mut commands: Commands, tilemap: Res<Tilemap>, config: Res<Ap
 
 /// Cleans up world resources when exiting `InGame`.
 fn cleanup_world(mut commands: Commands) {
-    commands.remove_resource::<Tilemap>();
+    commands.remove_resource::<TileGrid<TileKind>>();
+    commands.remove_resource::<GridSize>();
+    commands.remove_resource::<TileFlags>();
+    commands.remove_resource::<AtmoSeed>();
     commands.remove_resource::<atmospherics::GasGrid>();
     commands.remove_resource::<atmospherics::PressureForceScale>();
     commands.remove_resource::<MapLoadAttempted>();
@@ -73,13 +83,14 @@ fn cleanup_world(mut commands: Commands) {
 /// Provides the glue logic that the old `world_setup.rs` contained:
 ///
 /// * **Listen-server map loading** — triggers [`world::loader::load_map`]
-///   when the [`Server`] resource appears but no [`Tilemap`] exists yet (the
-///   dedicated server already loads at `Startup` via [`world::WorldPlugin`]).
+///   when the [`Server`] resource appears but no [`TileGrid<TileKind>`] exists
+///   yet (the dedicated server already loads at `Startup` via
+///   [`world::WorldPlugin`]).
 /// * **Atmosphere initialization** — creates the [`atmospherics::GasGrid`] and
-///   [`atmospherics::PressureForceScale`] resources from the loaded tilemap and
-///   config values.
-/// * **World cleanup** — removes `Tilemap`, `GasGrid`, and
-///   `PressureForceScale` on `OnExit(AppState::InGame)`.
+///   [`atmospherics::PressureForceScale`] resources from the loaded tile grid
+///   and config values.
+/// * **World cleanup** — removes tile grid, gas grid, and related resources on
+///   `OnExit(AppState::InGame)`.
 pub struct WorldInitPlugin;
 
 impl Plugin for WorldInitPlugin {
@@ -88,7 +99,7 @@ impl Plugin for WorldInitPlugin {
             Update,
             load_map_on_host.run_if(
                 resource_exists::<Server>
-                    .and(not(resource_exists::<Tilemap>))
+                    .and(not(resource_exists::<TileGrid<TileKind>>))
                     .and(not(resource_exists::<MapLoadAttempted>)),
             ),
         );
@@ -96,7 +107,7 @@ impl Plugin for WorldInitPlugin {
             Update,
             init_atmosphere.run_if(
                 resource_exists::<Server>
-                    .and(resource_exists::<Tilemap>)
+                    .and(resource_exists::<TileGrid<TileKind>>)
                     .and(not(resource_exists::<atmospherics::GasGrid>)),
             ),
         );

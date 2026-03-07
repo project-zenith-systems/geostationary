@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use tiles::{TileKind, TileMutated, Tilemap};
+use tiles::{TileGrid, TileKind, TileMutated};
 
 use crate::GasGrid;
 
@@ -45,7 +45,7 @@ pub fn toggle_overlay(keyboard: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<A
 pub fn spawn_overlay_quads(
     mut commands: Commands,
     overlay: Res<AtmosDebugOverlay>,
-    tilemap: Option<Res<Tilemap>>,
+    tilemap: Option<Res<TileGrid<TileKind>>>,
     existing_quads: Query<&OverlayQuad>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -54,9 +54,9 @@ pub fn spawn_overlay_quads(
         return;
     }
 
-    // If the Tilemap resource is missing, cannot spawn overlay quads
+    // If the TileGrid<TileKind> resource is missing, cannot spawn overlay quads
     let Some(tilemap) = tilemap else {
-        warn!("Cannot spawn overlay quads: Tilemap resource missing");
+        warn!("Cannot spawn overlay quads: TileGrid<TileKind> resource missing");
         return;
     };
 
@@ -116,19 +116,19 @@ pub fn spawn_overlay_quads(
     }
 }
 
-/// System that despawns overlay quads when the overlay is disabled or the Tilemap is removed.
+/// System that despawns overlay quads when the overlay is disabled or the TileGrid<TileKind> is removed.
 /// Despawns all quads and cleans up their meshes and materials to prevent leaks.
 pub fn despawn_overlay_quads(
     mut commands: Commands,
     overlay: Res<AtmosDebugOverlay>,
-    tilemap: Option<Res<Tilemap>>,
+    tilemap: Option<Res<TileGrid<TileKind>>>,
     existing_quads: Query<(Entity, &OverlayQuad)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let quad_count = existing_quads.iter().count();
 
-    // If the Tilemap resource is missing, ensure any existing overlay quads are cleaned up
+    // If the TileGrid<TileKind> resource is missing, ensure any existing overlay quads are cleaned up
     if tilemap.is_none() {
         if quad_count > 0 {
             // Clean up all unique meshes and materials once
@@ -148,7 +148,7 @@ pub fn despawn_overlay_quads(
             }
 
             info!(
-                "Despawned {} overlay quads because Tilemap resource is missing",
+                "Despawned {} overlay quads because TileGrid<TileKind> resource is missing",
                 quad_count
             );
         }

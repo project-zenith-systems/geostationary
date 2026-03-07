@@ -4,7 +4,7 @@ use network::{
     StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{ConstantForce, RigidBody};
-use tiles::{Atmo, TileMutated, Tilemap};
+use tiles::{Atmo, AtmoSeed, TileFlags, TileGrid, TileKind, TileMutated};
 use wincode::{SchemaRead, SchemaWrite};
 
 mod gas_grid;
@@ -50,35 +50,50 @@ pub enum AtmosStreamMessage {
     GasGridDelta { changes: Vec<(u16, f32)> },
 }
 
-/// Creates and initializes a GasGrid from a Tilemap.
+/// Creates and initializes a [`GasGrid`] from a [`TileGrid<TileKind>`].
 ///
-/// Each walkable cell's initial pressure is determined by the tile's effective
-/// atmosphere: `Pressurised` cells receive `standard_pressure`, `Vacuum` cells
-/// start at 0.0 moles.
+/// Each walkable cell's initial pressure is determined by the [`AtmoSeed`]
+/// overrides (if provided): `Pressurised` cells receive `standard_pressure`,
+/// `Vacuum` cells start at 0.0 moles.
 ///
 /// `diffusion_rate` is a simulation tuning parameter stored on the grid and used
 /// during `step()`.
 pub fn initialize_gas_grid(
-    tilemap: &Tilemap,
+    grid: &TileGrid<TileKind>,
+    atmo_seed: Option<&AtmoSeed>,
     standard_pressure: f32,
     diffusion_rate: f32,
 ) -> GasGrid {
-    let mut gas_grid = GasGrid::with_tuning(tilemap.width(), tilemap.height(), diffusion_rate);
+    let mut gas_grid = GasGrid::with_tuning(grid.width(), grid.height(), diffusion_rate);
 
-    // Sync walls from tilemap to mark impassable cells
-    gas_grid.sync_walls(tilemap);
+    // Build initial flags from the tile grid for wall sync.
+    let mut flags = TileFlags::new(grid.width(), grid.height());
+    for (pos, kind) in grid.iter() {
+        let flag = match kind {
+            TileKind::Floor => tiles::TileFlag::WALKABLE | tiles::TileFlag::GAS_PASS,
+            TileKind::Wall => tiles::TileFlag::empty(),
+        };
+        flags.set(pos, flag);
+    }
+    gas_grid.sync_walls_from_flags(&flags);
 
-    // Fill walkable cells based on per-tile atmosphere data
-    for y in 0..tilemap.height() {
-        for x in 0..tilemap.width() {
+    // Fill walkable cells based on per-tile atmosphere data.
+    for y in 0..grid.height() {
+        for x in 0..grid.width() {
             let pos = IVec2::new(x as i32, y as i32);
-            match tilemap.effective_atmosphere(pos) {
+            let kind = grid.get_copy(pos).unwrap_or(TileKind::Floor);
+            let effective = if let Some(seed) = atmo_seed {
+                seed.effective_atmosphere(pos, kind)
+            } else if kind.is_walkable() {
+                Some(Atmo::Pressurised)
+            } else {
+                None
+            };
+            match effective {
                 Some(Atmo::Pressurised) => {
                     gas_grid.set_moles(pos, standard_pressure);
                 }
-                Some(Atmo::Vacuum) | None => {
-                    // Vacuum tiles and walls start at 0.0 (the grid default)
-                }
+                Some(Atmo::Vacuum) | None => {}
             }
         }
     }
@@ -92,20 +107,20 @@ pub fn initialize_gas_grid(
 /// while still keeping the number of manual steps reasonable during debugging.
 const MANUAL_STEP_DT: f32 = 2.0;
 
-/// System that synchronizes the GasGrid passability mask with the Tilemap.
-/// Runs when the Tilemap has been modified (via change detection).
-/// Updates which cells allow gas flow based on whether they are Floor or Wall tiles.
-fn wall_sync_system(tilemap: Option<Res<Tilemap>>, gas_grid: Option<ResMut<GasGrid>>) {
-    let (Some(tilemap), Some(mut gas_grid)) = (tilemap, gas_grid) else {
+/// System that synchronizes the GasGrid passability mask with [`TileFlags`].
+/// Runs when flags have been modified (via change detection).
+/// Updates which cells allow gas flow based on the `GAS_PASS` flag.
+fn wall_sync_system(flags: Option<Res<TileFlags>>, gas_grid: Option<ResMut<GasGrid>>) {
+    let (Some(flags), Some(mut gas_grid)) = (flags, gas_grid) else {
         return;
     };
 
-    if !tilemap.is_changed() {
+    if !flags.is_changed() {
         return;
     }
 
-    gas_grid.sync_walls(&tilemap);
-    info!("Synchronized GasGrid walls with Tilemap");
+    gas_grid.sync_walls_from_flags(&flags);
+    info!("Synchronized GasGrid walls with TileFlags");
 }
 
 /// System that advances the atmospherics simulation by one manual tick.

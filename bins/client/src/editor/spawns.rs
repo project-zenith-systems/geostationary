@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use things::{SpawnMarker, Thing};
-use tiles::Tilemap;
+use tiles::{TileGrid, TileKind};
 
 use super::camera::EditorCamera;
 use super::grid;
@@ -49,7 +49,7 @@ pub fn place_spawn_marker(
     window_query: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<EditorCamera>>,
     ui_interactions: Query<&Interaction>,
-    tilemap: Option<Res<Tilemap>>,
+    grid: Option<Res<TileGrid<TileKind>>>,
     selected_entity: Option<Res<EditorSelectedEntity>>,
     tool: Option<Res<EditorTool>>,
     assets: Option<Res<SpawnMarkerAssets>>,
@@ -73,7 +73,7 @@ pub fn place_spawn_marker(
     let Some(selected) = selected_entity.and_then(|s| s.0.as_ref().cloned()) else {
         return;
     };
-    let Some(tilemap) = tilemap else { return };
+    let Some(grid) = grid else { return };
     let Some(assets) = assets else { return };
 
     let Ok(window) = window_query.single() else {
@@ -93,7 +93,7 @@ pub fn place_spawn_marker(
     };
 
     // Only place on floor tiles.
-    if !tilemap.is_walkable(grid_cell) {
+    if !grid.get_copy(grid_cell).is_some_and(|k| k.is_walkable()) {
         return;
     }
 

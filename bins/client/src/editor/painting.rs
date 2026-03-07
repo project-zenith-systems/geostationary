@@ -1,11 +1,11 @@
 //! Tile painting: left-click or left-drag to paint the selected tile kind.
 //!
 //! Reads the cursor position, raycasts to the grid, and updates both the
-//! [`Tilemap`] resource and the visual tile entities via [`TileMutated`].
+//! [`TileGrid<TileKind>`] resource and the visual tile entities via [`TileMutated`].
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use tiles::{TileMutated, Tilemap};
+use tiles::{TileGrid, TileKind, TileMutated};
 
 use super::camera::EditorCamera;
 use super::grid;
@@ -23,7 +23,7 @@ pub fn paint_tiles(
     window_query: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<EditorCamera>>,
     ui_interactions: Query<&Interaction>,
-    mut tilemap: Option<ResMut<Tilemap>>,
+    mut grid: Option<ResMut<TileGrid<TileKind>>>,
     selected_tile: Option<Res<EditorSelectedTile>>,
     mut mutation_events: MessageWriter<TileMutated>,
 ) {
@@ -36,7 +36,7 @@ pub fn paint_tiles(
         return;
     }
 
-    let Some(ref mut tilemap) = tilemap else {
+    let Some(ref mut grid) = grid else {
         return;
     };
     let Some(selected) = selected_tile else {
@@ -60,11 +60,11 @@ pub fn paint_tiles(
         return;
     };
 
-    // Only paint if the cell is within the tilemap bounds and the kind differs.
-    if let Some(current_kind) = tilemap.get(grid_cell)
+    // Only paint if the cell is within the grid bounds and the kind differs.
+    if let Some(&current_kind) = grid.get(grid_cell)
         && current_kind != selected.0
     {
-        tilemap.set(grid_cell, selected.0);
+        grid.set(grid_cell, selected.0);
         mutation_events.write(TileMutated {
             position: grid_cell,
             kind: selected.0,

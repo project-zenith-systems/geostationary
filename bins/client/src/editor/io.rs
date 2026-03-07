@@ -10,14 +10,14 @@
 //!
 //! Reads a `.station.ron` file, clears the editor world (tiles + spawn
 //! markers), and rebuilds from the file data.  The `"tiles"` layer is loaded
-//! via its [`MapLayer`] implementation (which inserts a [`Tilemap`] resource).
+//! via its [`MapLayer`] implementation (which inserts a [`TileGrid`] resource).
 //! The `"spawns"` layer is parsed manually to create lightweight editor
 //! markers instead of full physics entities.
 
 use bevy::prelude::*;
 use shared::config::AppConfig;
 use things::{SpawnMarker, SpawnPoint, Thing, ThingRegistry};
-use tiles::{Tile, Tilemap};
+use tiles::{AtmoSeed, GridSize, Tile, TileGrid, TileKind};
 use world::{CURRENT_MAP_VERSION, MapFile, MapLayerRegistry, from_layer_value};
 
 use super::spawns::{EditorSpawnMarker, SpawnMarkerAssets};
@@ -131,8 +131,10 @@ pub fn handle_load(world: &mut World) {
         return;
     }
 
-    // Clear existing editor world: remove Tilemap, despawn tiles and markers.
-    world.remove_resource::<Tilemap>();
+    // Clear existing editor world: remove tile grid, despawn tiles and markers.
+    world.remove_resource::<TileGrid<TileKind>>();
+    world.remove_resource::<GridSize>();
+    world.remove_resource::<AtmoSeed>();
 
     let tile_entities: Vec<Entity> = world
         .query_filtered::<Entity, With<Tile>>()
@@ -151,7 +153,7 @@ pub fn handle_load(world: &mut World) {
     }
 
     // Load the tiles layer via the registered MapLayer implementation.
-    // This inserts the Tilemap resource which spawn_tile_meshes then picks up.
+    // This inserts the TileGrid resource which spawn_tile_meshes then picks up.
     if let Some(tiles_data) = file.layers.get("tiles") {
         let load_result = world.resource_scope(|world, registry: Mut<MapLayerRegistry>| {
             registry.load_layer("tiles", tiles_data, world)
@@ -161,15 +163,15 @@ pub fn handle_load(world: &mut World) {
             Ok(true) => info!("Editor: tiles layer loaded"),
             Ok(false) => {
                 warn!("Editor: no tiles MapLayer registered, inserting default tilemap");
-                world.insert_resource(super::default_editor_tilemap());
+                world.insert_resource(super::default_editor_grid());
             }
             Err(e) => {
                 error!("Editor: failed to load tiles layer: {e}");
-                world.insert_resource(super::default_editor_tilemap());
+                world.insert_resource(super::default_editor_grid());
             }
         }
     } else {
-        world.insert_resource(super::default_editor_tilemap());
+        world.insert_resource(super::default_editor_grid());
     }
 
     // Load the spawns layer manually to create lightweight editor markers

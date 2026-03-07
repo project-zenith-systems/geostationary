@@ -13,3 +13,4 @@ world = { path = "../world" }
 base64 = "0.22"
 serde = { workspace = true }
 ron = { workspace = true }
+bitflags = "2"
