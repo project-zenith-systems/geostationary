@@ -53,7 +53,10 @@ fn main() {
             disconnected: AppState::MainMenu,
         })
         .add_plugins(PhysicsPlugin)
-        .add_plugins(WorldPlugin)
+        .add_plugins(WorldPlugin {
+            loading: AppState::Loading,
+            in_game: AppState::InGame,
+        })
         .add_plugins(TilesPlugin::in_state(AppState::InGame))
         .add_plugins(ThingsPlugin::<AppState>::in_state(AppState::InGame))
         .add_plugins(atmospherics::AtmosphericsPlugin::new(
@@ -64,7 +67,6 @@ fn main() {
         ))
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(souls::SoulsPlugin)
-        .add_plugins(shared::world_init::WorldInitPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(ItemsPlugin)
         .add_plugins(InteractionsPlugin::<AppState>::in_state(AppState::InGame))

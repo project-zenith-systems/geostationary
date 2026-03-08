@@ -977,6 +977,7 @@ fn process_net_commands<S: FreelyMutableState + Copy>(
     states: Res<orchestrate::OrchestrationStates<S>>,
     state: Res<State<S>>,
     mut next_state: ResMut<NextState<S>>,
+    headless: Option<Res<Headless>>,
 ) {
     // Clean up any finished tasks before processing new commands
     tasks.cleanup_finished();
@@ -1014,7 +1015,7 @@ fn process_net_commands<S: FreelyMutableState + Copy>(
                 tasks.server_task = Some((handle, cancel_token));
 
                 // Transition to Loading (no-op if already in Loading, e.g. dedicated server).
-                states.transition_to_loading(&state, &mut next_state);
+                states.transition_to_loading(&state, &mut next_state, headless.is_some());
             }
             NetCommand::Connect { addr, name } => {
                 // Prevent duplicate connections
@@ -1050,7 +1051,7 @@ fn process_net_commands<S: FreelyMutableState + Copy>(
                 tasks.client_task = Some((handle, cancel_token));
 
                 // Transition to Loading (no-op if already in Loading).
-                states.transition_to_loading(&state, &mut next_state);
+                states.transition_to_loading(&state, &mut next_state, headless.is_some());
             }
             NetCommand::StopHosting => {
                 tasks.stop_hosting();

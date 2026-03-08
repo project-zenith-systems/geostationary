@@ -95,8 +95,23 @@ pub(crate) struct OrchestrationStates<S: FreelyMutableState> {
 
 impl<S: FreelyMutableState + Copy> OrchestrationStates<S> {
     /// Transition to the `loading` state unless we're already in `loading` or `in_game`.
-    pub(crate) fn transition_to_loading(&self, state: &State<S>, next_state: &mut NextState<S>) {
-        if *state.get() != self.loading && *state.get() != self.in_game {
+    ///
+    /// When `headless` is true (dedicated server), skips straight to `in_game` — there is
+    /// no client-side sync barrier to wait for.
+    pub(crate) fn transition_to_loading(
+        &self,
+        state: &State<S>,
+        next_state: &mut NextState<S>,
+        headless: bool,
+    ) {
+        if headless {
+            // Dedicated server: skip the sync barrier entirely and go straight
+            // to in_game.  Handles both the cold-start case (already in loading
+            // after OnEnter ran load_map) and the from-menu case.
+            if *state.get() != self.in_game {
+                next_state.set(self.in_game);
+            }
+        } else if *state.get() != self.loading && *state.get() != self.in_game {
             next_state.set(self.loading);
         }
     }

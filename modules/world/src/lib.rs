@@ -12,22 +12,33 @@ pub use map_file::{
 use bevy::prelude::*;
 
 /// L0 plugin that owns the map-file container, the `MapLayer` dispatch
-/// registry, and lifecycle events.
+/// registry, lifecycle events, and state-driven map loading.
 ///
 /// Add this plugin before any module that registers a `MapLayer`.
 ///
-/// If a [`MapPath`] resource is present when the app starts, the plugin's
-/// [`loader::load_map`] startup system will read the `.station.ron` file and
-/// dispatch each layer to its registered [`MapLayer`] implementation.
-pub struct WorldPlugin;
+/// Map loading runs on `OnEnter(loading)` via [`loader::load_map`].  If a
+/// [`MapPath`] resource is present at that point, the `.station.ron` file is
+/// read and each layer dispatched to its registered [`MapLayer`]
+/// implementation.  If absent, loading is skipped (e.g. pure-client joins).
+///
+/// [`MapPath`] is cleaned up on `OnExit(in_game)` so a subsequent host
+/// session picks up fresh config.
+pub struct WorldPlugin<S: States + Copy> {
+    pub loading: S,
+    pub in_game: S,
+}
 
-impl Plugin for WorldPlugin {
+impl<S: States + Copy> Plugin for WorldPlugin<S> {
     fn build(&self, app: &mut App) {
         app.init_resource::<MapLayerRegistry>();
         app.add_message::<WorldLoading>();
         app.add_message::<WorldReady>();
         app.add_message::<WorldTeardown>();
-        // Map loading is driven by the application's Loading state
-        // (see WorldInitPlugin), not by Startup.
+        app.add_systems(OnEnter(self.loading), loader::load_map);
+        app.add_systems(OnExit(self.in_game), cleanup_map_path);
     }
+}
+
+fn cleanup_map_path(mut commands: Commands) {
+    commands.remove_resource::<MapPath>();
 }
