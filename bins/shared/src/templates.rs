@@ -49,7 +49,7 @@ impl Plugin for TemplatesPlugin {
             "creature",
             0,
             // Visual: mesh + material only.
-            move |entity, _event, commands| {
+            move |entity, commands| {
                 debug!("Template kind 0 (creature) visual: applying to {entity:?}");
                 commands.entity(entity).insert((
                     Mesh3d(creature_mesh.clone()),
@@ -57,7 +57,7 @@ impl Plugin for TemplatesPlugin {
                 ));
             },
             // Functional: physics, movement, hand slot.
-            |entity, _event, commands| {
+            |entity, commands| {
                 debug!("Template kind 0 (creature) functional: applying to {entity:?}");
                 commands.entity(entity).insert((
                     Creature,
@@ -83,13 +83,13 @@ impl Plugin for TemplatesPlugin {
         registry.register_named(
             "ball",
             1,
-            move |entity, _event, commands| {
+            move |entity, commands| {
                 debug!("Template kind 1 (ball) visual: applying to {entity:?}");
                 commands
                     .entity(entity)
                     .insert((Mesh3d(ball_mesh.clone()), MeshMaterial3d(ball_mat.clone())));
             },
-            |entity, _event, commands| {
+            |entity, commands| {
                 debug!("Template kind 1 (ball) functional: applying to {entity:?}");
                 commands.entity(entity).insert((
                     Collider::sphere(BALL_RADIUS),
@@ -104,13 +104,13 @@ impl Plugin for TemplatesPlugin {
         registry.register_named(
             "can",
             2,
-            move |entity, _event, commands| {
+            move |entity, commands| {
                 debug!("Template kind 2 (can) visual: applying to {entity:?}");
                 commands
                     .entity(entity)
                     .insert((Mesh3d(can_mesh.clone()), MeshMaterial3d(can_mat.clone())));
             },
-            |entity, _event, commands| {
+            |entity, commands| {
                 debug!("Template kind 2 (can) functional: applying to {entity:?}");
                 commands.entity(entity).insert((
                     Collider::cylinder(0.15, 0.1),
@@ -126,14 +126,14 @@ impl Plugin for TemplatesPlugin {
         registry.register_named(
             "toolbox",
             3,
-            move |entity, _event, commands| {
+            move |entity, commands| {
                 debug!("Template kind 3 (toolbox) visual: applying to {entity:?}");
                 commands.entity(entity).insert((
                     Mesh3d(toolbox_mesh.clone()),
                     MeshMaterial3d(toolbox_mat.clone()),
                 ));
             },
-            |entity, _event, commands| {
+            |entity, commands| {
                 debug!("Template kind 3 (toolbox) functional: applying to {entity:?}");
                 commands.entity(entity).insert((
                     Collider::cuboid(0.3, 0.15, 0.2),

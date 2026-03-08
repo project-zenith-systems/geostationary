@@ -153,7 +153,7 @@ impl SpawnPoint {
 /// both the visual and functional builders registered for the given `kind`
 /// via [`ThingRegistry`].
 #[derive(EntityEvent)]
-pub struct SpawnThing {
+pub(crate) struct SpawnThing {
     pub entity: Entity,
     pub kind: u16,
     pub position: Vec3,
@@ -170,8 +170,8 @@ pub struct SpawnThingVisual {
     pub position: Vec3,
 }
 
-pub type ThingBuilder = Box<dyn Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync>;
-pub type ThingVisualBuilder = Box<dyn Fn(Entity, &SpawnThingVisual, &mut Commands) + Send + Sync>;
+pub type ThingBuilder = Box<dyn Fn(Entity, &mut Commands) + Send + Sync>;
+pub type ThingVisualBuilder = Box<dyn Fn(Entity, &mut Commands) + Send + Sync>;
 
 /// Registry mapping `kind` values to template callbacks that insert
 /// type-specific components on a spawned entity.
@@ -195,7 +195,7 @@ impl ThingRegistry {
     pub fn register(
         &mut self,
         kind: u16,
-        builder: impl Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync + 'static,
+        builder: impl Fn(Entity, &mut Commands) + Send + Sync + 'static,
     ) {
         self.templates.insert(kind, Box::new(builder));
     }
@@ -208,7 +208,7 @@ impl ThingRegistry {
     pub fn register_visual(
         &mut self,
         kind: u16,
-        builder: impl Fn(Entity, &SpawnThingVisual, &mut Commands) + Send + Sync + 'static,
+        builder: impl Fn(Entity, &mut Commands) + Send + Sync + 'static,
     ) {
         self.visual_builders.insert(kind, Box::new(builder));
     }
@@ -228,8 +228,8 @@ impl ThingRegistry {
         &mut self,
         name: impl Into<String>,
         kind: u16,
-        visual: impl Fn(Entity, &SpawnThingVisual, &mut Commands) + Send + Sync + 'static,
-        functional: impl Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync + 'static,
+        visual: impl Fn(Entity, &mut Commands) + Send + Sync + 'static,
+        functional: impl Fn(Entity, &mut Commands) + Send + Sync + 'static,
     ) {
         let name = name.into();
         if let Some(&existing_kind) = self.name_to_kind.get(&name) {
@@ -505,11 +505,7 @@ impl MapLayer for SpawnsLayer {
                 world.entity_mut(entity).insert(net_id);
                 world.resource_mut::<NetIdIndex>().0.insert(net_id, entity);
             }
-            world.trigger(SpawnThing {
-                entity,
-                kind,
-                position,
-            });
+            spawn_thing_world(world, entity, kind, position);
             if !sp.properties.is_empty() {
                 pending.push((entity, sp.properties));
             }
@@ -574,6 +570,20 @@ impl Default for StateBroadcastTimer {
             TimerMode::Repeating,
         ))
     }
+}
+
+/// Triggers [`SpawnThing`] on an existing entity in a `&mut World` context.
+///
+/// Used by map-loading and property deserialization code that needs synchronous
+/// world access (e.g. to `flush()` and read back components immediately).
+///
+/// Does **not** assign a [`NetId`] — callers are responsible for network identity.
+pub fn spawn_thing_world(world: &mut World, entity: Entity, kind: u16, position: Vec3) {
+    world.trigger(SpawnThing {
+        entity,
+        kind,
+        position,
+    });
 }
 
 /// Spawns a thing entity with a server-assigned [`NetId`] and triggers [`SpawnThing`]
@@ -756,16 +766,11 @@ fn on_spawn_thing(on: On<SpawnThing>, mut commands: Commands, registry: Res<Thin
     // Run visual builder first (meshes, materials), then functional builder
     // (physics, gameplay components).
     if let Some(visual) = registry.visual_builders.get(&event.kind) {
-        let visual_event = SpawnThingVisual {
-            entity: event.entity,
-            kind: event.kind,
-            position: event.position,
-        };
-        visual(event.entity, &visual_event, &mut commands);
+        visual(event.entity, &mut commands);
     }
 
     if let Some(builder) = registry.templates.get(&event.kind) {
-        builder(event.entity, event, &mut commands);
+        builder(event.entity, &mut commands);
     } else {
         warn!("No template registered for thing kind {}", event.kind);
     }
@@ -788,7 +793,7 @@ fn on_spawn_thing_visual(
     ));
 
     if let Some(visual) = registry.visual_builders.get(&event.kind) {
-        visual(event.entity, event, &mut commands);
+        visual(event.entity, &mut commands);
     } else {
         warn!("No visual builder registered for thing kind {}", event.kind);
     }
@@ -1098,7 +1103,7 @@ mod tests {
         // spawn a HandSlot child on the creature entity.
         app.world_mut()
             .resource_mut::<ThingRegistry>()
-            .register(0, |entity, _event, commands| {
+            .register(0, |entity, commands| {
                 commands.entity(entity).with_children(|parent| {
                     parent.spawn((
                         HandSlot {
@@ -1146,8 +1151,8 @@ mod tests {
             .register_named(
                 "crate",
                 1,
-                |_entity, _event, _commands| {},
-                |_entity, _event, _commands| {},
+                |_entity, _commands| {},
+                |_entity, _commands| {},
             );
 
         let data = world::to_layer_value(&vec![
@@ -1203,8 +1208,8 @@ mod tests {
             .register_named(
                 "barrel",
                 2,
-                |_entity, _event, _commands| {},
-                |_entity, _event, _commands| {},
+                |_entity, _commands| {},
+                |_entity, _commands| {},
             );
 
         // Manually place a spawn-marker entity (simulating what load() does).
@@ -1247,8 +1252,8 @@ mod tests {
     fn named_templates_returns_registered_name_kind_pairs() {
         let mut registry = ThingRegistry::default();
 
-        registry.register_named("foo", 1, |_, _, _| {}, |_, _, _| {});
-        registry.register_named("bar", 2, |_, _, _| {}, |_, _, _| {});
+        registry.register_named("foo", 1, |_, _| {}, |_, _| {});
+        registry.register_named("bar", 2, |_, _| {}, |_, _| {});
 
         let mut named: Vec<(&str, u16)> = registry.named_templates().collect();
         named.sort_by_key(|(_, kind)| *kind);
@@ -1260,8 +1265,8 @@ mod tests {
     fn named_templates_excludes_unnamed_registrations() {
         let mut registry = ThingRegistry::default();
 
-        registry.register(0, |_, _, _| {});
-        registry.register_named("named", 1, |_, _, _| {}, |_, _, _| {});
+        registry.register(0, |_, _| {});
+        registry.register_named("named", 1, |_, _| {}, |_, _| {});
 
         let named: Vec<(&str, u16)> = registry.named_templates().collect();
         assert_eq!(named.len(), 1, "only named templates should appear");

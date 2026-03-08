@@ -10,8 +10,8 @@ use physics::{Collider, GravityScale, LinearVelocity, RigidBody};
 use ron::value::RawValue;
 use serde::{Deserialize, Serialize};
 use things::{
-    HandSlot, NetIdIndex, PropertyEntry, SpawnMarker, SpawnPoint, SpawnThing, Thing,
-    ThingPropertyRegistry, ThingRegistry, ThingsSet, apply_properties, serialize_entity_properties,
+    HandSlot, NetIdIndex, PropertyEntry, SpawnMarker, SpawnPoint, Thing, ThingPropertyRegistry,
+    ThingRegistry, ThingsSet, apply_properties, serialize_entity_properties, spawn_thing_world,
 };
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -1153,11 +1153,7 @@ fn register_contents_property(app: &mut App) {
                 };
                 let position = Vec3::from_array(sp.position);
                 let entity = world.spawn(SpawnMarker).id();
-                world.trigger(SpawnThing {
-                    entity,
-                    kind,
-                    position,
-                });
+                spawn_thing_world(world, entity, kind, position);
                 pending.push((entity, sp.properties.clone()));
             }
 
