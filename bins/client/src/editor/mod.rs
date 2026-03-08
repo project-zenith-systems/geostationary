@@ -34,14 +34,13 @@ impl Plugin for EditorPlugin {
         app.add_message::<io::EditorSaveEvent>();
         app.add_message::<io::EditorLoadEvent>();
 
-        // OnEnter: spawn camera, tilemap, palette UI, spawn marker assets.
+        // OnEnter: spawn camera, tilemap, palette UI.
         app.add_systems(
             OnEnter(AppState::Editor),
             (
                 camera::spawn_editor_camera,
                 setup_editor_tilemap,
                 palette::spawn_palette_ui,
-                spawns::init_spawn_marker_assets,
             ),
         );
 
@@ -59,6 +58,7 @@ impl Plugin for EditorPlugin {
                 camera::camera_pan_keyboard,
                 camera::camera_pan_drag,
                 camera::camera_zoom,
+                camera::camera_rotate,
             )
                 .run_if(in_editor.clone()),
         );
@@ -133,7 +133,7 @@ fn teardown_editor_world(
     commands.remove_resource::<TileGrid<TileKind>>();
     commands.remove_resource::<GridSize>();
     commands.remove_resource::<TileFlags>();
-    commands.remove_resource::<spawns::SpawnMarkerAssets>();
+    commands.remove_resource::<camera::EditorOrbit>();
 
     for entity in &tile_entities {
         commands.entity(entity).despawn();

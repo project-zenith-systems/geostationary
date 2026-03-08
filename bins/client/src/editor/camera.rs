@@ -3,35 +3,59 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use shared::app_state::AppState;
 
-/// Marker component for the editor's orthographic top-down camera.
+/// Marker component for the editor's perspective camera.
 #[derive(Component)]
 pub struct EditorCamera;
 
-/// Spawns an orthographic top-down camera when entering [`AppState::Editor`].
+/// Orbit state for the editor camera.
 ///
-/// The camera looks straight down the Y axis so the XZ plane (tile grid) fills
-/// the viewport.  `Vec3::NEG_Z` is used as the `up` direction so that the
-/// positive-Z (row) axis points toward the top of the screen — consistent with
-/// a top-down 2D-style view of the XZ grid.
+/// The camera orbits around [`focus`] at [`distance`] away, looking down at
+/// an angle defined by [`pitch`] with a horizontal angle defined by [`yaw`].
+#[derive(Resource)]
+pub struct EditorOrbit {
+    /// World-space point the camera orbits around.
+    pub focus: Vec3,
+    /// Distance from the focus point.
+    pub distance: f32,
+    /// Vertical angle in radians (0 = horizontal, π/2 = straight down).
+    pub pitch: f32,
+    /// Horizontal angle in radians.
+    pub yaw: f32,
+}
+
+impl Default for EditorOrbit {
+    fn default() -> Self {
+        Self {
+            focus: Vec3::new(15.5, 0.0, 15.5),
+            distance: 30.0,
+            pitch: std::f32::consts::FRAC_PI_4, // 45 degrees
+            yaw: 0.0,
+        }
+    }
+}
+
+impl EditorOrbit {
+    /// Compute the camera [`Transform`] from the current orbit state.
+    pub fn camera_transform(&self) -> Transform {
+        let x = self.focus.x + self.distance * self.pitch.cos() * self.yaw.sin();
+        let y = self.focus.y + self.distance * self.pitch.sin();
+        let z = self.focus.z + self.distance * self.pitch.cos() * self.yaw.cos();
+        Transform::from_xyz(x, y, z).looking_at(self.focus, Vec3::Y)
+    }
+}
+
+/// Spawns a perspective camera angled down at the tile grid when entering
+/// [`AppState::Editor`].
 ///
 /// `DespawnOnExit(AppState::Editor)` ensures the camera is cleaned up
-/// automatically when leaving the editor, regardless of which state is entered
-/// next.
+/// automatically when leaving the editor.
 pub fn spawn_editor_camera(mut commands: Commands) {
-    // Centre on a 32×32 map.
-    let center_x = 15.5_f32;
-    let center_z = 15.5_f32;
+    let orbit = EditorOrbit::default();
+    let transform = orbit.camera_transform();
 
     commands.spawn((
         Camera3d::default(),
-        Projection::Orthographic(OrthographicProjection {
-            // scale controls world units per pixel; 0.03 keeps a 32×32 map
-            // comfortably visible in a 1280×720 window.
-            scale: 0.03,
-            ..OrthographicProjection::default_3d()
-        }),
-        Transform::from_xyz(center_x, 20.0, center_z)
-            .looking_at(Vec3::new(center_x, 0.0, center_z), Vec3::NEG_Z),
+        transform,
         AmbientLight {
             color: Color::WHITE,
             brightness: 500.0,
@@ -40,41 +64,42 @@ pub fn spawn_editor_camera(mut commands: Commands) {
         EditorCamera,
         DespawnOnExit(AppState::Editor),
     ));
+
+    commands.insert_resource(orbit);
 }
 
-/// Pan speed in world units per second when using WASD keys.
-const PAN_SPEED: f32 = 15.0;
+/// Pan speed in world units per second when using WASD / arrow keys.
+const PAN_SPEED: f32 = 20.0;
 
 /// Zoom speed multiplier for scroll wheel input.
-const ZOOM_SPEED: f32 = 0.003;
+const ZOOM_SPEED: f32 = 1.5;
 
-/// Minimum orthographic scale (max zoom in).
-const MIN_SCALE: f32 = 0.005;
+/// Minimum orbit distance (max zoom in).
+const MIN_DISTANCE: f32 = 5.0;
 
-/// Maximum orthographic scale (max zoom out).
-const MAX_SCALE: f32 = 0.15;
+/// Maximum orbit distance (max zoom out).
+const MAX_DISTANCE: f32 = 80.0;
 
-/// Pan sensitivity for middle-click drag (world units per pixel of mouse movement).
+/// Rotation speed in radians per second for Q/E keys.
+const ROTATE_SPEED: f32 = 2.0;
+
+/// Drag sensitivity for middle-click drag (world units per pixel of mouse movement).
 const DRAG_PAN_SENSITIVITY: f32 = 0.05;
 
-/// System: WASD keyboard panning for the editor camera.
+/// System: WASD keyboard panning for the editor camera (moves the orbit focus).
 pub fn camera_pan_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut camera_query: Query<(&mut Transform, &Projection), With<EditorCamera>>,
+    mut orbit: ResMut<EditorOrbit>,
+    mut camera_query: Query<&mut Transform, With<EditorCamera>>,
 ) {
-    let Ok((mut transform, projection)) = camera_query.single_mut() else {
+    let Ok(mut transform) = camera_query.single_mut() else {
         return;
-    };
-
-    let scale = match projection {
-        Projection::Orthographic(ortho) => ortho.scale,
-        _ => 1.0,
     };
 
     let mut direction = Vec3::ZERO;
     if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
-        direction.z -= 1.0; // Up on screen = -Z in world (camera up is NEG_Z)
+        direction.z -= 1.0;
     }
     if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
         direction.z += 1.0;
@@ -88,10 +113,36 @@ pub fn camera_pan_keyboard(
 
     if direction != Vec3::ZERO {
         direction = direction.normalize();
-        // Scale pan speed by the orthographic scale so panning feels consistent
-        // at any zoom level.
-        let speed = PAN_SPEED * (scale / 0.03);
-        transform.translation += direction * speed * time.delta_secs();
+        // Pan in the horizontal plane aligned with the camera's yaw.
+        let rotated = Quat::from_rotation_y(orbit.yaw) * direction;
+        let speed = PAN_SPEED * (orbit.distance / 30.0);
+        orbit.focus += rotated * speed * time.delta_secs();
+        *transform = orbit.camera_transform();
+    }
+}
+
+/// System: Q/E keyboard rotation for the editor camera.
+pub fn camera_rotate(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut orbit: ResMut<EditorOrbit>,
+    mut camera_query: Query<&mut Transform, With<EditorCamera>>,
+) {
+    let Ok(mut transform) = camera_query.single_mut() else {
+        return;
+    };
+
+    let mut rotation = 0.0_f32;
+    if keys.pressed(KeyCode::KeyQ) {
+        rotation -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyE) {
+        rotation += 1.0;
+    }
+
+    if rotation != 0.0 {
+        orbit.yaw += rotation * ROTATE_SPEED * time.delta_secs();
+        *transform = orbit.camera_transform();
     }
 }
 
@@ -99,22 +150,17 @@ pub fn camera_pan_keyboard(
 pub fn camera_pan_drag(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut mouse_motion: MessageReader<MouseMotion>,
-    mut camera_query: Query<(&mut Transform, &Projection), With<EditorCamera>>,
+    mut orbit: ResMut<EditorOrbit>,
+    mut camera_query: Query<&mut Transform, With<EditorCamera>>,
 ) {
     if !mouse_buttons.pressed(MouseButton::Middle) {
-        // Drain events even when not panning so they don't accumulate.
         mouse_motion.read().count();
         return;
     }
 
-    let Ok((mut transform, projection)) = camera_query.single_mut() else {
+    let Ok(mut transform) = camera_query.single_mut() else {
         mouse_motion.read().count();
         return;
-    };
-
-    let scale = match projection {
-        Projection::Orthographic(ortho) => ortho.scale,
-        _ => 1.0,
     };
 
     let mut delta = Vec2::ZERO;
@@ -123,21 +169,23 @@ pub fn camera_pan_drag(
     }
 
     if delta != Vec2::ZERO {
-        // Drag panning: mouse moves right → camera moves left (screen follows cursor).
-        // Scale sensitivity by orthographic scale so drag distance maps to
-        // consistent world distance at any zoom level.
-        let sensitivity = DRAG_PAN_SENSITIVITY * (scale / 0.03);
-        transform.translation.x -= delta.x * sensitivity;
-        transform.translation.z -= delta.y * sensitivity;
+        let sensitivity = DRAG_PAN_SENSITIVITY * (orbit.distance / 30.0);
+        // Pan in the horizontal plane aligned with the camera's yaw.
+        let right = Vec3::new(orbit.yaw.cos(), 0.0, -orbit.yaw.sin());
+        let forward = Vec3::new(orbit.yaw.sin(), 0.0, orbit.yaw.cos());
+        orbit.focus -= right * delta.x * sensitivity;
+        orbit.focus -= forward * delta.y * sensitivity;
+        *transform = orbit.camera_transform();
     }
 }
 
-/// System: scroll wheel zoom for the editor camera.
+/// System: scroll wheel zoom for the editor camera (changes orbit distance).
 pub fn camera_zoom(
     mut scroll_events: MessageReader<MouseWheel>,
-    mut camera_query: Query<&mut Projection, With<EditorCamera>>,
+    mut orbit: ResMut<EditorOrbit>,
+    mut camera_query: Query<&mut Transform, With<EditorCamera>>,
 ) {
-    let Ok(mut projection) = camera_query.single_mut() else {
+    let Ok(mut transform) = camera_query.single_mut() else {
         scroll_events.read().count();
         return;
     };
@@ -150,10 +198,9 @@ pub fn camera_zoom(
         };
     }
 
-    if scroll_delta != 0.0
-        && let Projection::Orthographic(ref mut ortho) = *projection
-    {
-        // Scroll up → zoom in (decrease scale).
-        ortho.scale = (ortho.scale - scroll_delta * ZOOM_SPEED).clamp(MIN_SCALE, MAX_SCALE);
+    if scroll_delta != 0.0 {
+        orbit.distance =
+            (orbit.distance - scroll_delta * ZOOM_SPEED).clamp(MIN_DISTANCE, MAX_DISTANCE);
+        *transform = orbit.camera_transform();
     }
 }

@@ -148,9 +148,10 @@ impl SpawnPoint {
     }
 }
 
-/// Entity event to construct the visual and physical representation of a thing.
+/// Entity event to construct the full visual + functional representation of a thing.
 /// The observer adds base components (mesh, physics, Thing marker) then runs
-/// the template registered for the given `kind` via [`ThingRegistry`].
+/// both the visual and functional builders registered for the given `kind`
+/// via [`ThingRegistry`].
 #[derive(EntityEvent)]
 pub struct SpawnThing {
     pub entity: Entity,
@@ -158,7 +159,19 @@ pub struct SpawnThing {
     pub position: Vec3,
 }
 
+/// Entity event to construct only the visual representation of a thing.
+///
+/// Used by the editor to show what entities look like without adding physics,
+/// AI, or other gameplay components.
+#[derive(EntityEvent)]
+pub struct SpawnThingVisual {
+    pub entity: Entity,
+    pub kind: u16,
+    pub position: Vec3,
+}
+
 pub type ThingBuilder = Box<dyn Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync>;
+pub type ThingVisualBuilder = Box<dyn Fn(Entity, &SpawnThingVisual, &mut Commands) + Send + Sync>;
 
 /// Registry mapping `kind` values to template callbacks that insert
 /// type-specific components on a spawned entity.
@@ -169,6 +182,7 @@ pub type ThingBuilder = Box<dyn Fn(Entity, &SpawnThing, &mut Commands) + Send + 
 #[derive(Resource, Default)]
 pub struct ThingRegistry {
     templates: HashMap<u16, ThingBuilder>,
+    visual_builders: HashMap<u16, ThingVisualBuilder>,
     name_to_kind: HashMap<String, u16>,
     kind_to_name: HashMap<u16, String>,
 }
@@ -186,12 +200,24 @@ impl ThingRegistry {
         self.templates.insert(kind, Box::new(builder));
     }
 
-    /// Register a named template builder.
+    /// Register a visual-only builder for a numeric kind.
     ///
-    /// The `name` is used as the `template` field in [`SpawnPoint`] entries in
-    /// the `"spawns"` map layer. A template must be registered with a name
-    /// before [`SpawnsLayer::save`] can serialize it, and `load` will return
-    /// an error for any spawn point whose template name has not been registered.
+    /// The visual builder adds meshes and materials without physics or gameplay
+    /// components. It is called by [`SpawnThingVisual`] and also as part of
+    /// the full [`SpawnThing`] flow.
+    pub fn register_visual(
+        &mut self,
+        kind: u16,
+        builder: impl Fn(Entity, &SpawnThingVisual, &mut Commands) + Send + Sync + 'static,
+    ) {
+        self.visual_builders.insert(kind, Box::new(builder));
+    }
+
+    /// Register a named template with separate visual and functional builders.
+    ///
+    /// The `visual` builder adds meshes/materials. The `functional` builder
+    /// adds physics, AI, item components, etc. [`SpawnThing`] runs both;
+    /// [`SpawnThingVisual`] runs only the visual builder.
     ///
     /// # Panics
     ///
@@ -202,7 +228,8 @@ impl ThingRegistry {
         &mut self,
         name: impl Into<String>,
         kind: u16,
-        builder: impl Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync + 'static,
+        visual: impl Fn(Entity, &SpawnThingVisual, &mut Commands) + Send + Sync + 'static,
+        functional: impl Fn(Entity, &SpawnThing, &mut Commands) + Send + Sync + 'static,
     ) {
         let name = name.into();
         if let Some(&existing_kind) = self.name_to_kind.get(&name) {
@@ -223,7 +250,8 @@ impl ThingRegistry {
         }
         self.name_to_kind.insert(name.clone(), kind);
         self.kind_to_name.insert(kind, name);
-        self.register(kind, builder);
+        self.register_visual(kind, visual);
+        self.register(kind, functional);
     }
 
     /// Look up the kind number for a template name, or `None` if unregistered.
@@ -468,6 +496,15 @@ impl MapLayer for SpawnsLayer {
             };
             let position = Vec3::from_array(sp.position);
             let entity = world.spawn(SpawnMarker).id();
+            // Assign a NetId on the server so that the entity is visible to
+            // clients and participable in networked interactions (e.g. pickup).
+            if let Some(net_id) = world
+                .get_resource_mut::<Server>()
+                .map(|mut s| s.next_net_id())
+            {
+                world.entity_mut(entity).insert(net_id);
+                world.resource_mut::<NetIdIndex>().0.insert(net_id, entity);
+            }
             world.trigger(SpawnThing {
                 entity,
                 kind,
@@ -625,6 +662,7 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
         app.init_resource::<StateBroadcastTimer>();
         app.insert_resource(ThingsActiveState(state));
         app.add_observer(on_spawn_thing);
+        app.add_observer(on_spawn_thing_visual);
         app.register_map_layer(SpawnsLayer);
         app.add_observer(on_net_id_added::<S>);
         app.add_systems(OnExit(state), clear_net_id_index);
@@ -715,10 +753,44 @@ fn on_spawn_thing(on: On<SpawnThing>, mut commands: Commands, registry: Res<Thin
         LastBroadcast::default(),
     ));
 
+    // Run visual builder first (meshes, materials), then functional builder
+    // (physics, gameplay components).
+    if let Some(visual) = registry.visual_builders.get(&event.kind) {
+        let visual_event = SpawnThingVisual {
+            entity: event.entity,
+            kind: event.kind,
+            position: event.position,
+        };
+        visual(event.entity, &visual_event, &mut commands);
+    }
+
     if let Some(builder) = registry.templates.get(&event.kind) {
         builder(event.entity, event, &mut commands);
     } else {
         warn!("No template registered for thing kind {}", event.kind);
+    }
+}
+
+fn on_spawn_thing_visual(
+    on: On<SpawnThingVisual>,
+    mut commands: Commands,
+    registry: Res<ThingRegistry>,
+) {
+    let event = on.event();
+    debug!(
+        "on_spawn_thing_visual: kind={} entity={:?} pos={:?}",
+        event.kind, event.entity, event.position
+    );
+
+    commands.entity(event.entity).insert((
+        Transform::from_translation(event.position),
+        Thing { kind: event.kind },
+    ));
+
+    if let Some(visual) = registry.visual_builders.get(&event.kind) {
+        visual(event.entity, event, &mut commands);
+    } else {
+        warn!("No visual builder registered for thing kind {}", event.kind);
     }
 }
 
@@ -1071,7 +1143,12 @@ mod tests {
 
         app.world_mut()
             .resource_mut::<ThingRegistry>()
-            .register_named("crate", 1, |_entity, _event, _commands| {});
+            .register_named(
+                "crate",
+                1,
+                |_entity, _event, _commands| {},
+                |_entity, _event, _commands| {},
+            );
 
         let data = world::to_layer_value(&vec![
             SpawnPoint::new([1.0, 0.0, 2.0], "crate"),
@@ -1123,7 +1200,12 @@ mod tests {
 
         app.world_mut()
             .resource_mut::<ThingRegistry>()
-            .register_named("barrel", 2, |_entity, _event, _commands| {});
+            .register_named(
+                "barrel",
+                2,
+                |_entity, _event, _commands| {},
+                |_entity, _event, _commands| {},
+            );
 
         // Manually place a spawn-marker entity (simulating what load() does).
         app.world_mut().spawn((
@@ -1165,8 +1247,8 @@ mod tests {
     fn named_templates_returns_registered_name_kind_pairs() {
         let mut registry = ThingRegistry::default();
 
-        registry.register_named("foo", 1, |_, _, _| {});
-        registry.register_named("bar", 2, |_, _, _| {});
+        registry.register_named("foo", 1, |_, _, _| {}, |_, _, _| {});
+        registry.register_named("bar", 2, |_, _, _| {}, |_, _, _| {});
 
         let mut named: Vec<(&str, u16)> = registry.named_templates().collect();
         named.sort_by_key(|(_, kind)| *kind);
@@ -1179,7 +1261,7 @@ mod tests {
         let mut registry = ThingRegistry::default();
 
         registry.register(0, |_, _, _| {});
-        registry.register_named("named", 1, |_, _, _| {});
+        registry.register_named("named", 1, |_, _, _| {}, |_, _, _| {});
 
         let named: Vec<(&str, u16)> = registry.named_templates().collect();
         assert_eq!(named.len(), 1, "only named templates should appear");

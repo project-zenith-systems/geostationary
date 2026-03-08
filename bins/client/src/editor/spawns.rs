@@ -1,12 +1,14 @@
 //! Spawn point placement and marker rendering in the editor.
 //!
 //! Spawn markers are lightweight entities with [`SpawnMarker`] + [`Thing`] +
-//! [`Transform`] plus a visible mesh overlay.  They are **not** simulated
-//! (no physics components) and are only used to author map spawn points.
+//! [`Transform`] plus a visual mesh from the thing's template.  They are
+//! **not** simulated (no physics components) and are only used to author map
+//! spawn points.  The visual is created via [`SpawnThingVisual`] so entities
+//! look the same as they do in-game.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use things::{SpawnMarker, Thing};
+use things::{SpawnMarker, SpawnThingVisual};
 use tiles::{TileGrid, TileKind};
 
 use super::camera::EditorCamera;
@@ -19,29 +21,6 @@ use super::palette::{EditorSelectedEntity, EditorTool};
 #[derive(Component)]
 pub struct EditorSpawnMarker;
 
-/// Shared mesh and material handles for spawn marker overlays.
-#[derive(Resource)]
-pub struct SpawnMarkerAssets {
-    pub mesh: Handle<Mesh>,
-    pub material: Handle<StandardMaterial>,
-}
-
-/// Initialise the shared mesh and material used for spawn marker overlays.
-pub fn init_spawn_marker_assets(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let mesh = meshes.add(Sphere::new(0.25));
-    let material = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.2, 0.8, 1.0, 0.8),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
-    commands.insert_resource(SpawnMarkerAssets { mesh, material });
-}
-
 /// System: left-click on a floor tile to place a spawn marker when in Entity tool mode.
 #[allow(clippy::too_many_arguments)]
 pub fn place_spawn_marker(
@@ -52,7 +31,6 @@ pub fn place_spawn_marker(
     grid: Option<Res<TileGrid<TileKind>>>,
     selected_entity: Option<Res<EditorSelectedEntity>>,
     tool: Option<Res<EditorTool>>,
-    assets: Option<Res<SpawnMarkerAssets>>,
     mut commands: Commands,
 ) {
     // Only activate in Entity tool mode.
@@ -74,7 +52,6 @@ pub fn place_spawn_marker(
         return;
     };
     let Some(grid) = grid else { return };
-    let Some(assets) = assets else { return };
 
     let Ok(window) = window_query.single() else {
         return;
@@ -99,17 +76,14 @@ pub fn place_spawn_marker(
 
     let world_x = grid_cell.x as f32;
     let world_z = grid_cell.y as f32;
+    let position = Vec3::new(world_x, 0.0, world_z);
 
-    commands.spawn((
-        Mesh3d(assets.mesh.clone()),
-        MeshMaterial3d(assets.material.clone()),
-        Transform::from_xyz(world_x, 0.0, world_z),
-        SpawnMarker,
-        Thing {
-            kind: selected.kind,
-        },
-        EditorSpawnMarker,
-    ));
+    let entity = commands.spawn((SpawnMarker, EditorSpawnMarker)).id();
+    commands.trigger(SpawnThingVisual {
+        entity,
+        kind: selected.kind,
+        position,
+    });
 
     info!(
         "Editor: placed '{}' spawn marker at ({}, {})",

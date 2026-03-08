@@ -16,11 +16,11 @@
 
 use bevy::prelude::*;
 use shared::config::AppConfig;
-use things::{SpawnMarker, SpawnPoint, SpawnProperties, Thing, ThingRegistry};
+use things::{SpawnMarker, SpawnPoint, SpawnProperties, SpawnThingVisual, ThingRegistry};
 use tiles::{AtmoSeed, GridSize, Tile, TileGrid, TileKind};
 use world::{CURRENT_MAP_VERSION, MapFile, MapLayerRegistry, from_layer_value};
 
-use super::spawns::{EditorSpawnMarker, SpawnMarkerAssets};
+use super::spawns::EditorSpawnMarker;
 
 /// Resource that stores the last loaded [`MapFile`] so unknown layers are
 /// preserved across save/load round-trips.
@@ -174,19 +174,11 @@ pub fn handle_load(world: &mut World) {
         world.insert_resource(super::default_editor_grid());
     }
 
-    // Load the spawns layer manually to create lightweight editor markers
-    // (no physics, no SpawnThing triggers).
+    // Load the spawns layer via SpawnThingVisual to create lightweight editor
+    // markers with proper visuals (no physics, no SpawnThing triggers).
     if let Some(spawns_data) = file.layers.get("spawns") {
         match from_layer_value::<Vec<SpawnPoint>>(spawns_data) {
             Ok(spawn_points) => {
-                // Read assets and registry before spawning.
-                let mesh = world
-                    .get_resource::<SpawnMarkerAssets>()
-                    .map(|a| a.mesh.clone());
-                let material = world
-                    .get_resource::<SpawnMarkerAssets>()
-                    .map(|a| a.material.clone());
-
                 for sp in &spawn_points {
                     let kind = {
                         let registry = world.resource::<ThingRegistry>();
@@ -200,16 +192,18 @@ pub fn handle_load(world: &mut World) {
                     };
 
                     let pos = Vec3::from_array(sp.position);
-                    let mut entity_commands = world.spawn((
-                        Transform::from_translation(pos),
-                        SpawnMarker,
-                        Thing { kind },
-                        EditorSpawnMarker,
-                        SpawnProperties(sp.properties.clone()),
-                    ));
-                    if let (Some(m), Some(mat)) = (&mesh, &material) {
-                        entity_commands.insert((Mesh3d(m.clone()), MeshMaterial3d(mat.clone())));
-                    }
+                    let entity = world
+                        .spawn((
+                            SpawnMarker,
+                            EditorSpawnMarker,
+                            SpawnProperties(sp.properties.clone()),
+                        ))
+                        .id();
+                    world.trigger(SpawnThingVisual {
+                        entity,
+                        kind,
+                        position: pos,
+                    });
                 }
                 info!(
                     "Editor: spawns layer loaded ({} points)",
