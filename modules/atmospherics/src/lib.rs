@@ -263,18 +263,21 @@ fn cleanup_atmos(mut commands: Commands) {
 /// Registers the GasGrid as a Bevy resource and provides the infrastructure
 /// for gas diffusion across the tilemap.
 pub struct AtmosphericsPlugin<S: States + Copy> {
+    loading: S,
     state: S,
     config: AtmosInitConfig,
 }
 
 impl<S: States + Copy> AtmosphericsPlugin<S> {
     pub fn new(
+        loading: S,
         state: S,
         standard_pressure: f32,
         pressure_force_scale: f32,
         diffusion_rate: f32,
     ) -> Self {
         Self {
+            loading,
             state,
             config: AtmosInitConfig {
                 standard_pressure,
@@ -369,8 +372,10 @@ impl<S: States + Copy> Plugin for AtmosphericsPlugin<S> {
         app.insert_resource(reader);
 
         app.add_systems(
-            OnEnter(state),
-            init_atmosphere.run_if(resource_exists::<Server>),
+            OnEnter(self.loading),
+            init_atmosphere
+                .run_if(resource_exists::<Server>)
+                .after(world::loader::load_map),
         );
         app.add_systems(OnExit(state), cleanup_atmos);
     }

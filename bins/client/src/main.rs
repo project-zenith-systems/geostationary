@@ -62,6 +62,7 @@ fn main() {
     .add_plugins(TilesPlugin::in_state(AppState::InGame))
     .add_plugins(ThingsPlugin::<AppState>::in_state(AppState::InGame))
     .add_plugins(atmospherics::AtmosphericsPlugin::new(
+        AppState::Loading,
         AppState::InGame,
         app_config.atmospherics.standard_pressure,
         app_config.atmospherics.pressure_force_scale,
