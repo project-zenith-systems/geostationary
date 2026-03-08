@@ -496,15 +496,6 @@ impl MapLayer for SpawnsLayer {
             };
             let position = Vec3::from_array(sp.position);
             let entity = world.spawn(SpawnMarker).id();
-            // Assign a NetId on the server so that the entity is visible to
-            // clients and participable in networked interactions (e.g. pickup).
-            if let Some(net_id) = world
-                .get_resource_mut::<Server>()
-                .map(|mut s| s.next_net_id())
-            {
-                world.entity_mut(entity).insert(net_id);
-                world.resource_mut::<NetIdIndex>().0.insert(net_id, entity);
-            }
             spawn_thing_world(world, entity, kind, position);
             if !sp.properties.is_empty() {
                 pending.push((entity, sp.properties));
@@ -574,11 +565,19 @@ impl Default for StateBroadcastTimer {
 
 /// Triggers [`SpawnThing`] on an existing entity in a `&mut World` context.
 ///
+/// If a [`Server`] resource exists, allocates a [`NetId`] and registers the
+/// entity in [`NetIdIndex`] so it is visible to clients.
+///
 /// Used by map-loading and property deserialization code that needs synchronous
 /// world access (e.g. to `flush()` and read back components immediately).
-///
-/// Does **not** assign a [`NetId`] — callers are responsible for network identity.
 pub fn spawn_thing_world(world: &mut World, entity: Entity, kind: u16, position: Vec3) {
+    if let Some(net_id) = world
+        .get_resource_mut::<Server>()
+        .map(|mut s| s.next_net_id())
+    {
+        world.entity_mut(entity).insert(net_id);
+        world.resource_mut::<NetIdIndex>().0.insert(net_id, entity);
+    }
     world.trigger(SpawnThing {
         entity,
         kind,
