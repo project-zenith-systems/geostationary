@@ -491,6 +491,12 @@ impl MapLayer for TilesLayer {
         Ok(())
     }
 
+    fn unload(&self, world: &mut World) {
+        world.remove_resource::<GridSize>();
+        world.remove_resource::<TileGrid<TileKind>>();
+        world.remove_resource::<AtmoSeed>();
+    }
+
     fn save(
         &self,
         world: &World,

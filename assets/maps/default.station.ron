@@ -25,9 +25,9 @@
             },
         ),
         "spawns": [
-            (position: [5.0, 5.0, 4.0], template: "ball"),
-            (position: [3.0, 1.0, 3.0], template: "can"),
-            (position: [7.0, 1.0, 4.0], template: "toolbox", contents: ["can"]),
+            (position: (5.0, 5.0, 4.0), template: "ball"),
+            (position: (3.0, 1.0, 3.0), template: "can"),
+            (position: (7.0, 1.0, 4.0), template: "toolbox", contents: ["can"]),
         ],
     },
 )

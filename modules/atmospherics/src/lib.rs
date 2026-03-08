@@ -369,12 +369,8 @@ impl<S: States + Copy> Plugin for AtmosphericsPlugin<S> {
         app.insert_resource(reader);
 
         app.add_systems(
-            Update,
-            init_atmosphere.run_if(
-                resource_exists::<Server>
-                    .and(resource_exists::<TileGrid<TileKind>>)
-                    .and(not(resource_exists::<GasGrid>)),
-            ),
+            OnEnter(state),
+            init_atmosphere.run_if(resource_exists::<Server>),
         );
         app.add_systems(OnExit(state), cleanup_atmos);
     }

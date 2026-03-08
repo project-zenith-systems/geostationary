@@ -198,6 +198,10 @@ mod tests {
             world.insert_resource(StubLoaded);
             Ok(())
         }
+
+        fn unload(&self, world: &mut World) {
+            world.remove_resource::<StubLoaded>();
+        }
     }
 
     // ---------------------------------------------------------------------------

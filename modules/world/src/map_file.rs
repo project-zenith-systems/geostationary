@@ -91,6 +91,15 @@ pub trait MapLayer: Send + Sync + 'static {
         data: &RawValue,
         world: &mut World,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Remove all resources and entities that [`load`](MapLayer::load) inserted.
+    ///
+    /// Called in two situations:
+    /// 1. **Rollback** — when a later layer fails during [`MapLayerRegistry::load_all`],
+    ///    previously loaded layers are unloaded in reverse order so the world
+    ///    does not contain partial state.
+    /// 2. **Teardown** — when the world is being torn down (e.g. leaving InGame).
+    fn unload(&self, world: &mut World);
 }
 
 /// Holds all registered [`MapLayer`] implementations.
@@ -149,12 +158,29 @@ impl MapLayerRegistry {
         file: &MapFile,
         world: &mut World,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        for layer in &self.layers {
+        let mut loaded: Vec<usize> = Vec::new();
+        for (i, layer) in self.layers.iter().enumerate() {
             if let Some(data) = file.layers.get(layer.key()) {
-                layer.load(data, world)?;
+                if let Err(e) = layer.load(data, world) {
+                    // Rollback previously loaded layers in reverse order.
+                    for &j in loaded.iter().rev() {
+                        self.layers[j].unload(world);
+                    }
+                    return Err(e);
+                }
+                loaded.push(i);
             }
         }
         Ok(())
+    }
+
+    /// Unload all registered layers in reverse registration order.
+    ///
+    /// Used during world teardown to cleanly remove all layer state.
+    pub fn unload_all(&self, world: &mut World) {
+        for layer in self.layers.iter().rev() {
+            layer.unload(world);
+        }
     }
 
     /// Load a single registered layer by its key.
@@ -493,6 +519,10 @@ mod tests {
             world.insert_resource(FooRegistry { items: names });
             Ok(())
         }
+
+        fn unload(&self, world: &mut World) {
+            world.remove_resource::<FooRegistry>();
+        }
     }
 
     struct BarLayer;
@@ -520,6 +550,8 @@ mod tests {
             assert_eq!(foo.items, vec!["alpha", "beta"]);
             Ok(())
         }
+
+        fn unload(&self, _world: &mut World) {}
     }
 
     #[test]
@@ -584,6 +616,10 @@ mod tests {
             let n: u32 = from_layer_value(data)?;
             world.insert_resource(TileCount(n));
             Ok(())
+        }
+
+        fn unload(&self, world: &mut World) {
+            world.remove_resource::<TileCount>();
         }
     }
 
@@ -726,6 +762,8 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
+
+        fn unload(&self, _world: &mut World) {}
     }
 
     #[test]

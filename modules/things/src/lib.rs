@@ -489,6 +489,17 @@ impl MapLayer for SpawnsLayer {
 
         Ok(())
     }
+
+    fn unload(&self, world: &mut World) {
+        let mut to_despawn = Vec::new();
+        let mut query = world.query_filtered::<Entity, With<SpawnMarker>>();
+        for entity in query.iter(world) {
+            to_despawn.push(entity);
+        }
+        for entity in to_despawn {
+            world.despawn(entity);
+        }
+    }
 }
 
 /// Maps NetId to Entity for O(1) lookup during state-update processing.
