@@ -222,7 +222,7 @@ impl MapLayerRegistryExt for App {
 /// Serialize a concrete layer data type `T` into a [`Box<RawValue>`] for use
 /// in [`MapLayer::save`].
 pub fn to_layer_value<T: serde::Serialize>(value: &T) -> Result<Box<RawValue>, ron::Error> {
-    let pretty = ron::ser::PrettyConfig::default();
+    let pretty = ron::ser::PrettyConfig::default().depth_limit(2);
     let ron_str = ron::ser::to_string_pretty(value, pretty)?;
     // ron_str was just produced by ron's own serializer, so it's valid RON.
     Ok(RawValue::from_boxed_ron(ron_str.into_boxed_str())
