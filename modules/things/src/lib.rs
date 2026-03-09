@@ -9,7 +9,7 @@ use network::{
     NETWORK_UPDATE_INTERVAL, NetId, NetworkReceive, NetworkSend, PlayerEvent, Server, StreamDef,
     StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
-use physics::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
+use physics::{GravityScale, LinearVelocity, RigidBody, SpatialQuery, SpatialQueryFilter};
 use ron::value::RawValue;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wincode::{SchemaRead, SchemaWrite};
@@ -721,6 +721,60 @@ impl<S: States + Copy> Plugin for ThingsPlugin<S> {
                 .run_if(in_state(state))
                 .run_if(not(resource_exists::<Headless>)),
         );
+
+        app.add_systems(
+            Update,
+            (
+                assign_missing_net_ids,
+                despawn_fallen_things,
+            )
+                .run_if(resource_exists::<Server>),
+        );
+    }
+}
+
+/// Despawns any `Thing` entity that falls below Y = -50.
+///
+/// Serves as both a safety net (prevents entities drifting to -infinity) and a
+/// debug aid — the info log makes it easy to spot physics-setup ordering issues.
+const FALLEN_THRESHOLD_Y: f32 = -50.0;
+
+fn despawn_fallen_things(
+    mut commands: Commands,
+    things: Query<(Entity, &Thing, &Transform, Option<&NetId>, Option<&Name>)>,
+    mut net_id_index: ResMut<NetIdIndex>,
+) {
+    for (entity, thing, transform, net_id, name) in &things {
+        if transform.translation.y < FALLEN_THRESHOLD_Y {
+            let label = name.map(|n| n.as_str()).unwrap_or("unnamed");
+            info!(
+                "Despawning fallen thing kind={} ({label}) at Y={:.1} (entity={entity:?})",
+                thing.kind, transform.translation.y
+            );
+            if let Some(nid) = net_id {
+                net_id_index.0.remove(nid);
+            }
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Assigns [`NetId`]s to any [`Thing`] entity that was spawned before the
+/// [`Server`] resource existed (e.g. items from map load on headless startup).
+///
+/// Runs every frame but is a no-op once all things have ids.
+fn assign_missing_net_ids(
+    mut server: ResMut<Server>,
+    mut net_index: ResMut<NetIdIndex>,
+    query: Query<(Entity, Option<&Name>), (With<Thing>, Without<NetId>)>,
+    mut commands: Commands,
+) {
+    for (entity, name) in query.iter() {
+        let net_id = server.next_net_id();
+        commands.entity(entity).insert(net_id);
+        net_index.0.insert(net_id, entity);
+        let label = name.map(|n| n.as_str()).unwrap_or("unnamed");
+        warn!("Assigned {net_id:?} to pre-existing thing {entity:?} ({label})");
     }
 }
 
@@ -858,6 +912,15 @@ fn handle_entity_lifecycle(
                     kind,
                     position: pos,
                 });
+
+                // The server is the physics authority — override the
+                // template's Dynamic body so client-side gravity can't
+                // pull replicated entities through the floor before tile
+                // colliders are ready.
+                commands.entity(entity).insert((
+                    RigidBody::Kinematic,
+                    GravityScale(0.0),
+                ));
 
                 if let Some(n) = name.as_deref().filter(|n| !n.is_empty()) {
                     commands.entity(entity).insert(DisplayName(n.to_string()));

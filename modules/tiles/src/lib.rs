@@ -438,6 +438,16 @@ impl MapLayer for TilesLayer {
 
         world.insert_resource(GridSize { width, height });
         world.insert_resource(grid);
+
+        // Spawn tile entities immediately so colliders exist before the first
+        // physics step.  Later map layers (spawns) create dynamic bodies that
+        // would fall through the floor if colliders were deferred to Update.
+        if world.contains_resource::<Headless>() {
+            spawn_tile_colliders_world(world);
+        } else {
+            spawn_tile_entities_world(world);
+        }
+
         Ok(())
     }
 
@@ -620,14 +630,10 @@ impl<S: States + Copy> Plugin for TilesPlugin<S> {
         app.add_systems(PostUpdate, rebuild_tile_flags);
 
         let headless = app.world().contains_resource::<Headless>();
-        if headless {
-            // Headless server: spawn tile colliders (no meshes) so physics
-            // entities don't fall through the floor.
-            app.add_systems(Update, spawn_tile_colliders);
-        } else {
-            // Visual client / listen-server: spawn full tile entities with meshes + colliders.
+        if !headless {
+            // Visual client / listen-server: tile meshes used by TilesLayer::load
+            // (listen-server), handle_tiles_stream (client), and apply_tile_mutation.
             app.init_resource::<TileMeshes>();
-            app.add_systems(Update, spawn_tile_meshes);
             // On a listen-server, TileMutated events are written by dispatch_interaction
             // (interactions module, Update schedule).  Running apply_tile_mutation in PostUpdate
             // guarantees it executes after dispatch_interaction has written the events.
@@ -680,7 +686,10 @@ impl<S: States + Copy> Plugin for TilesPlugin<S> {
     }
 }
 
-fn cleanup_tiles(mut commands: Commands) {
+fn cleanup_tiles(mut commands: Commands, tiles: Query<Entity, With<Tile>>) {
+    for entity in &tiles {
+        commands.entity(entity).despawn();
+    }
     commands.remove_resource::<TileGrid<TileKind>>();
     commands.remove_resource::<GridSize>();
     commands.remove_resource::<TileFlags>();
@@ -721,8 +730,10 @@ impl FromWorld for TileMeshes {
 }
 
 /// Spawns a single tile entity for the given grid position and kind.
-/// Used by both [`spawn_tile_meshes`] (initial load) and [`apply_tile_mutation`]
-/// (incremental updates) to guarantee identical visual and physics setup.
+/// Used by [`spawn_tile_entities_world`] (initial load on listen-server),
+/// [`handle_tiles_stream`] (initial load on client), and
+/// [`apply_tile_mutation`] (incremental updates) to guarantee identical
+/// visual and physics setup.
 fn spawn_tile_entity(
     commands: &mut Commands,
     position: IVec2,
@@ -758,72 +769,71 @@ fn spawn_tile_entity(
     }
 }
 
-fn spawn_tile_meshes(
-    mut commands: Commands,
-    grid: Option<Res<TileGrid<TileKind>>>,
-    existing_tiles: Query<Entity, With<Tile>>,
-    tile_meshes: Res<TileMeshes>,
-) {
-    let Some(grid) = grid else {
-        // If the grid resource is missing, ensure any previously spawned
-        // Tile entities are cleaned up so they don't persist indefinitely.
-        for entity in &existing_tiles {
-            commands.entity(entity).despawn();
-        }
-        return;
-    };
-
-    // Only spawn for the initial load; incremental mutations are handled by
-    // apply_tile_mutation.  Once any tile entities exist, this system is a no-op.
-    if !existing_tiles.is_empty() {
-        return;
-    }
-
-    // Spawn tile entities for the full initial grid.
-    for (pos, &kind) in grid.iter() {
-        spawn_tile_entity(&mut commands, pos, kind, &tile_meshes);
-    }
-}
-
-/// Headless-server variant of [`spawn_tile_meshes`]: spawns tile colliders
-/// (no meshes or materials) so physics entities have a floor to stand on.
-fn spawn_tile_colliders(
-    mut commands: Commands,
-    grid: Option<Res<TileGrid<TileKind>>>,
-    existing_tiles: Query<Entity, With<Tile>>,
-) {
-    let Some(grid) = grid else {
-        for entity in &existing_tiles {
-            commands.entity(entity).despawn();
-        }
-        return;
-    };
-
-    if !existing_tiles.is_empty() {
-        return;
-    }
-
-    for (pos, kind) in grid.iter() {
-        let world_x = pos.x as f32;
-        let world_z = pos.y as f32;
-        match kind {
-            TileKind::Floor => {
-                commands.spawn((
+/// Spawns tile collider entities (no meshes) directly via `&mut World`.
+///
+/// Called from [`TilesLayer::load`] on a headless server so colliders exist
+/// before later map layers spawn dynamic bodies.
+fn spawn_tile_colliders_world(world: &mut World) {
+    let grid = world.resource::<TileGrid<TileKind>>();
+    let spawns: Vec<_> = grid
+        .iter()
+        .map(|(pos, kind)| {
+            let world_x = pos.x as f32;
+            let world_z = pos.y as f32;
+            match kind {
+                TileKind::Floor => (
                     Transform::from_xyz(world_x, -0.05, world_z),
                     Tile { position: pos },
                     RigidBody::Static,
                     Collider::cuboid(1.0, 0.1, 1.0),
-                ));
-            }
-            TileKind::Wall => {
-                commands.spawn((
+                ),
+                TileKind::Wall => (
                     Transform::from_xyz(world_x, 0.5, world_z),
                     Tile { position: pos },
                     RigidBody::Static,
                     Collider::cuboid(1.0, 1.0, 1.0),
-                ));
+                ),
             }
-        }
+        })
+        .collect();
+    for bundle in spawns {
+        world.spawn(bundle);
+    }
+}
+
+/// Spawns full tile entities (mesh + collider) directly via `&mut World`.
+///
+/// Called from [`TilesLayer::load`] on a listen-server (visual + physics).
+fn spawn_tile_entities_world(world: &mut World) {
+    let grid = world.resource::<TileGrid<TileKind>>();
+    let tile_meshes = world.resource::<TileMeshes>();
+    let spawns: Vec<_> = grid
+        .iter()
+        .map(|(pos, kind)| {
+            let world_x = pos.x as f32;
+            let world_z = pos.y as f32;
+            match kind {
+                TileKind::Floor => (
+                    Mesh3d(tile_meshes.floor_mesh.clone()),
+                    MeshMaterial3d(tile_meshes.floor_material.clone()),
+                    Transform::from_xyz(world_x, -0.05, world_z),
+                    Tile { position: pos },
+                    RigidBody::Static,
+                    Collider::cuboid(1.0, 0.1, 1.0),
+                ),
+                TileKind::Wall => (
+                    Mesh3d(tile_meshes.wall_mesh.clone()),
+                    MeshMaterial3d(tile_meshes.wall_material.clone()),
+                    Transform::from_xyz(world_x, 0.5, world_z),
+                    Tile { position: pos },
+                    RigidBody::Static,
+                    Collider::cuboid(1.0, 1.0, 1.0),
+                ),
+            }
+        })
+        .collect();
+    for bundle in spawns {
+        world.spawn(bundle);
     }
 }
 
@@ -839,6 +849,7 @@ fn handle_tiles_stream(
     mut reader: ResMut<StreamReader<TilesStreamMessage>>,
     mut grid: Option<ResMut<TileGrid<TileKind>>>,
     mut mutation_events: MessageWriter<TileMutated>,
+    tile_meshes: Option<Res<TileMeshes>>,
 ) {
     for msg in reader.drain() {
         match msg {
@@ -850,6 +861,13 @@ fn handle_tiles_stream(
                             g.width(),
                             g.height()
                         );
+                        // Spawn tile entities before inserting the grid as a
+                        // resource so they materialise together at ApplyDeferred.
+                        if let Some(ref meshes) = tile_meshes {
+                            for (pos, &kind) in g.iter() {
+                                spawn_tile_entity(&mut commands, pos, kind, meshes);
+                            }
+                        }
                         commands.insert_resource(GridSize {
                             width: g.width(),
                             height: g.height(),
