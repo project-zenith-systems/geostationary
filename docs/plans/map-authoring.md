@@ -232,4 +232,161 @@ top-down camera, and the game's existing tile rendering path.
 
 ## Post-mortem
 
-*To be filled in after the plan ships.*
+### Outcome
+
+The plan delivered all 15 observable outcomes. Station layouts are now data files
+(`assets/maps/default.station.ron`, `test_room.station.ron`), the `world` module
+at L0 provides `MapFile`, `MapLayer` trait, and `MapLayerRegistry`, and the
+server loads maps via `config.toml`. The editor is fully functional with tile
+painting, spawn placement, and save/load. `world_setup.rs` and
+`Tilemap::test_room()` are gone. The work was completed across 27 commits on
+`plan/map-authoring`, touching 63 files with +6,166/-1,707 lines changed.
+
+Beyond the core plan, the implementation solved the "tile data extensibility"
+problem that was explicitly deferred, made atmosphere a separate `MapLayer`
+(contradicting Spike 1 Q5), and added a perspective orbit camera instead of the
+planned orthographic top-down view.
+
+### What shipped beyond the plan
+
+| Addition | Why |
+|----------|-----|
+| `TileGrid<T>` generic system | The plan deferred "tile data extensibility" but the refactor was needed to cleanly separate tile kind from atmosphere data. `TileGrid<TileKind>` replaces monolithic `Tilemap`; new domains add `TileGrid<NewType>` without coupling. |
+| `AtmosLayer` as separate `MapLayer` | Spike 1 Q5 recommended keeping atmosphere in `TileDef`. During implementation, region-based atmosphere (vacuum rectangles instead of per-tile flags) proved cleaner for authoring and more compact in the file format. |
+| `load_default()` method on `MapLayer` | Layers not present in the map file need initialization. `AtmosLayer` uses this to set all tiles pressurised when the "atmosphere" key is absent. |
+| `contents` property on spawn points | Enables pre-loading container contents (e.g., toolbox spawns with items inside). Required new `register_contents_property` in items module. |
+| Perspective orbit camera | Plan said "orthographic top-down" and "3D perspective in the editor" was in "Not in this plan". Implemented perspective with orbit controls (pan, zoom, Q/E rotation) for better spatial understanding while authoring. |
+| `main_menu` promoted to module crate | Decoupled from `bins/shared` to break a dependency cycle. `MainMenuPlugin<S>` is now generic over state. |
+| Network orchestration moved to `network` module | `orchestrate.rs` consolidates client/server sync barriers, previously scattered across `bins/client/client.rs` and `bins/shared/server.rs`. |
+| Loading state infrastructure | `MapLoaded` marker, loading state management in `WorldPlugin`, `AtmosphericsPlugin`, `TilesPlugin`. Required for headless server and network sync. |
+| Headless vs visual tile spawning | `TilesPlugin` now conditionally spawns meshes (visual) or data-only (headless) based on plugin configuration. |
+
+### Deviations from plan
+
+- **Perspective camera instead of orthographic.** Plan stated "orthographic
+  top-down camera" and explicitly excluded "3D perspective in the editor". The
+  implementation uses a `Camera3d` with perspective projection and orbit
+  controls (`EditorOrbit` resource with focus point, distance, pitch, yaw).
+  Spike 2 validated orthographic raycasting but the team opted for perspective
+  during editor implementation for better depth perception.
+
+- **Atmosphere is a separate layer, not in `TileDef`.** Spike 1 Q5 concluded
+  "keep in `TileDef`" with key-dictionary deduplication reasoning. The
+  implementation instead created `AtmosLayer` with region-based vacuum
+  specification (`Rect(min, max)` areas). This contradicts the spike finding
+  but produces cleaner map files and simpler authoring — vacuum regions are
+  explicit rectangles, not implicit from tile definitions.
+
+- **`TileGrid<T>` shipped in this plan.** "Tile data extensibility" was in "Not
+  in this plan" and explicitly deferred to the map-format doc. The refactor
+  happened anyway because atmosphere separation required it. This is scope
+  creep that paid off — the generic grid is cleaner than the deferred approach.
+
+- **Editor camera in `bins/client/src/editor/camera.rs`, not `modules/camera`.**
+  Plan said "L6 | `camera` | Editor camera: orthographic top-down, pan/zoom".
+  The game camera module (`modules/camera`) was untouched beyond minor refactors;
+  editor camera lives entirely in the editor submodule. This is reasonable
+  separation — editor camera is editor-specific, not reusable.
+
+- **Entity palette reads from `ThingRegistry::named_templates()`.** Plan said
+  "Entity palette: click to place spawn markers (ball, can, toolbox)" implying
+  hardcoded templates. Implementation queries the registry dynamically, which
+  is better but required adding `named_templates()` iterator and
+  `register_named()` method.
+
+- **`main_menu` promoted to standalone crate.** Layer participation table showed
+  `L1 | main_menu | Adds "Editor" button...` within `bins/client`. Actual
+  implementation created `modules/main_menu/` as a workspace crate with
+  `MainMenuPlugin<S>` generic over state type. Triggered by refactoring
+  `client.rs` and `server.rs` into `orchestrate.rs`.
+
+### Hurdles
+
+1. **`ron::Value` loses unit enum variant names.** Spike 1 caught this before
+   implementation. `Value::Unit` stores `()` without the variant identifier,
+   breaking deserialization of enums like `TileKind::Wall`. Switched to
+   `Box<ron::value::RawValue>` which preserves exact RON bytes. **Lesson:**
+   Spikes work. The 30-minute investment prevented a structural redesign
+   mid-implementation.
+
+2. **`main_menu` hardcoded `AppState` instead of generic parameter.** After
+   promoting to a module crate, `MainMenuPlugin<S>` was generic but
+   `menu_message_reader` still referenced `AppState::Editor` directly. Required
+   adding `MainMenuEditorState` resource and `editor_state` field. **Lesson:**
+   When making a plugin generic, audit all system functions for concrete type
+   usage.
+
+3. **Atmosphere-in-TileDef produced awkward authoring.** Per-tile atmosphere
+   flags meant every floor tile needed `(kind: Floor, atmo: Pressurised)` or
+   default inference. Region-based vacuum rectangles in a separate layer proved
+   more intuitive. **Lesson:** Spike conclusions about data layout do not always
+   predict authoring ergonomics. The spike tested serialization fidelity, not
+   usability.
+
+4. **Loading state race conditions.** Early implementation had tile spawning
+   systems running before map load completed. Added `MapLoaded` marker entity,
+   `in_state(MapLoadState::Ready)` run conditions, and proper cleanup in
+   `WorldPlugin`. **Lesson:** Map loading is async-ish (file I/O, layer
+   dispatch) even without actual async. Systems must wait for completion.
+
+5. **Editor UI blocking pointer events.** Clicks on palette UI were passing
+   through to painting/spawning systems. Added `FocusPolicy::Block` and
+   UI-hover guards checking `Interaction` component on palette root. **Lesson:**
+   Bevy UI focus policy defaults need explicit blocking for overlay panels.
+
+6. **Spawn marker Y position mismatch.** Initial implementation placed markers
+   at `y = 0.5` (visual offset) but saved `y = 0.0` to disk. On reload, markers
+   appeared at floor level, not above it. Fixed by consistent `y = 0.0` and
+   letting render offset handle visibility. **Lesson:** Serialize the canonical
+   position, not the visual position.
+
+### What went well
+
+- **Spikes prevented major rework.** Both spikes completed on time and their
+  findings directly shaped implementation. The `RawValue` discovery alone saved
+  a likely redesign of `MapFile.layers`.
+
+- **MapLayer trait extensibility proved out.** Three layers registered
+  (`tiles`, `spawns`, `atmosphere`) with zero changes to `world` module after
+  initial implementation. `AtmosLayer` was added late in the plan and slotted
+  in cleanly.
+
+- **Unknown layer round-trip works.** Map files with layers the code does not
+  recognize survive save/load unchanged. Tested by manually adding a `"future"`
+  layer to map files.
+
+- **Editor reuses game rendering.** Tile entities use the same `spawn_tile_meshes`
+  system as the game. No duplicate mesh generation or material handling code.
+
+- **Clean deletion of legacy code.** `world_setup.rs` (327 lines),
+  `Tilemap::test_room()`, hardcoded item spawns — all removed with no fallout.
+  Module boundaries made the cuts surgical.
+
+- **PR review caught real issues.** The editor PR (#222) had four review
+  rounds addressing: tiles_data cloning, palette resource persistence,
+  spawn marker positioning, UI hover guards, and hardcoded template lists.
+
+### What to do differently next time
+
+- **Re-evaluate spike conclusions when authoring ergonomics emerge.** Spike 1
+  Q5 was technically correct (atmosphere-in-TileDef is more compact) but
+  region-based vacuum is more intuitive to author. Add "how will this feel to
+  edit?" to spike criteria.
+
+- **Decide camera projection definitively before coding.** The plan said
+  orthographic, the implementation shipped perspective. Either update the plan
+  when the decision changes or spike the actual authoring experience to inform
+  the choice.
+
+- **Scope "not in this plan" items more carefully.** `TileGrid<T>` was
+  explicitly deferred but shipped anyway because atmosphere separation
+  required it. The exclusion list should distinguish "cannot do yet" from
+  "choose not to do yet."
+
+- **Test loading state in isolation.** The loading race conditions emerged
+  from manual testing, not automated tests. A test that loads a map and
+  asserts `TileGrid` exists would have caught this earlier.
+
+- **Document module promotion decisions.** `main_menu` became a crate for
+  dependency reasons, not feature reasons. The rationale is not in any commit
+  message — it should be.
