@@ -100,6 +100,22 @@ pub trait MapLayer: Send + Sync + 'static {
     ///    does not contain partial state.
     /// 2. **Teardown** — when the world is being torn down (e.g. leaving InGame).
     fn unload(&self, world: &mut World);
+
+    /// Called when the layer's key is absent from the map file.
+    ///
+    /// The default implementation is a no-op.  Override this to initialize
+    /// derived state from resources inserted by earlier layers (e.g. the
+    /// atmospherics layer can build a default [`GasGrid`] from the tile grid
+    /// even when no `"atmosphere"` section exists in the file).
+    ///
+    /// Layers that require explicit file data should leave this as the
+    /// default no-op — a missing key simply means there is nothing to load.
+    fn load_default(
+        &self,
+        _world: &mut World,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
 }
 
 /// Holds all registered [`MapLayer`] implementations.
@@ -144,15 +160,17 @@ impl MapLayerRegistry {
         Ok(file)
     }
 
-    /// Load each registered layer that is present in `file`, in registration
-    /// order.
+    /// Load each registered layer from `file`, in registration order.
     ///
     /// Iterates registered layers (not file keys) and looks up each layer's
-    /// [`key()`](MapLayer::key) in the file. Layers present in the file but
-    /// not registered are silently skipped and remain in `file.layers`
-    /// untouched. Registration order is therefore the effective load order,
-    /// which matters when one layer depends on resources inserted by an
-    /// earlier layer.
+    /// [`key()`](MapLayer::key) in the file. When a layer's key is present,
+    /// [`load`](MapLayer::load) is called; when absent,
+    /// [`load_default`](MapLayer::load_default) is called instead.  Layers
+    /// present in the file but not registered are silently skipped.
+    ///
+    /// Registration order is therefore the effective load order, which
+    /// matters when one layer depends on resources inserted by an earlier
+    /// layer.
     pub fn load_all(
         &self,
         file: &MapFile,
@@ -160,16 +178,19 @@ impl MapLayerRegistry {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut loaded: Vec<usize> = Vec::new();
         for (i, layer) in self.layers.iter().enumerate() {
-            if let Some(data) = file.layers.get(layer.key()) {
-                if let Err(e) = layer.load(data, world) {
-                    // Rollback previously loaded layers in reverse order.
-                    for &j in loaded.iter().rev() {
-                        self.layers[j].unload(world);
-                    }
-                    return Err(e);
+            let result = if let Some(data) = file.layers.get(layer.key()) {
+                layer.load(data, world)
+            } else {
+                layer.load_default(world)
+            };
+            if let Err(e) = result {
+                // Rollback previously loaded layers in reverse order.
+                for &j in loaded.iter().rev() {
+                    self.layers[j].unload(world);
                 }
-                loaded.push(i);
+                return Err(e);
             }
+            loaded.push(i);
         }
         Ok(())
     }

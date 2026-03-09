@@ -355,9 +355,12 @@ dependencies = [
 name = "atmospherics"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bevy",
  "network",
  "physics",
+ "ron",
+ "serde",
  "tiles",
  "wincode",
  "world",

@@ -17,7 +17,7 @@
 use bevy::prelude::*;
 use shared::config::AppConfig;
 use things::{SpawnMarker, SpawnPoint, SpawnProperties, SpawnThingVisual, ThingRegistry};
-use tiles::{AtmoSeed, GridSize, Tile, TileGrid, TileKind};
+use tiles::{GridSize, Tile, TileGrid, TileKind};
 use world::{CURRENT_MAP_VERSION, MapFile, MapLayerRegistry, from_layer_value};
 
 use super::spawns::EditorSpawnMarker;
@@ -134,7 +134,6 @@ pub fn handle_load(world: &mut World) {
     // Clear existing editor world: remove tile grid, despawn tiles and markers.
     world.remove_resource::<TileGrid<TileKind>>();
     world.remove_resource::<GridSize>();
-    world.remove_resource::<AtmoSeed>();
 
     let tile_entities: Vec<Entity> = world
         .query_filtered::<Entity, With<Tile>>()

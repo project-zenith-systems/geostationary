@@ -286,35 +286,6 @@ fn rebuild_tile_flags(
 }
 
 // ---------------------------------------------------------------------------
-// AtmoSeed — temporary per-tile atmosphere data from map file
-// ---------------------------------------------------------------------------
-
-/// Temporary resource holding per-tile atmosphere overrides from the map file.
-///
-/// Inserted by [`TilesLayer::load`], consumed by `init_atmosphere` during
-/// world setup, then removed.  Not needed at runtime.
-#[derive(Resource)]
-pub struct AtmoSeed {
-    pub overrides: HashMap<IVec2, Atmo>,
-}
-
-impl AtmoSeed {
-    /// Returns the effective atmosphere for a tile position given its kind.
-    ///
-    /// Uses the explicit override if present, otherwise defaults to
-    /// `Pressurised` for walkable tiles and `None` for walls.
-    pub fn effective_atmosphere(&self, pos: IVec2, kind: TileKind) -> Option<Atmo> {
-        if let Some(&atmo) = self.overrides.get(&pos) {
-            Some(atmo)
-        } else if kind.is_walkable() {
-            Some(Atmo::Pressurised)
-        } else {
-            None
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Map layer data types (on-disk format for the "tiles" layer)
 // ---------------------------------------------------------------------------
 
@@ -338,17 +309,6 @@ pub struct TilesLayerData {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TileDef {
     pub kind: TileKind,
-    /// Atmosphere override for this tile.  `None` means the default
-    /// (Pressurised for Floor, no atmos for Wall).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub atmosphere: Option<Atmo>,
-}
-
-/// Atmosphere state baked into a tile definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
-pub enum Atmo {
-    Pressurised,
-    Vacuum,
 }
 
 // ---------------------------------------------------------------------------
@@ -360,8 +320,8 @@ const SAVE_CHUNK_SIZE: u32 = 32;
 
 /// `MapLayer` implementation for the `"tiles"` layer.
 ///
-/// **load**: Decodes key-dictionary + base64 chunks → inserts [`TileGrid<TileKind>`],
-/// [`GridSize`], and [`AtmoSeed`] resources.
+/// **load**: Decodes key-dictionary + base64 chunks → inserts [`TileGrid<TileKind>`]
+/// and [`GridSize`] resources.
 /// **save**: Reads [`TileGrid<TileKind>`] resource → builds key-dictionary + base64 chunks.
 pub struct TilesLayer;
 
@@ -397,9 +357,6 @@ impl MapLayer for TilesLayer {
                 height: 0,
             });
             world.insert_resource(TileGrid::<TileKind>::new(0, 0));
-            world.insert_resource(AtmoSeed {
-                overrides: HashMap::new(),
-            });
             return Ok(());
         }
 
@@ -442,7 +399,6 @@ impl MapLayer for TilesLayer {
         let _ = total_tiles;
 
         let mut grid = TileGrid::<TileKind>::new_fill(width, height, TileKind::Floor);
-        let mut atmo_overrides = HashMap::new();
 
         // Decode each chunk and write directly into the grid.
         for (&(chunk_x, chunk_y), b64) in &layer.chunks {
@@ -476,25 +432,18 @@ impl MapLayer for TilesLayer {
                     let global_y = chunk_y * chunk_size as i32 + local_y as i32;
                     let pos = IVec2::new(global_x, global_y);
                     grid.set(pos, tile_def.kind);
-                    if let Some(atmo) = tile_def.atmosphere {
-                        atmo_overrides.insert(pos, atmo);
-                    }
                 }
             }
         }
 
         world.insert_resource(GridSize { width, height });
         world.insert_resource(grid);
-        world.insert_resource(AtmoSeed {
-            overrides: atmo_overrides,
-        });
         Ok(())
     }
 
     fn unload(&self, world: &mut World) {
         world.remove_resource::<GridSize>();
         world.remove_resource::<TileGrid<TileKind>>();
-        world.remove_resource::<AtmoSeed>();
     }
 
     fn save(
@@ -534,10 +483,7 @@ impl MapLayer for TilesLayer {
                         );
                         // Pad out-of-bounds positions with Floor (the grid default fill).
                         let kind = grid.get_copy(pos).unwrap_or(TileKind::Floor);
-                        let def = TileDef {
-                            kind,
-                            atmosphere: None,
-                        };
+                        let def = TileDef { kind };
                         let key = match def_to_key.entry(def.clone()) {
                             std::collections::hash_map::Entry::Occupied(e) => *e.get(),
                             std::collections::hash_map::Entry::Vacant(e) => {
@@ -738,7 +684,6 @@ fn cleanup_tiles(mut commands: Commands) {
     commands.remove_resource::<TileGrid<TileKind>>();
     commands.remove_resource::<GridSize>();
     commands.remove_resource::<TileFlags>();
-    commands.remove_resource::<AtmoSeed>();
 }
 
 #[derive(Resource)]
@@ -1371,7 +1316,6 @@ mod tests {
                     0,
                     TileDef {
                         kind: TileKind::Floor,
-                        atmosphere: None,
                     },
                 );
                 m
@@ -1402,7 +1346,6 @@ mod tests {
                     0,
                     TileDef {
                         kind: TileKind::Floor,
-                        atmosphere: None,
                     },
                 );
                 m
@@ -1441,7 +1384,6 @@ mod tests {
                     0,
                     TileDef {
                         kind: TileKind::Floor,
-                        atmosphere: None,
                     },
                 );
                 m
@@ -1513,7 +1455,6 @@ mod tests {
                     0,
                     TileDef {
                         kind: TileKind::Floor,
-                        atmosphere: None,
                     },
                 );
                 m
