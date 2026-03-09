@@ -81,9 +81,11 @@ is a minimal humanoid mesh — visual quality is not the goal; correct
 skeleton structure and named bones are.
 
 Files created:
+
 - `assets/models/creature.glb` — rigged humanoid with 2 animation clips
 
 Concrete changes:
+
 - Model has a skeleton with at minimum: root, spine, head, upper_arm.L,
   upper_arm.R, forearm.L, forearm.R, hand.L, hand.R, upper_leg.L,
   upper_leg.R, lower_leg.L, lower_leg.R, foot.L, foot.R
@@ -111,11 +113,13 @@ and single-arm IK solver that drives Bevy's `AnimationPlayer` and bone
 transforms.
 
 Files created:
+
 - `modules/animation/Cargo.toml` — depends only on `bevy`
 - `modules/animation/src/lib.rs` — `AnimationPlugin`, `AnimState`,
   `AnimationController`, `drive_animation`, `IkChain`, `HoldIk`, `solve_ik`
 
 Concrete changes:
+
 - `AnimState` — `#[derive(Component, Clone, Copy, PartialEq, Eq)]` enum
   with variants `Idle`, `Walk`. Implements `From<u8>` and `Into<u8>` for
   wire encoding
@@ -131,8 +135,10 @@ Concrete changes:
 - `solve_ik` system — runs in `PostUpdate` after `drive_animation` and
   before `TransformPropagate`. When `HoldIk::active`, solves two-bone IK
   for the arm chain and writes rotations to upper_arm and forearm bones
-- `AnimationPlugin` registers both systems with run condition
-  `not(resource_exists::<Headless>)`
+- `AnimationPlugin` stays Bevy-only and registers both systems without a
+  `Headless` dependency; on the headless server the queries are inert
+  because no `AnimationController`, `IkChain`, or `AnimationPlayer`
+  components are spawned
 - Add `animation` to workspace members in root `Cargo.toml`
 
 Does not include: creature-specific logic, GLTF loading, template changes,
@@ -151,13 +157,15 @@ animation state and hold pose can be replicated alongside position and
 velocity.
 
 Files touched:
-- `modules/things/src/lib.rs` — `EntityState` struct gains `anim_state: u8`
-  and `holding: bool` fields; `ThingsStreamMessage::EntitySpawned` gains
-  same fields
-- `modules/network/src/protocol.rs` — if `EntityState` is defined here,
-  update accordingly
+
+- `modules/network/src/protocol.rs` — `EntityState` struct gains
+  `anim_state: u8` and `holding: bool` fields
+- `modules/things/src/lib.rs` — `ThingsStreamMessage::EntitySpawned` gains
+  the same fields; `broadcast_state` and client lifecycle handling encode
+  and apply them
 
 Concrete changes:
+
 - `EntityState { net_id, position, velocity, anim_state, holding }` — new
   fields, default to 0 / false
 - `EntitySpawned` gains `anim_state: u8` and `holding: bool` for late-joiner
@@ -184,6 +192,7 @@ module. Derives the correct `AnimState` from velocity and `HoldIk::active`
 from hand contents.
 
 Files touched:
+
 - `modules/creatures/src/lib.rs` — new `compute_anim_state` and
   `compute_hold_state` systems
 - `modules/creatures/Cargo.toml` — add dependency on `animation` module
@@ -191,11 +200,12 @@ Files touched:
   `Container`)
 
 Concrete changes:
+
 - `compute_anim_state` runs in `Update`, queries `(Creature,
-  LinearVelocity, &mut AnimState)`. If velocity magnitude > threshold
+LinearVelocity, &mut AnimState)`. If velocity magnitude > threshold
   (e.g., `0.1`) → `Walk`, else → `Idle`
 - `compute_hold_state` runs in `Update`, queries `(Creature, Children,
-  &mut HoldIk)`. Finds child `HandSlot` entity, checks its `Container` —
+&mut HoldIk)`. Finds child `HandSlot` entity, checks its `Container` —
   if any item present → `active = true`, else → `active = false`
 - Both systems run on server (authoritative for replication)
 - Velocity threshold is a const to avoid flicker at rest
@@ -213,14 +223,16 @@ Replace the creature's primitive mesh visual builder with GLTF scene
 loading. Skip visual builders on the headless server.
 
 Files touched:
+
 - `bins/shared/src/templates.rs` — creature visual builder rewritten
 - `modules/things/src/lib.rs` — gate visual builder execution on
   `!Headless`
 
 Concrete changes:
+
 - Creature visual builder changes from `Mesh3d(capsule) +
-  MeshMaterial3d(orange)` to `SceneRoot(asset_server.load(
-  "models/creature.glb#Scene0"))`
+MeshMaterial3d(orange)` to `SceneRoot(asset_server.load(
+"models/creature.glb#Scene0"))`
 - Visual builder also inserts `AnimationController` with clip handles
   looked up from the GLTF asset's named animations (idle, walk)
 - Scene-ready initialisation: after the GLTF scene spawns its children,
@@ -234,7 +246,7 @@ Concrete changes:
 - Creature functional builder unchanged: still inserts `Creature`,
   `MovementSpeed`, `InputDirection`, `RigidBody`, `Collider`, etc.
 - `AnimState::Idle` and `HoldIk { active: false, target: Vec3::new(0.3,
-  0.7, -0.3) }` inserted by the functional builder (needed on both server
+0.7, -0.3) }` inserted by the functional builder (needed on both server
   and client)
 - Capsule mesh and material assets can be removed from `TemplatesPlugin`
 
@@ -253,12 +265,14 @@ entity to the model's hand bone so held items follow the hand during
 both animation and IK.
 
 Files touched:
+
 - `bins/shared/src/templates.rs` — `HandSlot` spawn adjusted (may keep
   initial spawn as child of root, or defer to scene-ready hook)
 - `modules/things/src/lib.rs` or new system in `bins/shared/` — scene-ready
   system that finds the hand bone and reparents `HandSlot`
 
 Concrete changes:
+
 - After `SceneReady` marker is inserted on a creature entity, a system
   queries the entity's descendants for `Name("hand.R")` (bone name from
   spike 2)

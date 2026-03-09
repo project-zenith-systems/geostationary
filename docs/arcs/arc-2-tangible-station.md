@@ -21,16 +21,17 @@
    server.
 
 2. **Character models & animation** — Player creatures are rigged GLTF
-   models with walk, idle, and hold-item animation states. The capsule
-   placeholder is replaced. An animation state machine transitions between
-   states based on movement velocity and hand contents. Animation state is
-   replicated so all clients see the correct animation on every character.
-   The GLTF loading pattern established here becomes the standard for all
-   future 3D assets. Requires: GLTF asset loading integrated with
-   `ThingRegistry`, an animation controller system (L0), creature template
-   updated to reference a model asset, hand anchor (`HandSlot`)
-   repositioned to match the model's hand bone, animation state replicated
-   via stream 3 (small enum: idle/walk/hold).
+   models with idle and walk animation states plus an IK-driven hold pose.
+   The capsule placeholder is replaced. An animation state machine
+   transitions between idle and walk based on movement velocity, while a
+   separate replicated holding flag enables single-arm IK when the hand
+   contains an item. All clients see the correct animation and hold pose on
+   every character. The GLTF loading pattern established here becomes the
+   standard for all future 3D assets. Requires: GLTF asset loading
+   integrated with `ThingRegistry`, an animation controller system (L0),
+   creature template updated to reference a model asset, hand anchor
+   (`HandSlot`) repositioned to match the model's hand bone, animation
+   state and holding flag replicated via stream 3.
 
 3. **Tile art & lighting** — Floor and wall tiles use textured 3D meshes or
    materials instead of solid-colour primitives. Wall variants (corners,

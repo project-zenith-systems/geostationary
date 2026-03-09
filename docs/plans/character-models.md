@@ -43,6 +43,7 @@ Three spikes run first to validate runtime assumptions about Bevy 0.18's
 GLTF scene hierarchy, bone reparenting, and IK solver feasibility.
 
 **Lessons from map-authoring post-mortem:**
+
 - Spike runtime assumptions before committing (Hurdle 1, 3)
 - Test loading state in isolation (Hurdle 4) — validate GLTF scene readiness
   before driving animation
@@ -52,12 +53,13 @@ GLTF scene hierarchy, bone reparenting, and IK solver feasibility.
 
 ### Layer participation
 
-| Layer | Module | Plan scope |
-|-------|--------|------------|
-| L0 | **`animation` (new)** | `AnimState` enum (Idle, Walk), `AnimationController` (maps AnimState to graph nodes), `drive_animation` system. `IkChain` component and `solve_ik` system for single-arm two-bone IK. `HoldIk` component marks entities whose arm should IK to a hold target when holding an item. Game-agnostic — knows about states, transitions, and bone chains, not creatures or items. |
-| L1 | `things` | Extend `EntityState` with `anim_state: u8` and `holding: bool` fields. Extend `EntitySpawned` likewise. Broadcast and apply in `StateUpdate`. |
-| L3 | `creatures` | New `compute_anim_state` system: reads `LinearVelocity` to derive `AnimState` (Idle or Walk). New `compute_hold_state` system: reads hand `Container` contents to set `HoldIk::active`. Both run on server. |
-| -- | `bins/shared/src/templates.rs` | Creature visual builder changes from `Mesh3d` + `MeshMaterial3d` to `SceneRoot` loaded from GLTF. Functional builder inserts `AnimState::Idle`, `HoldIk`. |
+| Layer | Module                         | Plan scope                                                                                                                                                                                                                                                                                                                                                                   |
+| ----- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L0    | **`animation` (new)**          | `AnimState` enum (Idle, Walk), `AnimationController` (maps AnimState to graph nodes), `drive_animation` system. `IkChain` component and `solve_ik` system for single-arm two-bone IK. `HoldIk` component marks entities whose arm should IK to a hold target when holding an item. Game-agnostic — knows about states, transitions, and bone chains, not creatures or items. |
+| L0    | `network`                      | Extend `EntityState` with `anim_state: u8` and `holding: bool` fields in the wire format. Keep the replication payload domain-neutral: animation state enum value plus holding flag.                                                                                                                                                                                         |
+| L1    | `things`                       | Extend `ThingsStreamMessage::EntitySpawned` with `anim_state: u8` and `holding: bool`. Broadcast both fields in `StateUpdate` and apply them on the client during entity lifecycle handling.                                                                                                                                                                                 |
+| L3    | `creatures`                    | New `compute_anim_state` system: reads `LinearVelocity` to derive `AnimState` (Idle or Walk). New `compute_hold_state` system: reads hand `Container` contents to set `HoldIk::active`. Both run on server.                                                                                                                                                                  |
+| --    | `bins/shared/src/templates.rs` | Creature visual builder changes from `Mesh3d` + `MeshMaterial3d` to `SceneRoot` loaded from GLTF. Functional builder inserts `AnimState::Idle`, `HoldIk`.                                                                                                                                                                                                                    |
 
 ### Not in this plan
 
@@ -97,8 +99,8 @@ modules/animation/            # NEW — L0
 
 modules/creatures/src/lib.rs  # compute_anim_state, compute_hold_state
 
-modules/things/src/lib.rs     # EntityState gains anim_state + holding fields
-modules/network/src/protocol.rs  # EntityState wire format updated
+modules/network/src/protocol.rs  # EntityState wire format gains anim_state + holding
+modules/things/src/lib.rs     # EntitySpawned, StateUpdate broadcast/apply updated
 
 bins/shared/src/templates.rs  # Creature visual builder rewritten for GLTF
 ```
@@ -225,11 +227,12 @@ skip visual builder execution when `Headless` is present — gate the
 `visual_builders` call in `on_spawn_thing` on
 `!world.contains_resource::<Headless>()`.
 
-The server needs `AnimState` and `HoldIk` (for replication) but not
-`AnimationController` or `IkChain` (no bones to drive). The
-`compute_anim_state` and `compute_hold_state` systems read only velocity
-and hand contents — no rendering components. The `drive_animation` and
-`solve_ik` systems are gated on `not(resource_exists::<Headless>)`.
+The server still needs `AnimState` and `HoldIk` for replication, but it
+does not create `AnimationController`, `IkChain`, GLTF scene entities, or
+`AnimationPlayer` components. That keeps the `animation` module Bevy-only:
+`drive_animation` and `solve_ik` can be registered without a `Headless`
+dependency because their queries only match fully visualized client-side
+entities. On the headless server they are inert by construction.
 
 ## Spike 1: GLTF scene hierarchy and AnimationPlayer access (30 min)
 
@@ -300,4 +303,4 @@ animation clip or using an additive animation layer.
 
 ## Post-mortem
 
-*To be filled in after the plan ships.*
+_To be filled in after the plan ships._
