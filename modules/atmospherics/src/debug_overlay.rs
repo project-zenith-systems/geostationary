@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use tiles::{TileKind, TileMutated, Tilemap};
+use tiles::{TileGrid, TileKind, TileMutated};
 
 use crate::GasGrid;
 
@@ -45,7 +45,7 @@ pub fn toggle_overlay(keyboard: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<A
 pub fn spawn_overlay_quads(
     mut commands: Commands,
     overlay: Res<AtmosDebugOverlay>,
-    tilemap: Option<Res<Tilemap>>,
+    tilemap: Option<Res<TileGrid<TileKind>>>,
     existing_quads: Query<&OverlayQuad>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -54,9 +54,9 @@ pub fn spawn_overlay_quads(
         return;
     }
 
-    // If the Tilemap resource is missing, cannot spawn overlay quads
+    // If the TileGrid<TileKind> resource is missing, cannot spawn overlay quads
     let Some(tilemap) = tilemap else {
-        warn!("Cannot spawn overlay quads: Tilemap resource missing");
+        warn!("Cannot spawn overlay quads: TileGrid<TileKind> resource missing");
         return;
     };
 
@@ -116,19 +116,19 @@ pub fn spawn_overlay_quads(
     }
 }
 
-/// System that despawns overlay quads when the overlay is disabled or the Tilemap is removed.
+/// System that despawns overlay quads when the overlay is disabled or the TileGrid<TileKind> is removed.
 /// Despawns all quads and cleans up their meshes and materials to prevent leaks.
 pub fn despawn_overlay_quads(
     mut commands: Commands,
     overlay: Res<AtmosDebugOverlay>,
-    tilemap: Option<Res<Tilemap>>,
+    tilemap: Option<Res<TileGrid<TileKind>>>,
     existing_quads: Query<(Entity, &OverlayQuad)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let quad_count = existing_quads.iter().count();
 
-    // If the Tilemap resource is missing, ensure any existing overlay quads are cleaned up
+    // If the TileGrid<TileKind> resource is missing, ensure any existing overlay quads are cleaned up
     if tilemap.is_none() {
         if quad_count > 0 {
             // Clean up all unique meshes and materials once
@@ -148,7 +148,7 @@ pub fn despawn_overlay_quads(
             }
 
             info!(
-                "Despawned {} overlay quads because Tilemap resource is missing",
+                "Despawned {} overlay quads because TileGrid<TileKind> resource is missing",
                 quad_count
             );
         }
@@ -270,13 +270,18 @@ pub fn update_overlay_on_tile_mutation(
     // Build a position-keyed lookup from the query snapshot for O(1) access.
     // Also seeds the shared mesh handle from any pre-existing quad and builds the
     // per-mesh refcount used for mesh cleanup.
-    let mut quad_by_pos: std::collections::HashMap<IVec2, (Entity, Handle<Mesh>, Handle<StandardMaterial>)> =
-        std::collections::HashMap::new();
+    let mut quad_by_pos: std::collections::HashMap<
+        IVec2,
+        (Entity, Handle<Mesh>, Handle<StandardMaterial>),
+    > = std::collections::HashMap::new();
     let mut mesh_refcounts: std::collections::HashMap<bevy::asset::AssetId<Mesh>, usize> =
         std::collections::HashMap::new();
     let mut shared_mesh: Option<Handle<Mesh>> = None;
     for (entity, quad) in existing_quads.iter() {
-        quad_by_pos.insert(quad.position, (entity, quad.mesh.clone(), quad.material.clone()));
+        quad_by_pos.insert(
+            quad.position,
+            (entity, quad.mesh.clone(), quad.material.clone()),
+        );
         *mesh_refcounts.entry(quad.mesh.id()).or_insert(0) += 1;
         if shared_mesh.is_none() {
             shared_mesh = Some(quad.mesh.clone());
@@ -322,17 +327,20 @@ pub fn update_overlay_on_tile_mutation(
             // Remove the per-quad material (each quad owns a unique material handle).
             materials.remove(&material_handle);
             commands.entity(entity).despawn();
-            debug!("Despawned overlay quad at {:?} (tile became wall)", position);
+            debug!(
+                "Despawned overlay quad at {:?} (tile became wall)",
+                position
+            );
         }
     }
 
     // If `shared_mesh` was cleared (the cached mesh was removed) but other quads
     // still exist, reseed it from any remaining entry in `quad_by_pos` so that the
     // spawn pass reuses an existing mesh rather than creating a new one.
-    if shared_mesh.is_none() {
-        if let Some((_, mesh_handle, _)) = quad_by_pos.values().next() {
-            shared_mesh = Some(mesh_handle.clone());
-        }
+    if shared_mesh.is_none()
+        && let Some((_, mesh_handle, _)) = quad_by_pos.values().next()
+    {
+        shared_mesh = Some(mesh_handle.clone());
     }
 
     // Second pass: spawn quads for tiles that became walkable, now that all
@@ -363,7 +371,10 @@ pub fn update_overlay_on_tile_mutation(
                     material,
                 },
             ));
-            debug!("Spawned overlay quad at {:?} (tile became walkable)", position);
+            debug!(
+                "Spawned overlay quad at {:?} (tile became walkable)",
+                position
+            );
         }
     }
 }

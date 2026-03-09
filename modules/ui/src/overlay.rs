@@ -59,6 +59,7 @@ pub struct OverlayOffset(pub Vec3);
 /// 3. Projects `world_pos` through the active [`Camera3d`].
 /// 4. Centers the [`Node`] on the projected point via `left`/`top`.
 /// 5. Hides the node when the target is behind the camera or the entity is missing.
+#[allow(clippy::type_complexity)]
 pub fn update_world_space_overlays(
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     target_query: Query<&GlobalTransform>,

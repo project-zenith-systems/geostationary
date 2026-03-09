@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use bevy::app::MainScheduleOrder;
+use bevy::ecs::schedule::ScheduleLabel;
 use bevy::state::state::FreelyMutableState;
 use bevy::{log, prelude::*};
 use bytes::Bytes;
@@ -30,15 +32,36 @@ const CLIENT_BUFFER_SIZE: usize = 100;
 const NETWORK_UPDATE_RATE: f32 = 30.0;
 pub const NETWORK_UPDATE_INTERVAL: f32 = 1.0 / NETWORK_UPDATE_RATE;
 
-/// System set for network systems. Game code should read network events
-/// after `NetworkSet::Receive` and write `NetCommand` messages before
-/// `NetworkSet::Send`.
+/// Schedule that runs after `PreUpdate` and before `StateTransition`.
+///
+/// Drains inbound async network events into Bevy messages, then runs module
+/// systems that react to those messages (on-connect sends, orchestration,
+/// client-side stream handlers). Connection lifecycle commands are also
+/// dispatched here.
+///
+/// Ordering within this schedule uses [`NetworkSet`] sets:
+/// `NetworkSet::Drain` (first) → *module systems* → `NetworkSet::Commands` (last).
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NetworkReceive;
+
+/// Schedule that runs after `PostUpdate` and before `Last`.
+///
+/// Modules place their outbound broadcast / replication systems here so that
+/// all gameplay systems in `Update` and late mutations in `PostUpdate` have
+/// committed their changes before state is serialised and sent to clients.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NetworkSend;
+
+/// Ordering sets within the [`NetworkReceive`] schedule.
+///
+/// Module systems that react to network messages run between `Drain` and
+/// `Commands` by default (no explicit set annotation needed).
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NetworkSet {
-    /// Drains async events into Bevy messages.
-    Receive,
-    /// Processes commands and dispatches them to async tasks.
-    Send,
+    /// Drains async events into Bevy messages. Runs first in `NetworkReceive`.
+    Drain,
+    /// Dispatches connection lifecycle commands to async tasks. Runs last in `NetworkReceive`.
+    Commands,
 }
 
 /// Commands sent by game code to control the network layer.
@@ -477,6 +500,8 @@ where
     }
 }
 
+type ClientStreamBuf = HashMap<u8, Arc<Mutex<VecDeque<(ClientId, Bytes)>>>>;
+
 /// Registry of module streams.  Modules call [`StreamRegistry::register`]
 /// during their plugin's `build()` to declare the streams they own.
 /// The network plugin reads the registry when hosting starts to know which
@@ -491,7 +516,7 @@ pub struct StreamRegistry {
     /// Per-tag receive buffers for server→client frames, shared with [`StreamReader`] instances.
     per_stream_bufs: HashMap<u8, Arc<Mutex<VecDeque<Bytes>>>>,
     /// Per-tag receive buffers for client→server frames, shared with [`StreamReader`] instances.
-    per_client_stream_bufs: HashMap<u8, Arc<Mutex<VecDeque<(ClientId, Bytes)>>>>,
+    per_client_stream_bufs: ClientStreamBuf,
     /// Per-tag shared sender channels for client→server streams.
     /// Each `SharedClientStreamTx` is wired to the live client stream when a client connects
     /// and set to `None` on disconnect.
@@ -766,17 +791,21 @@ static CAP_WARNING_LOGGED: AtomicBool = AtomicBool::new(false);
 /// Generic over the application state type `S` so the network module remains
 /// game-agnostic while still driving state transitions:
 ///
-/// - `in_game`      — the state to enter once initial sync is complete.
-/// - `disconnected`  — the state to fall back to on disconnect / error.
+/// - `loading`       — entered when `NetCommand::Host` or `NetCommand::Connect`
+///                      is processed (map loading + network sync).
+/// - `in_game`       — entered once initial sync is complete.
+/// - `disconnected`  — fall-back on disconnect / error.
 ///
 /// # Example
 /// ```ignore
 /// NetworkPlugin {
+///     loading: AppState::Loading,
 ///     in_game: AppState::InGame,
 ///     disconnected: AppState::MainMenu,
 /// }
 /// ```
 pub struct NetworkPlugin<S: FreelyMutableState + Copy> {
+    pub loading: S,
     pub in_game: S,
     pub disconnected: S,
 }
@@ -799,15 +828,33 @@ impl<S: FreelyMutableState + Copy> Plugin for NetworkPlugin<S> {
         app.add_message::<PlayerEvent>();
         app.add_message::<ModuleReadySent>();
         app.add_message::<ClientInputReceived>();
-        app.configure_sets(PreUpdate, NetworkSet::Receive.before(NetworkSet::Send));
-        app.add_systems(
-            PreUpdate,
-            (drain_server_events, drain_client_events).in_set(NetworkSet::Receive),
+        // Ensure custom schedules exist (non-destructive — other plugins may
+        // have already added systems to them) and insert into the main order.
+        app.init_schedule(NetworkReceive);
+        app.init_schedule(NetworkSend);
+        {
+            let mut order = app.world_mut().resource_mut::<MainScheduleOrder>();
+            order.insert_after(PreUpdate, NetworkReceive);
+            order.insert_after(PostUpdate, NetworkSend);
+        }
+
+        // Within NetworkReceive: Drain runs first, Commands runs last,
+        // module systems run between them (no set annotation needed).
+        app.configure_sets(
+            NetworkReceive,
+            NetworkSet::Drain.before(NetworkSet::Commands),
         );
-        app.add_systems(PreUpdate, process_net_commands.in_set(NetworkSet::Send));
+        app.add_systems(
+            NetworkReceive,
+            (drain_server_events, drain_client_events).in_set(NetworkSet::Drain),
+        );
+        app.add_systems(
+            NetworkReceive,
+            process_net_commands::<S>.in_set(NetworkSet::Commands),
+        );
 
         // Register orchestration systems that manage sync barriers and state transitions.
-        orchestrate::register_orchestrate_systems(app, self.in_game, self.disconnected);
+        orchestrate::register_orchestrate_systems(app, self.loading, self.in_game, self.disconnected);
     }
 }
 
@@ -919,7 +966,7 @@ fn drain_client_events(
 }
 
 /// Reads NetCommand Bevy messages and spawns async tasks accordingly.
-fn process_net_commands(
+fn process_net_commands<S: FreelyMutableState + Copy>(
     mut commands: Commands,
     mut commands_reader: MessageReader<NetCommand>,
     runtime: Res<NetworkRuntime>,
@@ -927,6 +974,10 @@ fn process_net_commands(
     client_event_tx: Res<ClientEventSender>,
     mut tasks: ResMut<NetworkTasks>,
     mut registry: ResMut<StreamRegistry>,
+    states: Res<orchestrate::OrchestrationStates<S>>,
+    state: Res<State<S>>,
+    mut next_state: ResMut<NextState<S>>,
+    headless: Option<Res<Headless>>,
 ) {
     // Clean up any finished tasks before processing new commands
     tasks.cleanup_finished();
@@ -962,6 +1013,9 @@ fn process_net_commands(
                     stream_cmd_rx,
                 ));
                 tasks.server_task = Some((handle, cancel_token));
+
+                // Transition to Loading (no-op if already in Loading, e.g. dedicated server).
+                states.transition_to_loading(&state, &mut next_state, headless.is_some());
             }
             NetCommand::Connect { addr, name } => {
                 // Prevent duplicate connections
@@ -995,6 +1049,9 @@ fn process_net_commands(
                     client_stream_rxs,
                 ));
                 tasks.client_task = Some((handle, cancel_token));
+
+                // Transition to Loading (no-op if already in Loading).
+                states.transition_to_loading(&state, &mut next_state, headless.is_some());
             }
             NetCommand::StopHosting => {
                 tasks.stop_hosting();
@@ -1275,7 +1332,10 @@ mod tests {
 
         // After prepare_client_connect the channel is live
         let result = sender.send(&ServerMessage::InitialStateDone);
-        assert!(result.is_ok(), "send should succeed while client is connected");
+        assert!(
+            result.is_ok(),
+            "send should succeed while client is connected"
+        );
 
         // After on_client_disconnect the channel closes
         registry.on_client_disconnect();
@@ -1286,11 +1346,12 @@ mod tests {
     #[test]
     fn test_route_client_stream_frame_and_drain() {
         let mut registry = StreamRegistry::default();
-        let (_sender, mut reader): (StreamSender<ServerMessage>, _) = registry.register(StreamDef {
-            tag: 4,
-            name: "tile-input",
-            direction: StreamDirection::ClientToServer,
-        });
+        let (_sender, mut reader): (StreamSender<ServerMessage>, _) =
+            registry.register(StreamDef {
+                tag: 4,
+                name: "tile-input",
+                direction: StreamDirection::ClientToServer,
+            });
 
         // Simulate receiving a frame from a client
         let client = ClientId(7);

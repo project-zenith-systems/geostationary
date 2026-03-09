@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use tiles::{TileKind, Tilemap};
+use tiles::TileFlags;
 
 /// Default fraction of the pressure difference that can be equalized between two
 /// neighboring cells over a full simulation step.
@@ -70,11 +70,7 @@ impl GasGrid {
 
     /// Creates a new gas grid with the given dimensions and diffusion rate.
     /// All cells are initialized with 0 moles and marked as passable.
-    pub fn with_tuning(
-        width: u32,
-        height: u32,
-        diffusion_rate: f32,
-    ) -> Self {
+    pub fn with_tuning(width: u32, height: u32, diffusion_rate: f32) -> Self {
         let size = (width * height) as usize;
         Self {
             width,
@@ -110,23 +106,16 @@ impl GasGrid {
         }
     }
 
-    /// Updates the passability mask based on the current tilemap.
-    /// Floor tiles are passable (allow gas flow), walls are not.
-    /// When a cell transitions to impassable (wall), its moles are zeroed —
-    /// walls always hold 0.0 moles.
-    pub fn sync_walls(&mut self, tilemap: &Tilemap) {
+    /// Updates the passability mask from [`TileFlags`].
+    /// Gas-passable tiles allow gas flow, others do not.
+    /// When a cell transitions to impassable, its moles are zeroed.
+    pub fn sync_walls_from_flags(&mut self, flags: &TileFlags) {
         for y in 0..self.height {
             for x in 0..self.width {
                 let pos = IVec2::new(x as i32, y as i32);
                 if let Some(idx) = self.coord_to_index(pos) {
-                    let new_passable = if let Some(tile_kind) = tilemap.get(pos) {
-                        matches!(tile_kind, TileKind::Floor)
-                    } else {
-                        // Out of tilemap bounds -> treat as impassable
-                        false
-                    };
+                    let new_passable = flags.is_gas_passable(pos);
                     if !new_passable && self.passable[idx] {
-                        // Transitioning floor → wall: zero moles
                         self.cells[idx].moles = 0.0;
                     }
                     self.passable[idx] = new_passable;
@@ -139,8 +128,7 @@ impl GasGrid {
     /// Pressure equals moles (unit cell volume, fixed temperature).
     /// Returns None if the position is out of bounds.
     pub fn pressure_at(&self, pos: IVec2) -> Option<f32> {
-        self.coord_to_index(pos)
-            .map(|idx| self.cells[idx].moles)
+        self.coord_to_index(pos).map(|idx| self.cells[idx].moles)
     }
 
     /// Computes the 2D pressure gradient at the given position using central differences.
@@ -167,10 +155,7 @@ impl GasGrid {
             .passable_pressure_at(IVec2::new(pos.x, pos.y - 1))
             .unwrap_or(center);
 
-        Vec2::new(
-            (p_x_pos - p_x_neg) / 2.0,
-            (p_y_pos - p_y_neg) / 2.0,
-        )
+        Vec2::new((p_x_pos - p_x_neg) / 2.0, (p_y_pos - p_y_neg) / 2.0)
     }
 
     /// Returns the pressure at `pos` only if the cell is in-bounds and passable; otherwise `None`.
@@ -444,6 +429,21 @@ impl GasGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tiles::{TileFlag, TileGrid, TileKind};
+
+    /// Build a [`TileFlags`] from a [`TileGrid<TileKind>`], mirroring
+    /// `rebuild_tile_flags` logic for unit tests.
+    fn flags_from_grid(grid: &TileGrid<TileKind>) -> TileFlags {
+        let mut flags = TileFlags::new(grid.width(), grid.height());
+        for (pos, &kind) in grid.iter() {
+            let flag = match kind {
+                TileKind::Floor => TileFlag::WALKABLE | TileFlag::GAS_PASS,
+                TileKind::Wall => TileFlag::empty(),
+            };
+            flags.set(pos, flag);
+        }
+        flags
+    }
 
     #[test]
     fn test_coord_to_index_mapping() {
@@ -495,9 +495,10 @@ mod tests {
     #[test]
     fn test_sync_walls_floor_passable() {
         let mut grid = GasGrid::new(5, 5);
-        let tilemap = Tilemap::new(5, 5, TileKind::Floor);
+        let tile_grid = TileGrid::<TileKind>::new_fill(5, 5, TileKind::Floor);
+        let flags = flags_from_grid(&tile_grid);
 
-        grid.sync_walls(&tilemap);
+        grid.sync_walls_from_flags(&flags);
 
         // All floor tiles should be passable
         for i in 0..25 {
@@ -508,9 +509,10 @@ mod tests {
     #[test]
     fn test_sync_walls_wall_impassable() {
         let mut grid = GasGrid::new(5, 5);
-        let tilemap = Tilemap::new(5, 5, TileKind::Wall);
+        let tile_grid = TileGrid::<TileKind>::new_fill(5, 5, TileKind::Wall);
+        let flags = flags_from_grid(&tile_grid);
 
-        grid.sync_walls(&tilemap);
+        grid.sync_walls_from_flags(&flags);
 
         // All wall tiles should be impassable
         for i in 0..25 {
@@ -521,15 +523,15 @@ mod tests {
     #[test]
     fn test_sync_walls_mixed_tiles() {
         let mut grid = GasGrid::new(3, 3);
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        let mut tile_grid = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
 
         // Set some walls
-        tilemap.set(IVec2::new(1, 1), TileKind::Wall);
-        tilemap.set(IVec2::new(0, 2), TileKind::Wall);
+        tile_grid.set(IVec2::new(1, 1), TileKind::Wall);
+        tile_grid.set(IVec2::new(0, 2), TileKind::Wall);
 
-        grid.sync_walls(&tilemap);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
-        // Check passability matches tilemap
+        // Check passability matches grid
         assert!(grid.passable[0]); // (0, 0) is floor
         assert!(grid.passable[1]); // (1, 0) is floor
         assert!(grid.passable[2]); // (2, 0) is floor
@@ -544,20 +546,20 @@ mod tests {
     #[test]
     fn test_sync_walls_transitions() {
         let mut grid = GasGrid::new(3, 3);
-        let mut tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        let mut tile_grid = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
 
         // Set some moles in cells
         grid.set_moles(IVec2::new(1, 1), 5.0);
         grid.set_moles(IVec2::new(0, 0), 3.0);
 
         // All should be passable initially
-        grid.sync_walls(&tilemap);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
         assert!(grid.passable[4]); // (1, 1)
         assert!(grid.passable[0]); // (0, 0)
 
         // Change tiles to walls (floor -> wall transition: moles zeroed)
-        tilemap.set(IVec2::new(1, 1), TileKind::Wall);
-        grid.sync_walls(&tilemap);
+        tile_grid.set(IVec2::new(1, 1), TileKind::Wall);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
         // Check passability updated
         assert!(!grid.passable[4]); // (1, 1) now impassable
@@ -571,20 +573,20 @@ mod tests {
         assert_eq!(grid.total_moles(), 3.0);
 
         // Change wall back to floor (wall -> floor transition)
-        tilemap.set(IVec2::new(1, 1), TileKind::Floor);
-        grid.sync_walls(&tilemap);
+        tile_grid.set(IVec2::new(1, 1), TileKind::Floor);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
         assert!(grid.passable[4]); // (1, 1) passable again
         assert_eq!(grid.pressure_at(IVec2::new(1, 1)), Some(0.0)); // was zeroed, stays 0
 
         // Test wall removal: add a wall, then re-sync
-        tilemap.set(IVec2::new(2, 2), TileKind::Wall);
-        grid.sync_walls(&tilemap);
+        tile_grid.set(IVec2::new(2, 2), TileKind::Wall);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
         assert!(!grid.passable[8]); // (2, 2) is wall, impassable
         assert_eq!(grid.pressure_at(IVec2::new(2, 2)), Some(0.0)); // zeroed
 
         // Remove wall
-        tilemap.set(IVec2::new(2, 2), TileKind::Floor);
-        grid.sync_walls(&tilemap);
+        tile_grid.set(IVec2::new(2, 2), TileKind::Floor);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
         assert!(grid.passable[8]); // (2, 2) now passable
         assert_eq!(grid.pressure_at(IVec2::new(2, 2)), Some(0.0)); // vacuum (was already 0)
@@ -631,9 +633,9 @@ mod tests {
     #[test]
     fn test_total_moles_with_step() {
         let mut grid = GasGrid::new(3, 3);
-        let tilemap = Tilemap::new(3, 3, TileKind::Floor);
+        let tile_grid = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
 
-        grid.sync_walls(&tilemap);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
         // Set initial moles
         grid.set_moles(IVec2::new(0, 0), 10.0);
@@ -656,8 +658,8 @@ mod tests {
     #[test]
     fn test_step_reduces_pressure_discontinuity() {
         let mut grid = GasGrid::new(2, 1);
-        let tilemap = Tilemap::new(2, 1, TileKind::Floor);
-        grid.sync_walls(&tilemap);
+        let tile_grid = TileGrid::<TileKind>::new_fill(2, 1, TileKind::Floor);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
         grid.set_moles(IVec2::new(0, 0), 10.0);
         grid.set_moles(IVec2::new(1, 0), 0.0);
@@ -678,20 +680,20 @@ mod tests {
     #[test]
     fn test_diffusion_spike_criteria_convergence_and_conservation() {
         let mut grid = GasGrid::new(12, 10);
-        let mut tilemap = Tilemap::new(12, 10, TileKind::Floor);
+        let mut tile_grid = TileGrid::<TileKind>::new_fill(12, 10, TileKind::Floor);
 
         // Build two chambers separated by a vertical wall at x = 5.
         for y in 0..10 {
-            tilemap.set(IVec2::new(5, y), TileKind::Wall);
+            tile_grid.set(IVec2::new(5, y), TileKind::Wall);
         }
 
-        grid.sync_walls(&tilemap);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
         // Left chamber pressurized to 1.0 atm, right chamber vacuum.
         for y in 0..10 {
             for x in 0..12 {
                 let pos = IVec2::new(x, y);
-                if !tilemap.is_walkable(pos) {
+                if !tile_grid.get_copy(pos).is_some_and(|k| k.is_walkable()) {
                     continue;
                 }
 
@@ -717,9 +719,9 @@ mod tests {
 
         // Remove a contiguous wall segment to connect chambers.
         for y in 0..10 {
-            tilemap.set(IVec2::new(5, y), TileKind::Floor);
+            tile_grid.set(IVec2::new(5, y), TileKind::Floor);
         }
-        grid.sync_walls(&tilemap);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
         for _ in 0..200 {
             grid.step(2.0);
@@ -732,7 +734,7 @@ mod tests {
         for y in 0..10 {
             for x in 0..12 {
                 let pos = IVec2::new(x, y);
-                if !tilemap.is_walkable(pos) {
+                if !tile_grid.get_copy(pos).is_some_and(|k| k.is_walkable()) {
                     continue;
                 }
 
@@ -822,8 +824,8 @@ mod tests {
     fn test_pressure_gradient_at_uniform() {
         // Uniform pressure → zero gradient everywhere.
         let mut grid = GasGrid::new(3, 3);
-        let tilemap = Tilemap::new(3, 3, TileKind::Floor);
-        grid.sync_walls(&tilemap);
+        let tile_grid = TileGrid::<TileKind>::new_fill(3, 3, TileKind::Floor);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
         for y in 0..3 {
             for x in 0..3 {
                 grid.set_moles(IVec2::new(x, y), 5.0);
@@ -838,8 +840,8 @@ mod tests {
     fn test_pressure_gradient_at_x_direction() {
         // High pressure on right (x+1), vacuum on left (x-1): gradient should point +x.
         let mut grid = GasGrid::new(3, 1);
-        let tilemap = Tilemap::new(3, 1, TileKind::Floor);
-        grid.sync_walls(&tilemap);
+        let tile_grid = TileGrid::<TileKind>::new_fill(3, 1, TileKind::Floor);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
         grid.set_moles(IVec2::new(0, 0), 0.0);
         grid.set_moles(IVec2::new(1, 0), 5.0);
         grid.set_moles(IVec2::new(2, 0), 10.0);
@@ -858,9 +860,9 @@ mod tests {
         // Wall on one side: the centre pressure is used in place of the impassable neighbour,
         // contributing zero gradient for that direction.
         let mut grid = GasGrid::new(3, 1);
-        let mut tilemap = Tilemap::new(3, 1, TileKind::Floor);
-        tilemap.set(IVec2::new(0, 0), TileKind::Wall);
-        grid.sync_walls(&tilemap);
+        let mut tile_grid = TileGrid::<TileKind>::new_fill(3, 1, TileKind::Floor);
+        tile_grid.set(IVec2::new(0, 0), TileKind::Wall);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
         // centre pressure
         grid.set_moles(IVec2::new(1, 0), 4.0);
         // right neighbour
@@ -920,15 +922,15 @@ mod tests {
     #[test]
     fn test_sync_walls_zeros_moles_on_wall() {
         let mut grid = GasGrid::new(3, 1);
-        let mut tilemap = Tilemap::new(3, 1, TileKind::Floor);
+        let mut tile_grid = TileGrid::<TileKind>::new_fill(3, 1, TileKind::Floor);
         grid.set_moles(IVec2::new(0, 0), 10.0);
         grid.set_moles(IVec2::new(1, 0), 10.0);
         grid.set_moles(IVec2::new(2, 0), 10.0);
-        grid.sync_walls(&tilemap);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
         // Seal the middle cell
-        tilemap.set(IVec2::new(1, 0), TileKind::Wall);
-        grid.sync_walls(&tilemap);
+        tile_grid.set(IVec2::new(1, 0), TileKind::Wall);
+        grid.sync_walls_from_flags(&flags_from_grid(&tile_grid));
 
         // Moles at (1,0) must be zeroed; neighbours untouched
         assert_eq!(grid.pressure_at(IVec2::new(1, 0)), Some(0.0));

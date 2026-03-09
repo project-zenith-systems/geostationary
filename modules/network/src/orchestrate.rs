@@ -10,9 +10,9 @@ use bevy::prelude::*;
 use bevy::state::state::FreelyMutableState;
 
 use crate::{
-    Client, ClientEvent, ClientId, ClientInputReceived, ClientMessage,
-    ModuleReadySent, NetCommand, NetServerSender, NetworkSet, PlayerEvent, Server, ServerEvent,
-    ServerMessage, StreamRegistry,
+    Client, ClientEvent, ClientId, ClientInputReceived, ClientMessage, ModuleReadySent, NetCommand,
+    NetServerSender, NetworkReceive, PlayerEvent, Server, ServerEvent, ServerMessage,
+    StreamRegistry,
 };
 
 /// Tracks the initial-sync barrier for the client.
@@ -61,32 +61,25 @@ struct ClientInitSyncState {
 /// application state `S`.
 pub(crate) fn register_orchestrate_systems<S: FreelyMutableState + Copy>(
     app: &mut App,
+    loading: S,
     in_game: S,
     disconnected: S,
 ) {
     app.init_resource::<PendingSync>();
     app.init_resource::<ClientInitSyncState>();
     app.add_systems(
-        PreUpdate,
-        handle_client_events::<S>
-            .run_if(resource_exists::<Client>)
-            .after(NetworkSet::Receive)
-            .before(NetworkSet::Send),
+        NetworkReceive,
+        handle_client_events::<S>.run_if(resource_exists::<Client>),
     );
     app.add_systems(
-        PreUpdate,
-        handle_server_events
-            .run_if(resource_exists::<Server>)
-            .after(NetworkSet::Receive)
-            .before(NetworkSet::Send),
+        NetworkReceive,
+        handle_server_events.run_if(resource_exists::<Server>),
     );
-    app.add_systems(
-        Update,
-        track_module_ready.run_if(resource_exists::<Server>),
-    );
+    app.add_systems(Update, track_module_ready.run_if(resource_exists::<Server>));
 
     // Store the state values so the generic system can read them.
     app.insert_resource(OrchestrationStates {
+        loading,
         in_game,
         disconnected,
     });
@@ -94,9 +87,34 @@ pub(crate) fn register_orchestrate_systems<S: FreelyMutableState + Copy>(
 
 /// Resource storing the state values used for transitions.
 #[derive(Resource)]
-struct OrchestrationStates<S: FreelyMutableState> {
+pub(crate) struct OrchestrationStates<S: FreelyMutableState> {
+    loading: S,
     in_game: S,
     disconnected: S,
+}
+
+impl<S: FreelyMutableState + Copy> OrchestrationStates<S> {
+    /// Transition to the `loading` state unless we're already in `loading` or `in_game`.
+    ///
+    /// When `headless` is true (dedicated server), skips straight to `in_game` — there is
+    /// no client-side sync barrier to wait for.
+    pub(crate) fn transition_to_loading(
+        &self,
+        state: &State<S>,
+        next_state: &mut NextState<S>,
+        headless: bool,
+    ) {
+        if headless {
+            // Dedicated server: skip the sync barrier entirely and go straight
+            // to in_game.  Handles both the cold-start case (already in loading
+            // after OnEnter ran load_map) and the from-menu case.
+            if *state.get() != self.in_game {
+                next_state.set(self.in_game);
+            }
+        } else if *state.get() != self.loading && *state.get() != self.in_game {
+            next_state.set(self.loading);
+        }
+    }
 }
 
 fn handle_client_events<S: FreelyMutableState + Copy>(
@@ -116,11 +134,11 @@ fn handle_client_events<S: FreelyMutableState + Copy>(
             }
             ClientEvent::Disconnected { reason } => {
                 info!("Disconnected: {reason}");
-                next_state.set(states.disconnected.clone());
+                next_state.set(states.disconnected);
             }
             ClientEvent::Error(msg) => {
                 error!("Network error: {msg}");
-                next_state.set(states.disconnected.clone());
+                next_state.set(states.disconnected);
             }
             ClientEvent::StreamFrame { tag: _, data: _ } => {
                 // Intentionally unhandled here; stream frames are processed in the respective module systems.
@@ -161,25 +179,25 @@ fn handle_client_events<S: FreelyMutableState + Copy>(
                 ServerMessage::Shutdown => {
                     info!("Server is shutting down");
                     net_commands.write(NetCommand::Disconnect);
-                    next_state.set(states.disconnected.clone());
+                    next_state.set(states.disconnected);
                 }
             },
         }
     }
 }
 
-/// Transitions to the `in_game` state if the initial-sync barrier is complete and the app
-/// is not already in that state.  Guards against redundant state changes that would trigger
-/// a spurious [`OnExit`]/[`OnEnter`] cycle.
+/// Transitions from `Loading` to `InGame` once the initial-sync barrier is complete.
+/// Only fires when the app is in the `loading` state — prevents spurious transitions
+/// from other states (e.g. `Editor`).
 fn try_enter_in_game<S: FreelyMutableState + Copy>(
     sync: &PendingSync,
     state: &State<S>,
     next_state: &mut NextState<S>,
     states: &OrchestrationStates<S>,
 ) {
-    if sync.is_complete() && *state.get() != states.in_game {
+    if sync.is_complete() && *state.get() == states.loading {
         info!("Initial sync complete, entering InGame");
-        next_state.set(states.in_game.clone());
+        next_state.set(states.in_game);
     }
 }
 

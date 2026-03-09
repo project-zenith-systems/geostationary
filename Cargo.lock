@@ -355,11 +355,15 @@ dependencies = [
 name = "atmospherics"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bevy",
  "network",
  "physics",
+ "ron",
+ "serde",
  "tiles",
  "wincode",
+ "world",
 ]
 
 [[package]]
@@ -1954,11 +1958,13 @@ dependencies = [
  "network",
  "physics",
  "player",
+ "ron",
  "shared",
  "souls",
  "things",
  "tiles",
  "ui",
+ "world",
 ]
 
 [[package]]
@@ -3271,6 +3277,7 @@ dependencies = [
  "souls",
  "things",
  "tiles",
+ "world",
 ]
 
 [[package]]
@@ -3425,9 +3432,11 @@ dependencies = [
  "bevy",
  "network",
  "physics",
+ "ron",
  "serde",
  "things",
  "wincode",
+ "world",
 ]
 
 [[package]]
@@ -5458,6 +5467,7 @@ dependencies = [
  "serde",
  "things",
  "tiles",
+ "world",
 ]
 
 [[package]]
@@ -5745,8 +5755,10 @@ dependencies = [
  "input",
  "network",
  "physics",
+ "ron",
  "serde",
  "wincode",
+ "world",
 ]
 
 [[package]]
@@ -5802,11 +5814,16 @@ dependencies = [
 name = "tiles"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bevy",
+ "bitflags 2.11.0",
  "input",
  "network",
  "physics",
+ "ron",
+ "serde",
  "wincode",
+ "world",
 ]
 
 [[package]]
@@ -7340,6 +7357,15 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "world"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "ron",
+ "serde",
 ]
 
 [[package]]

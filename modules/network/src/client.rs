@@ -163,10 +163,7 @@ async fn run_client_inner(
         let mut send = match open_result {
             Ok(s) => s,
             Err(e) => {
-                log::error!(
-                    "Failed to open client→server uni stream tag={}: {}",
-                    tag, e
-                );
+                log::error!("Failed to open client→server uni stream tag={}: {}", tag, e);
                 connection.close(0u32.into(), b"stream setup failed");
                 client_cancel.cancel();
                 client_stream_write_tasks.shutdown().await;
@@ -183,7 +180,8 @@ async fn run_client_inner(
         if let Err(e) = send.write_all(&[tag]).await {
             log::error!(
                 "Failed to write tag byte for client→server stream tag={}: {}",
-                tag, e
+                tag,
+                e
             );
             connection.close(0u32.into(), b"stream setup failed");
             client_cancel.cancel();

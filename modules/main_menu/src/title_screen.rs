@@ -37,6 +37,11 @@ pub fn spawn(commands: &mut Commands, theme: &UiTheme) -> Vec<Entity> {
         .with_event(MenuEvent::Join)
         .build(commands);
 
+    let editor_button = build_button(theme)
+        .with_text("Editor")
+        .with_event(MenuEvent::Editor)
+        .build(commands);
+
     let settings_button = build_button(theme)
         .with_text("Settings")
         .with_event(MenuEvent::Settings)
@@ -53,6 +58,7 @@ pub fn spawn(commands: &mut Commands, theme: &UiTheme) -> Vec<Entity> {
         spacer,
         play_button,
         join_button,
+        editor_button,
         settings_button,
         quit_button,
     ]

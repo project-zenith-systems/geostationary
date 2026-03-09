@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+base64 = "0.22"
 bevy = { workspace = true }
+ron = { workspace = true }
+serde = { workspace = true }
 tiles = { path = "../tiles" }
 network = { path = "../network" }
 physics = { path = "../physics" }
+world = { path = "../world" }
 wincode = { workspace = true }

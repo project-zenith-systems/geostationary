@@ -15,21 +15,27 @@ network and module systems that participate in client–server coordination.
 The earliest schedule in which game code runs. Bevy's internal bookkeeping
 (time, events, etc.) has already executed.
 
-1. **`NetworkSet::Receive`** — `drain_server_events` and `drain_client_events`
+### NetworkReceive (custom schedule, after PreUpdate)
+
+Drains inbound network data and processes it in a single schedule. Ordering
+within the schedule uses `NetworkSet` sets:
+
+1. **`NetworkSet::Drain`** — `drain_server_events` and `drain_client_events`
    pull messages from async channels into Bevy messages.
 
 2. **Module on-connect sends** — Server-side systems that react to
    `PlayerEvent::Joined` by sending initial data to newly joined clients.
    Each module independently listens for the event and sends its data when
-   ready. These systems run after `NetworkSet::Receive` and before
-   `NetworkSet::Send`.
+   ready. These systems run after `NetworkSet::Drain` and before
+   `NetworkSet::Commands` (the default slot — no explicit set annotation
+   needed).
 
-3. **`NetworkSet::Send`** — `process_net_commands` dispatches connection
+3. **`NetworkSet::Commands`** — `process_net_commands` dispatches connection
    lifecycle commands (`NetCommand::Host`, `Connect`, `Disconnect`) to
    async tasks. This does **not** send game data — module stream writes go
    directly to async channels and are schedule-independent.
 
-### StateTransition (between PreUpdate and Update)
+### StateTransition (between NetworkReceive and Update)
 
 Bevy processes pending state transitions (e.g. `NextState::set`). Systems
 registered with `OnEnter(InGame)` run here — notably `setup_client_scene`
@@ -57,14 +63,20 @@ Runs at the simulation tick rate, independent of frame rate.
 Runs after all `Update` systems have finished. Use this for work that
 depends on the final state of the frame.
 
-- **Network broadcasts** — periodic state sync (entity positions, gas grid
-  snapshots, item events) should happen here to ensure all `Update` systems
-  have committed their changes before the state is serialised and sent
 - **Deferred mutations** — `apply_tile_mutation` (listen-server only)
 
-> **Rationale:** Sending network messages in `PostUpdate` guarantees that
-> every system has had a chance to modify the world state during `Update`
-> before it is synced to clients. This avoids sending stale or
+### NetworkSend (custom schedule, after PostUpdate)
+
+Modules place their outbound broadcast / replication systems here so that
+all gameplay systems in `Update` and late mutations in `PostUpdate` have
+committed their changes before the state is serialised and sent to clients.
+
+- **Network broadcasts** — periodic state sync (entity positions, gas grid
+  snapshots, item events)
+
+> **Rationale:** Running outbound broadcasts in `NetworkSend` (after
+> `PostUpdate`) guarantees that every system has had a chance to modify the
+> world state before it is synced to clients. This avoids sending stale or
 > partially-updated data.
 
 ## Server-Only and Client-Only Systems
@@ -85,7 +97,7 @@ Note: On a listen-server, both `Server` and `Client` are present.
 
 ```rust
 // Server-only: authoritative simulation, broadcasting state
-app.add_systems(Update, broadcast_state.run_if(resource_exists::<Server>));
+app.add_systems(NetworkSend, broadcast_state.run_if(resource_exists::<Server>));
 
 // Client-only: receiving replicated state, sending input
 app.add_systems(Update, send_input.run_if(resource_exists::<Client>));
@@ -93,8 +105,8 @@ app.add_systems(Update, send_input.run_if(resource_exists::<Client>));
 // Visual-only: rendering, VFX, animation — skip on headless servers
 app.add_systems(Update, spawn_meshes.run_if(not(resource_exists::<Headless>)));
 
-// Client-side receiving (not on a dedicated server that doesn't connect to itself)
-app.add_systems(PreUpdate, handle_entity_lifecycle.run_if(resource_exists::<Client>));
+// Client-side receiving (runs in NetworkReceive after drain)
+app.add_systems(NetworkReceive, handle_entity_lifecycle.run_if(resource_exists::<Client>));
 ```
 
 ### When to Use Each
@@ -169,8 +181,7 @@ initial-sync barrier:
 2. Implement an on-connect system gated on `resource_exists::<Server>` that
    listens for `PlayerEvent::Joined`, sends the initial data, then calls
    `send_stream_ready_to` and emits `ModuleReadySent`.
-3. Place the system in `PreUpdate` between `NetworkSet::Receive` and
-   `NetworkSet::Send`.
+3. Place the system in the `NetworkReceive` schedule.
 4. If the required resource may not exist on the first frame (e.g.
    listen-server startup), queue the client and retry, following the
    `PendingTilesSyncs` / `PendingAtmosSyncs` pattern.
@@ -184,10 +195,12 @@ module that exposes ordering points declares a public enum with descriptive
 variants. This decouples ordering from private function names and makes
 constraints visible in code.
 
-| Module          | Set                            | Purpose |
+| Module          | Set / Schedule                 | Purpose |
 |-----------------|--------------------------------|---------|
-| `network`       | `NetworkSet::Receive`          | Drains async events into Bevy messages |
-| `network`       | `NetworkSet::Send`             | Dispatches outbound commands |
+| `network`       | `NetworkReceive` (schedule)    | Drains inbound messages, processes them, dispatches commands |
+| `network`       | `NetworkSend` (schedule)       | Outbound broadcasts after all gameplay has run |
+| `network`       | `NetworkSet::Drain`            | Ordering set within `NetworkReceive`: drain systems run first |
+| `network`       | `NetworkSet::Commands`         | Ordering set within `NetworkReceive`: command dispatch runs last |
 | `tiles`         | `TilesSet::SendOnConnect`      | Tilemap snapshot + StreamReady guard to joining client |
 | `atmospherics`  | `AtmosSet::SendOnConnect`      | Gas grid snapshot + StreamReady guard to joining client |
 | `things`        | `ThingsSet::HandleClientJoined`| Entity-spawn catch-up for joining client |
@@ -203,7 +216,7 @@ affect.
 ```rust
 // In items/src/lib.rs — items depends on things, so it can reference ThingsSet directly
 app.add_systems(
-    PreUpdate,
+    NetworkReceive,
     broadcast_stored_on_join
         .run_if(resource_exists::<Server>)
         .after(things::ThingsSet::HandleClientJoined)
@@ -223,9 +236,9 @@ When a new system needs to run in a defined order relative to other modules:
 
 | Mechanism | Scope | Used For |
 |-----------|-------|----------|
-| `SystemSet` ordering | PreUpdate (server) | Deterministic ordering of on-connect sends |
-| `ModuleReadySent` event | PreUpdate/Update | Per-module "initial burst complete" signal |
+| `SystemSet` ordering | `NetworkReceive` (server) | Deterministic ordering of on-connect sends |
+| `ModuleReadySent` event | `NetworkReceive`/`Update` | Per-module "initial burst complete" signal |
 | `StreamReady` guard | Wire protocol | Per-stream "data burst complete" marker (client-side) |
-| `PendingSync` barrier | Client PreUpdate | Gate for `AppState::InGame` transition |
-| `PendingXSyncs` queues | Server PreUpdate | Retry queue when resource not yet available |
+| `PendingSync` barrier | Client `NetworkReceive` | Gate for `AppState::InGame` transition |
+| `PendingXSyncs` queues | Server `NetworkReceive` | Retry queue when resource not yet available |
 | `resource_exists` run conditions | All schedules | Server-only / client-only / visual-only gating |

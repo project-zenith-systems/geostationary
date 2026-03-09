@@ -12,7 +12,7 @@ The workspace is split into two binaries and a set of shared modules:
 bins/
   client/     — full game client with rendering, UI, input
   server/     — headless dedicated server (no windowing/rendering deps)
-  shared/     — library used by both: AppState, config, ServerPlugin, WorldSetupPlugin
+  shared/     — library used by both: AppState, config, TemplatesPlugin
 modules/      — gameplay crates (network, physics, tiles, things, etc.)
 ```
 

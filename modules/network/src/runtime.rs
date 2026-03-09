@@ -126,7 +126,10 @@ mod tests {
     fn test_is_hosting() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
-        let handle = rt.spawn(async {});
+        let token_clone = cancel_token.clone();
+        let handle = rt.spawn(async move {
+            token_clone.cancelled().await;
+        });
 
         let mut tasks = NetworkTasks::default();
         assert!(!tasks.is_hosting());
@@ -139,7 +142,10 @@ mod tests {
     fn test_is_connected() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cancel_token = CancellationToken::new();
-        let handle = rt.spawn(async {});
+        let token_clone = cancel_token.clone();
+        let handle = rt.spawn(async move {
+            token_clone.cancelled().await;
+        });
 
         let mut tasks = NetworkTasks::default();
         assert!(!tasks.is_connected());
@@ -234,8 +240,10 @@ mod tests {
         let cancel_token = CancellationToken::new();
         let handle = rt.spawn(async {});
 
-        let mut tasks = NetworkTasks::default();
-        tasks.server_task = Some((handle, cancel_token));
+        let tasks = NetworkTasks {
+            server_task: Some((handle, cancel_token)),
+            ..Default::default()
+        };
 
         // Wait for the task to finish deterministically
         rt.block_on(async {
@@ -243,6 +251,8 @@ mod tests {
         });
 
         // Cleanup should remove finished tasks
+        // (need mut after the wait so the task has time to complete)
+        let mut tasks = tasks;
         tasks.cleanup_finished();
         assert!(!tasks.is_hosting());
     }
@@ -253,8 +263,10 @@ mod tests {
         let cancel_token = CancellationToken::new();
         let handle = rt.spawn(async {});
 
-        let mut tasks = NetworkTasks::default();
-        tasks.server_task = Some((handle, cancel_token));
+        let tasks = NetworkTasks {
+            server_task: Some((handle, cancel_token)),
+            ..Default::default()
+        };
 
         // Wait for the task to finish deterministically
         rt.block_on(async {
@@ -271,8 +283,10 @@ mod tests {
         let cancel_token = CancellationToken::new();
         let handle = rt.spawn(async {});
 
-        let mut tasks = NetworkTasks::default();
-        tasks.client_task = Some((handle, cancel_token));
+        let tasks = NetworkTasks {
+            client_task: Some((handle, cancel_token)),
+            ..Default::default()
+        };
 
         // Wait for the task to finish deterministically
         rt.block_on(async {

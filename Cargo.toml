@@ -17,6 +17,7 @@ members = [
     "modules/input",
     "modules/interactions",
     "modules/items",
+    "modules/world",
     "modules/main_menu",
 ]
 default-members = ["bins/server"]
@@ -48,5 +49,6 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_ui",
 ] }
 config = { version = "0.15", features = ["ron", "toml"] }
+ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 wincode = { version = "0.4", features = ["derive"] }

@@ -1,5 +1,7 @@
-use bevy::{app::AppExit, prelude::*, state::state::FreelyMutableState, state::state_scoped::DespawnOnExit};
-use network::{ClientEvent, NetCommand, NetworkSet, ServerEvent};
+use bevy::{
+    app::AppExit, prelude::*, state::state::FreelyMutableState, state::state_scoped::DespawnOnExit,
+};
+use network::{ClientEvent, NetCommand, NetworkReceive, ServerEvent};
 use ui::*;
 
 mod loading_screen;
@@ -16,19 +18,19 @@ pub struct MainMenuConfig {
 
 pub struct MainMenuPlugin<S: FreelyMutableState + Copy> {
     pub state: S,
+    pub editor_state: S,
 }
 
 impl<S: FreelyMutableState + Copy> Plugin for MainMenuPlugin<S> {
     fn build(&self, app: &mut App) {
         app.insert_resource(MainMenuActiveState(self.state));
+        app.insert_resource(MainMenuEditorState(self.editor_state));
         app.add_message::<MenuEvent>();
         app.add_systems(OnEnter(self.state), (menu_setup::<S>, menu_init));
         app.add_systems(
-            PreUpdate,
+            NetworkReceive,
             (handle_network_errors, menu_message_reader::<S>)
                 .chain()
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send)
                 .run_if(in_state(self.state)),
         );
     }
@@ -37,12 +39,16 @@ impl<S: FreelyMutableState + Copy> Plugin for MainMenuPlugin<S> {
 #[derive(Resource, Clone, Copy)]
 struct MainMenuActiveState<S: States>(S);
 
+#[derive(Resource, Clone, Copy)]
+struct MainMenuEditorState<S: States>(S);
+
 #[derive(Message, Clone, Debug)]
 pub enum MenuEvent {
     Title,
     Settings,
     Play,
     Join,
+    Editor,
     Quit,
 }
 
@@ -54,7 +60,11 @@ enum MenuEventResult {
     CloseMenu,
 }
 
-fn menu_setup<S: States + Copy>(mut commands: Commands, theme: Res<UiTheme>, active_state: Res<MainMenuActiveState<S>>) {
+fn menu_setup<S: States + Copy>(
+    mut commands: Commands,
+    theme: Res<UiTheme>,
+    active_state: Res<MainMenuActiveState<S>>,
+) {
     commands.spawn((
         Node {
             justify_content: JustifyContent::Start,
@@ -98,7 +108,8 @@ fn handle_network_errors(
     }
 }
 
-fn menu_message_reader<S: States + Copy>(
+#[allow(clippy::too_many_arguments)]
+fn menu_message_reader<S: FreelyMutableState + Copy>(
     mut commands: Commands,
     query: Query<Entity, With<MenuRoot>>,
     theme: Res<UiTheme>,
@@ -106,6 +117,8 @@ fn menu_message_reader<S: States + Copy>(
     mut messages: MessageReader<MenuEvent>,
     mut exit: MessageWriter<AppExit>,
     mut net_commands: MessageWriter<NetCommand>,
+    mut next_state: ResMut<NextState<S>>,
+    editor_state: Res<MainMenuEditorState<S>>,
 ) {
     let Ok(menu_root_entity) = query.single() else {
         return;
@@ -121,9 +134,7 @@ fn menu_message_reader<S: States + Copy>(
                 theme.as_ref(),
             )),
             MenuEvent::Play => {
-                net_commands.write(NetCommand::Host {
-                    port: config.port,
-                });
+                net_commands.write(NetCommand::Host { port: config.port });
                 MenuEventResult::ReplaceChildren(loading_screen::spawn(
                     &mut commands,
                     theme.as_ref(),
@@ -138,6 +149,10 @@ fn menu_message_reader<S: States + Copy>(
                     &mut commands,
                     theme.as_ref(),
                 ))
+            }
+            MenuEvent::Editor => {
+                next_state.set(editor_state.0);
+                MenuEventResult::CloseMenu
             }
             MenuEvent::Quit => {
                 exit.write(AppExit::Success);

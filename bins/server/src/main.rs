@@ -4,12 +4,13 @@ use bevy::app::AppExit;
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use interactions::InteractionsPlugin;
+use items::{InteractionRange, ItemsPlugin};
 use network::{Headless, NetCommand, NetServerSender, NetworkPlugin, ServerMessage};
 use physics::PhysicsPlugin;
 use shared::{app_state::AppState, config::AppConfig};
-use items::{InteractionRange, ItemsPlugin};
 use things::ThingsPlugin;
 use tiles::TilesPlugin;
+use world::{MapPath, WorldPlugin};
 
 /// Set to `true` by the CTRL-C / SIGINT handler.
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -28,14 +29,13 @@ fn main() {
     ctrlc::set_handler(|| {
         SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
     })
-    .expect(
-        "Failed to set CTRL-C handler: another signal handler may already be registered",
-    );
+    .expect("Failed to set CTRL-C handler: another signal handler may already be registered");
 
     let app_config = shared::config::load_config();
 
     let mut app = App::new();
     app.insert_resource(app_config.clone());
+    app.insert_resource(MapPath::new(&app_config.world.map_path));
 
     // Dedicated headless server: minimal plugin set for physics + networking.
     // No window or rendering. Mesh/scene asset support is retained for physics.
@@ -48,25 +48,31 @@ fn main() {
         .add_plugins(bevy::state::app::StatesPlugin)
         .insert_resource(Headless)
         .add_plugins(NetworkPlugin {
+            loading: AppState::Loading,
             in_game: AppState::InGame,
             disconnected: AppState::MainMenu,
         })
         .add_plugins(PhysicsPlugin)
-        .add_plugins(TilesPlugin)
-        .add_plugins(ThingsPlugin::<AppState>::in_state(
+        .add_plugins(WorldPlugin {
+            loading: AppState::Loading,
+            in_game: AppState::InGame,
+        })
+        .add_plugins(TilesPlugin::in_state(AppState::InGame))
+        .add_plugins(ThingsPlugin::<AppState>::in_state(AppState::InGame))
+        .add_plugins(atmospherics::AtmosphericsPlugin::new(
+            AppState::Loading,
             AppState::InGame,
+            app_config.atmospherics.standard_pressure,
+            app_config.atmospherics.pressure_force_scale,
+            app_config.atmospherics.diffusion_rate,
         ))
-        .add_plugins(atmospherics::AtmosphericsPlugin)
         .add_plugins(creatures::CreaturesPlugin)
         .add_plugins(souls::SoulsPlugin)
-        .add_plugins(shared::world_setup::WorldSetupPlugin)
         .add_plugins(shared::templates::TemplatesPlugin)
         .add_plugins(ItemsPlugin)
-        .add_plugins(InteractionsPlugin::<AppState>::in_state(
-            AppState::InGame,
-        ))
+        .add_plugins(InteractionsPlugin::<AppState>::in_state(AppState::InGame))
         .insert_resource(InteractionRange(app_config.items.interaction_range))
-        .insert_state(AppState::InGame)
+        .insert_state(AppState::Loading)
         .add_systems(Startup, host_on_startup)
         .add_systems(Update, check_shutdown_signal);
 

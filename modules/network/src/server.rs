@@ -976,7 +976,10 @@ mod tests {
             .await
             .expect("client: connection established");
 
-        for (tag, data) in [(TAG_INPUT, b"input-data" as &[u8]), (TAG_CHAT, b"chat-data")] {
+        for (tag, data) in [
+            (TAG_INPUT, b"input-data" as &[u8]),
+            (TAG_CHAT, b"chat-data"),
+        ] {
             let mut send = connection.open_uni().await.expect("client: open_uni");
             send.write_all(&[tag])
                 .await

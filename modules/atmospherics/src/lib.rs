@@ -1,14 +1,19 @@
+use std::collections::{BTreeMap, HashMap};
+
 use bevy::prelude::*;
 use network::{
-    ClientId, Headless, ModuleReadySent, NetworkSet, PlayerEvent, Server, StreamDef,
-    StreamDirection, StreamReader, StreamRegistry, StreamSender,
+    ClientId, Headless, ModuleReadySent, NetworkReceive, NetworkSend, PlayerEvent, Server,
+    StreamDef, StreamDirection, StreamReader, StreamRegistry, StreamSender,
 };
 use physics::{ConstantForce, RigidBody};
-use tiles::{TileMutated, Tilemap};
+use ron::value::RawValue;
+use serde::{Deserialize, Serialize};
+use tiles::{TileFlags, TileGrid, TileKind, TileMutated};
 use wincode::{SchemaRead, SchemaWrite};
+use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 
 mod gas_grid;
-pub use gas_grid::{GasCell, GasGrid, DEFAULT_DIFFUSION_RATE};
+pub use gas_grid::{DEFAULT_DIFFUSION_RATE, GasCell, GasGrid};
 
 mod debug_overlay;
 pub use debug_overlay::{AtmosDebugOverlay, OverlayQuad};
@@ -47,46 +52,253 @@ pub enum AtmosStreamMessage {
     },
     /// Incremental update broadcast at ~10 Hz; contains only cells that changed
     /// beyond the delta epsilon since the last snapshot or delta.
-    GasGridDelta {
-        changes: Vec<(u16, f32)>,
+    GasGridDelta { changes: Vec<(u16, f32)> },
+}
+
+// ---------------------------------------------------------------------------
+// Atmo — per-tile atmosphere state (moved from tiles)
+// ---------------------------------------------------------------------------
+
+/// Atmosphere state for a tile.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect, PartialOrd, Ord,
+)]
+pub enum Atmo {
+    Pressurised,
+    Vacuum,
+}
+
+// ---------------------------------------------------------------------------
+// AtmosLayer — MapLayer implementation
+// ---------------------------------------------------------------------------
+
+/// On-disk representation of the `"atmosphere"` map layer.
+///
+/// Each [`Atmo`] state maps to a list of regions.  Tiles not covered by any
+/// region use the default rule: walkable → `Pressurised`, wall → nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtmosLayerData {
+    #[serde(default)]
+    pub regions: BTreeMap<Atmo, Vec<AtmosRegion>>,
+}
+
+/// A spatial region of tiles that share the same atmosphere state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AtmosRegion {
+    /// Axis-aligned rectangle, inclusive on both ends.
+    Rect { min: (i32, i32), max: (i32, i32) },
+    /// Individual cells.
+    Cells(Vec<(i32, i32)>),
+    /// 1-bit-per-cell packed bitmap for a square chunk.
+    /// `data` is base64-encoded, row-major, LSB-first within each byte.
+    Bitmap {
+        origin: (i32, i32),
+        size: u32,
+        data: String,
     },
 }
 
-/// Creates and initializes a GasGrid from a Tilemap.
-/// All floor cells are filled with the given standard atmospheric pressure,
-/// except cells inside `vacuum_region` (inclusive bounding rect) which start at 0.0 moles.
+/// `MapLayer` implementation for the `"atmosphere"` layer.
 ///
-/// `diffusion_rate` is a simulation tuning parameter stored on the grid and used
-/// during `step()`.
-pub fn initialize_gas_grid(
-    tilemap: &Tilemap,
-    standard_pressure: f32,
-    vacuum_region: Option<(IVec2, IVec2)>,
-    diffusion_rate: f32,
-) -> GasGrid {
-    let mut gas_grid =
-        GasGrid::with_tuning(tilemap.width(), tilemap.height(), diffusion_rate);
+/// **load**: Deserializes [`AtmosLayerData`] and combines it with the
+/// [`TileGrid`] (which must already be loaded) to build and insert the
+/// [`GasGrid`] and [`PressureForceScale`] resources.
+///
+/// **load_default**: When no `"atmosphere"` key exists in the map file,
+/// initializes all walkable tiles as pressurised (the common default).
+///
+/// **save**: Reads the [`GasGrid`] and emits `Cells` entries for tiles whose
+/// state differs from the walkable-default.
+pub struct AtmosLayer {
+    pub config: AtmosInitConfig,
+}
 
-    // Sync walls from tilemap to mark impassable cells
-    gas_grid.sync_walls(tilemap);
+impl AtmosLayer {
+    /// Core initialization shared by `load` and `load_default`.
+    ///
+    /// `overrides` maps tile positions to non-default atmosphere states
+    /// (e.g. vacuum cells).  Positions not in the map use the default:
+    /// walkable → Pressurised, wall → nothing.
+    fn init_gas_grid(
+        &self,
+        grid: &TileGrid<TileKind>,
+        overrides: &HashMap<IVec2, Atmo>,
+    ) -> GasGrid {
+        let config = &self.config;
+        let mut gas_grid = GasGrid::with_tuning(grid.width(), grid.height(), config.diffusion_rate);
 
-    // Fill all floor cells with standard pressure, skipping those in the vacuum region
-    for y in 0..tilemap.height() {
-        for x in 0..tilemap.width() {
-            let pos = IVec2::new(x as i32, y as i32);
-            if tilemap.is_walkable(pos) {
-                let in_vacuum = vacuum_region.map_or(false, |(min, max)| {
-                    pos.x >= min.x && pos.x <= max.x && pos.y >= min.y && pos.y <= max.y
-                });
-                if !in_vacuum {
-                    gas_grid.set_moles(pos, standard_pressure);
+        // Build initial flags from the tile grid for wall sync.
+        let mut flags = TileFlags::new(grid.width(), grid.height());
+        for (pos, kind) in grid.iter() {
+            let flag = match kind {
+                TileKind::Floor => tiles::TileFlag::WALKABLE | tiles::TileFlag::GAS_PASS,
+                TileKind::Wall => tiles::TileFlag::empty(),
+            };
+            flags.set(pos, flag);
+        }
+        gas_grid.sync_walls_from_flags(&flags);
+
+        for y in 0..grid.height() {
+            for x in 0..grid.width() {
+                let pos = IVec2::new(x as i32, y as i32);
+                let kind = grid.get_copy(pos).unwrap_or(TileKind::Floor);
+                let effective = if let Some(&atmo) = overrides.get(&pos) {
+                    Some(atmo)
+                } else if kind.is_walkable() {
+                    Some(Atmo::Pressurised)
+                } else {
+                    None
+                };
+                match effective {
+                    Some(Atmo::Pressurised) => {
+                        gas_grid.set_moles(pos, config.standard_pressure);
+                    }
+                    Some(Atmo::Vacuum) | None => {}
                 }
             }
         }
+
+        gas_grid.update_last_broadcast_moles();
+        gas_grid
     }
 
-    gas_grid.update_last_broadcast_moles();
-    gas_grid
+    /// Resolve [`AtmosLayerData`] regions into a flat map of per-tile overrides.
+    fn resolve_overrides(
+        data: &AtmosLayerData,
+    ) -> Result<HashMap<IVec2, Atmo>, Box<dyn std::error::Error + Send + Sync>> {
+        use base64::Engine as _;
+        let mut overrides = HashMap::new();
+        for (&state, regions) in &data.regions {
+            for region in regions {
+                match region {
+                    AtmosRegion::Rect { min, max } => {
+                        for y in min.1..=max.1 {
+                            for x in min.0..=max.0 {
+                                overrides.insert(IVec2::new(x, y), state);
+                            }
+                        }
+                    }
+                    AtmosRegion::Cells(cells) => {
+                        for &(x, y) in cells {
+                            overrides.insert(IVec2::new(x, y), state);
+                        }
+                    }
+                    AtmosRegion::Bitmap {
+                        origin,
+                        size,
+                        data: b64,
+                    } => {
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(b64)
+                            .map_err(|e| format!("atmosphere layer: bitmap decode failed: {e}"))?;
+                        let expected = ((*size as usize) * (*size as usize) + 7) / 8;
+                        if bytes.len() != expected {
+                            return Err(format!(
+                                "atmosphere layer: bitmap has {} bytes, expected {expected}",
+                                bytes.len()
+                            )
+                            .into());
+                        }
+                        for local_y in 0..*size {
+                            for local_x in 0..*size {
+                                let bit_idx = local_y as usize * *size as usize + local_x as usize;
+                                let byte_idx = bit_idx / 8;
+                                let bit_off = bit_idx % 8;
+                                if bytes[byte_idx] & (1 << bit_off) != 0 {
+                                    let pos = IVec2::new(
+                                        origin.0 + local_x as i32,
+                                        origin.1 + local_y as i32,
+                                    );
+                                    overrides.insert(pos, state);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(overrides)
+    }
+}
+
+impl MapLayer for AtmosLayer {
+    fn key(&self) -> &'static str {
+        "atmosphere"
+    }
+
+    fn load(
+        &self,
+        data: &RawValue,
+        world: &mut World,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let layer_data: AtmosLayerData = from_layer_value(data)?;
+        let overrides = Self::resolve_overrides(&layer_data)?;
+
+        let grid = world.get_resource::<TileGrid<TileKind>>().ok_or(
+            "atmosphere layer: TileGrid<TileKind> not found (tiles layer must load first)",
+        )?;
+        let gas_grid = self.init_gas_grid(grid, &overrides);
+
+        world.insert_resource(gas_grid);
+        world.insert_resource(PressureForceScale(self.config.pressure_force_scale));
+        info!("AtmosphericsPlugin: atmosphere initialized from map layer");
+        Ok(())
+    }
+
+    fn load_default(
+        &self,
+        world: &mut World,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let grid = world.get_resource::<TileGrid<TileKind>>().ok_or(
+            "atmosphere layer: TileGrid<TileKind> not found (tiles layer must load first)",
+        )?;
+        let gas_grid = self.init_gas_grid(grid, &HashMap::new());
+
+        world.insert_resource(gas_grid);
+        world.insert_resource(PressureForceScale(self.config.pressure_force_scale));
+        info!("AtmosphericsPlugin: atmosphere initialized with defaults");
+        Ok(())
+    }
+
+    fn save(
+        &self,
+        world: &World,
+    ) -> Result<Box<RawValue>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut layer_data = AtmosLayerData {
+            regions: BTreeMap::new(),
+        };
+
+        // Emit Cells entries for tiles whose state differs from the default.
+        if let (Some(gas_grid), Some(tile_grid)) = (
+            world.get_resource::<GasGrid>(),
+            world.get_resource::<TileGrid<TileKind>>(),
+        ) {
+            let mut vacuum_cells = Vec::new();
+            for y in 0..tile_grid.height() {
+                for x in 0..tile_grid.width() {
+                    let pos = IVec2::new(x as i32, y as i32);
+                    let kind = tile_grid.get_copy(pos).unwrap_or(TileKind::Floor);
+                    let moles = gas_grid.pressure_at(pos).unwrap_or(0.0);
+                    // Walkable tile with ~0 moles is vacuum (non-default).
+                    if kind.is_walkable() && moles < 0.01 {
+                        vacuum_cells.push((x as i32, y as i32));
+                    }
+                }
+            }
+            if !vacuum_cells.is_empty() {
+                layer_data
+                    .regions
+                    .insert(Atmo::Vacuum, vec![AtmosRegion::Cells(vacuum_cells)]);
+            }
+        }
+
+        Ok(to_layer_value(&layer_data)?)
+    }
+
+    fn unload(&self, world: &mut World) {
+        world.remove_resource::<GasGrid>();
+        world.remove_resource::<PressureForceScale>();
+    }
 }
 
 /// Simulation time step (in seconds) applied when advancing the atmospherics simulation manually
@@ -94,20 +306,20 @@ pub fn initialize_gas_grid(
 /// while still keeping the number of manual steps reasonable during debugging.
 const MANUAL_STEP_DT: f32 = 2.0;
 
-/// System that synchronizes the GasGrid passability mask with the Tilemap.
-/// Runs when the Tilemap has been modified (via change detection).
-/// Updates which cells allow gas flow based on whether they are Floor or Wall tiles.
-fn wall_sync_system(tilemap: Option<Res<Tilemap>>, gas_grid: Option<ResMut<GasGrid>>) {
-    let (Some(tilemap), Some(mut gas_grid)) = (tilemap, gas_grid) else {
+/// System that synchronizes the GasGrid passability mask with [`TileFlags`].
+/// Runs when flags have been modified (via change detection).
+/// Updates which cells allow gas flow based on the `GAS_PASS` flag.
+fn wall_sync_system(flags: Option<Res<TileFlags>>, gas_grid: Option<ResMut<GasGrid>>) {
+    let (Some(flags), Some(mut gas_grid)) = (flags, gas_grid) else {
         return;
     };
 
-    if !tilemap.is_changed() {
+    if !flags.is_changed() {
         return;
     }
 
-    gas_grid.sync_walls(&tilemap);
-    info!("Synchronized GasGrid walls with Tilemap");
+    gas_grid.sync_walls_from_flags(&flags);
+    info!("Synchronized GasGrid walls with TileFlags");
 }
 
 /// System that advances the atmospherics simulation by one manual tick.
@@ -212,20 +424,71 @@ fn apply_pressure_forces(
     }
 }
 
+/// Configuration for atmosphere initialization, passed at plugin construction
+/// time so the module doesn't depend on the app-level config crate.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct AtmosInitConfig {
+    pub standard_pressure: f32,
+    pub pressure_force_scale: f32,
+    pub diffusion_rate: f32,
+}
+
+fn cleanup_atmos(mut commands: Commands) {
+    commands.remove_resource::<GasGrid>();
+    commands.remove_resource::<PressureForceScale>();
+}
+
 /// Plugin that manages atmospheric simulation in the game.
 /// Registers the GasGrid as a Bevy resource and provides the infrastructure
 /// for gas diffusion across the tilemap.
-pub struct AtmosphericsPlugin;
+///
+/// The [`AtmosLayer`] map layer handles initialization during map loading;
+/// the plugin registers runtime simulation and networking systems.
+pub struct AtmosphericsPlugin<S: States + Copy> {
+    state: S,
+    config: AtmosInitConfig,
+}
 
-impl Plugin for AtmosphericsPlugin {
+impl<S: States + Copy> AtmosphericsPlugin<S> {
+    pub fn new(
+        _loading: S,
+        state: S,
+        standard_pressure: f32,
+        pressure_force_scale: f32,
+        diffusion_rate: f32,
+    ) -> Self {
+        Self {
+            state,
+            config: AtmosInitConfig {
+                standard_pressure,
+                pressure_force_scale,
+                diffusion_rate,
+            },
+        }
+    }
+}
+
+impl<S: States + Copy> Plugin for AtmosphericsPlugin<S> {
     fn build(&self, app: &mut App) {
+        let state = self.state;
+        app.insert_resource(self.config);
         app.register_type::<GasGrid>();
         app.init_resource::<AtmosDebugOverlay>();
         app.init_resource::<AtmosSimPaused>();
         app.add_message::<TileMutated>();
+
+        // Register the atmosphere map layer (must come after TilesLayer).
+        app.register_map_layer(AtmosLayer {
+            config: self.config,
+        });
+
         app.add_systems(
             FixedUpdate,
-            (wall_sync_system, diffusion_step_system, apply_pressure_forces)
+            (
+                wall_sync_system,
+                diffusion_step_system,
+                apply_pressure_forces,
+            )
                 .chain()
                 .run_if(resource_exists::<Server>),
         );
@@ -254,33 +517,25 @@ impl Plugin for AtmosphericsPlugin {
         // writers, regardless of intra-Update system ordering.
         app.add_systems(
             PostUpdate,
-            debug_overlay::update_overlay_on_tile_mutation
-                .run_if(not(resource_exists::<Headless>)),
+            debug_overlay::update_overlay_on_tile_mutation.run_if(not(resource_exists::<Headless>)),
         );
         app.add_systems(
-            PreUpdate,
-            handle_atmos_updates
-                .run_if(not(resource_exists::<Server>))
-                .after(NetworkSet::Receive),
+            NetworkReceive,
+            handle_atmos_updates.run_if(not(resource_exists::<Server>)),
         );
         app.init_resource::<PendingAtmosSyncs>();
         app.init_resource::<AtmosBroadcastTimers>();
-        // send_gas_grid_on_connect runs in PreUpdate after NetworkSet::Receive so
+        // send_gas_grid_on_connect runs in NetworkReceive (after Drain) so
         // PlayerEvent::Joined is readable.
-        app.configure_sets(
-            PreUpdate,
-            AtmosSet::SendOnConnect
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
-        );
+        app.configure_sets(NetworkReceive, AtmosSet::SendOnConnect);
         app.add_systems(
-            PreUpdate,
+            NetworkReceive,
             send_gas_grid_on_connect
                 .run_if(resource_exists::<Server>)
                 .in_set(AtmosSet::SendOnConnect),
         );
         app.add_systems(
-            Update,
+            NetworkSend,
             broadcast_gas_grid.run_if(resource_exists::<Server>),
         );
 
@@ -301,6 +556,8 @@ impl Plugin for AtmosphericsPlugin {
         });
         app.insert_resource(sender);
         app.insert_resource(reader);
+
+        app.add_systems(OnExit(state), cleanup_atmos);
     }
 }
 
@@ -381,7 +638,10 @@ fn send_gas_grid_on_connect(
     }
 
     let Some(sender) = atmos_sender.as_deref() else {
-        error!("No AtmosStreamMessage sender available; {} client(s) waiting", pending.0.len());
+        error!(
+            "No AtmosStreamMessage sender available; {} client(s) waiting",
+            pending.0.len()
+        );
         return;
     };
 

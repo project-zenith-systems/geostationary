@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use network::{
-    Client, ClientId, ClientInputReceived, NetClientSender, NetworkSet, PlayerEvent, Server,
-    StreamSender, NETWORK_UPDATE_INTERVAL,
+    Client, ClientId, ClientInputReceived, NETWORK_UPDATE_INTERVAL, NetClientSender,
+    NetworkReceive, PlayerEvent, Server, StreamSender,
 };
 use things::{InputDirection, ThingsSet, ThingsStreamMessage};
 
@@ -32,16 +32,14 @@ pub struct SoulsPlugin;
 impl Plugin for SoulsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            PreUpdate,
+            NetworkReceive,
             (
                 bind_soul
                     .run_if(resource_exists::<Server>)
                     .after(ThingsSet::HandleClientJoined),
                 unbind_soul.run_if(resource_exists::<Server>),
                 route_input.run_if(resource_exists::<Server>),
-            )
-                .after(NetworkSet::Receive)
-                .before(NetworkSet::Send),
+            ),
         );
         app.add_systems(Update, send_input.run_if(resource_exists::<Client>));
         app.init_resource::<InputSendTimer>();
@@ -126,10 +124,10 @@ fn unbind_soul(
                 );
 
                 // Clear the creature's input so it stops moving.
-                if let Some(creature) = soul.bound_to {
-                    if let Ok(mut input_dir) = input_dirs.get_mut(creature) {
-                        input_dir.0 = Vec3::ZERO;
-                    }
+                if let Some(creature) = soul.bound_to
+                    && let Ok(mut input_dir) = input_dirs.get_mut(creature)
+                {
+                    input_dir.0 = Vec3::ZERO;
                 }
 
                 commands.entity(soul_entity).despawn();
@@ -149,10 +147,10 @@ fn route_input(
     for ClientInputReceived { from, direction } in events.read() {
         for soul in souls.iter() {
             if soul.client_id == *from {
-                if let Some(creature) = soul.bound_to {
-                    if let Ok(mut input_dir) = input_dirs.get_mut(creature) {
-                        input_dir.0 = Vec3::from_array(*direction);
-                    }
+                if let Some(creature) = soul.bound_to
+                    && let Ok(mut input_dir) = input_dirs.get_mut(creature)
+                {
+                    input_dir.0 = Vec3::from_array(*direction);
                 }
                 break;
             }
@@ -166,7 +164,10 @@ struct InputSendTimer(Timer);
 
 impl Default for InputSendTimer {
     fn default() -> Self {
-        Self(Timer::from_seconds(INPUT_SEND_INTERVAL, TimerMode::Repeating))
+        Self(Timer::from_seconds(
+            INPUT_SEND_INTERVAL,
+            TimerMode::Repeating,
+        ))
     }
 }
 
