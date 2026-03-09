@@ -1,39 +1,46 @@
 # Plan: Character Models & Animation
 
-> **Stage goal:** Player creatures are rigged GLTF models with idle, walk,
-> and hold-item animation states driven by an animation state machine. The
-> orange capsule placeholder is replaced. Animation state is server-computed
-> and replicated so all clients see the correct animation on every character.
-> The GLTF loading pattern established here becomes the standard for all
-> future 3D assets. This is plan 2 of the Tangible Station arc.
+> **Stage goal:** Player creatures are rigged GLTF models with idle and walk
+> animation states driven by an animation state machine, and single-arm IK
+> that positions the hand when holding an item. The orange capsule placeholder
+> is replaced. Animation and hold state are server-computed and replicated so
+> all clients see the correct pose on every character. The GLTF loading
+> pattern established here becomes the standard for all future 3D assets.
+> This is plan 2 of the Tangible Station arc.
 
 ## What "done" looks like
 
 1. Creatures render as a rigged GLTF model instead of an orange capsule
 2. The model plays an idle animation when the creature is stationary
 3. The model plays a walk animation when the creature is moving
-4. The model plays a hold animation when the creature has an item in hand
-5. Transitions between animation states are smooth (crossfade blending)
-6. All clients see the correct animation state on every creature, including
-   late-joining clients
+4. When a creature holds an item, single-arm IK positions the right hand
+   at a hold target in front of the torso — the walk/idle animation
+   continues playing on the rest of the body
+5. Transitions between idle and walk are smooth (crossfade blending)
+6. All clients see the correct animation state and hold pose on every
+   creature, including late-joining clients
 7. The server does not load GLTF scene assets or create `AnimationPlayer`
-   components — it tracks animation state as a lightweight enum
+   components — it tracks animation state and hold flag as lightweight data
 8. The creature's `HandSlot` child entity is attached to the model's hand
-   bone so held items follow the hand during animations
+   bone so held items follow the hand through both animation and IK
 9. The placeholder GLTF model and its animations exist in `assets/models/`
 10. Items, balls, and toolboxes continue to use primitive meshes (unchanged)
 
 ## Strategy
 
 Work bottom-up: first establish the animation module at L0 with a
-game-agnostic animation state machine, then integrate GLTF loading into the
-creature visual builder, then wire animation state computation and
-replication.
+game-agnostic animation state machine and single-arm IK solver, then
+integrate GLTF loading into the creature visual builder, then wire state
+computation and replication.
 
-Two spikes run first to validate runtime assumptions about Bevy 0.18's GLTF
-scene hierarchy and animation graph API — specifically how to find bone
-entities by name and how to drive `AnimationPlayer` programmatically through
-an `AnimationGraph`.
+Holding items uses IK instead of a dedicated hold animation clip. This is
+more durable: walk/idle animations play uninterrupted on the legs and torso
+while IK overrides only the arm chain (upper_arm → forearm → hand) to
+position the hand at a hold target. Future plans can vary hold positions per
+item type by changing the IK target, without creating new animation clips.
+
+Three spikes run first to validate runtime assumptions about Bevy 0.18's
+GLTF scene hierarchy, bone reparenting, and IK solver feasibility.
 
 **Lessons from map-authoring post-mortem:**
 - Spike runtime assumptions before committing (Hurdle 1, 3)
@@ -47,45 +54,50 @@ an `AnimationGraph`.
 
 | Layer | Module | Plan scope |
 |-------|--------|------------|
-| L0 | **`animation` (new)** | `AnimState` enum (Idle, Walk, Hold), `AnimationController` component (maps AnimState to animation clips), system that drives `AnimationPlayer` transitions based on `AnimState` changes. Game-agnostic — knows about states and transitions, not creatures or items. |
-| L1 | `things` | Extend `EntityState` to include an `anim_state: u8` field. Extend `ThingsStreamMessage::EntitySpawned` to include initial animation state. Broadcast and apply animation state in `StateUpdate`. |
-| L3 | `creatures` | New `compute_anim_state` system: reads `LinearVelocity` and hand contents (`Children` + `HandSlot` + `Container`) to derive `AnimState`, writes it to the entity. Runs on server and client (server is authoritative, client is for local prediction). |
-| -- | `bins/shared/src/templates.rs` | Creature visual builder changes from `Mesh3d` + `MeshMaterial3d` to `SceneRoot` loaded from GLTF. Inserts `AnimState::Idle` and `AnimationController` with clip handles. Functional builder unchanged except `HandSlot` spawn deferred to a scene-ready hook. |
+| L0 | **`animation` (new)** | `AnimState` enum (Idle, Walk), `AnimationController` (maps AnimState to graph nodes), `drive_animation` system. `IkChain` component and `solve_ik` system for single-arm two-bone IK. `HoldIk` component marks entities whose arm should IK to a hold target when holding an item. Game-agnostic — knows about states, transitions, and bone chains, not creatures or items. |
+| L1 | `things` | Extend `EntityState` with `anim_state: u8` and `holding: bool` fields. Extend `EntitySpawned` likewise. Broadcast and apply in `StateUpdate`. |
+| L3 | `creatures` | New `compute_anim_state` system: reads `LinearVelocity` to derive `AnimState` (Idle or Walk). New `compute_hold_state` system: reads hand `Container` contents to set `HoldIk::active`. Both run on server. |
+| -- | `bins/shared/src/templates.rs` | Creature visual builder changes from `Mesh3d` + `MeshMaterial3d` to `SceneRoot` loaded from GLTF. Functional builder inserts `AnimState::Idle`, `HoldIk`. |
 
 ### Not in this plan
 
 - **Character customisation** (clothing, hair, skin colour) — all creatures
   use the same model. Cannot do yet: requires a customisation system and
   multiple model variants.
-- **Item-specific hold animations** — single generic hold pose. Choose not
-  to do yet: pose variety is low value without item model variety.
+- **Item-specific hold positions** — single generic hold target in front of
+  the torso. Choose not to do yet: per-item IK targets are a data change,
+  not an architectural one, once the IK solver exists.
+- **Multi-bone IK chains** (spine look-at, foot placement) — only single-arm
+  IK for holding. Choose not to do yet: the `IkChain` component supports
+  arbitrary chains but only the arm is wired up.
 - **Facial animation or blend shapes** — not needed at this stage.
 - **Animation events** (footstep sounds on walk frames) — deferred to the
   Sound & Ambience plan (plan 4).
 - **Item GLTF models** — items remain primitive meshes. Choose not to do
   yet: item models are independent of the character animation pipeline.
 - **Client-side animation prediction** — clients apply server-broadcast
-  `AnimState`. Local prediction of animation state (computing it from local
-  velocity before server confirms) is a polish optimisation, not essential.
-  Choose not to do yet.
+  state. Choose not to do yet.
 - **Root motion** — animation does not drive entity translation. Movement
   remains velocity-based.
+- **Full IK framework** (multiple simultaneous chains, priority blending,
+  constraints) — this plan implements a minimal two-bone IK solver for one
+  arm. A general-purpose IK framework is future work.
 
 ### Module placement
 
 ```
 assets/models/
-  creature.glb               # Placeholder rigged model with idle/walk/hold clips
+  creature.glb               # Placeholder rigged model with idle/walk clips
 
 modules/animation/            # NEW — L0
   Cargo.toml
   src/
     lib.rs                    # AnimationPlugin, AnimState, AnimationController,
-                              # drive_animation system
+                              # drive_animation, IkChain, HoldIk, solve_ik
 
-modules/creatures/src/lib.rs  # compute_anim_state system added
+modules/creatures/src/lib.rs  # compute_anim_state, compute_hold_state
 
-modules/things/src/lib.rs     # EntityState gains anim_state field
+modules/things/src/lib.rs     # EntityState gains anim_state + holding fields
 modules/network/src/protocol.rs  # EntityState wire format updated
 
 bins/shared/src/templates.rs  # Creature visual builder rewritten for GLTF
@@ -95,9 +107,11 @@ bins/shared/src/templates.rs  # Creature visual builder rewritten for GLTF
 
 The `animation` module is game-agnostic. It provides:
 
-- **`AnimState`** — a `#[derive(Component)]` enum: `Idle`, `Walk`, `Hold`.
-  Serializes to `u8` for wire efficiency. This enum is extensible — future
-  plans add variants (e.g., `UseItem`, `Stagger`) without structural changes.
+**Clip-driven animation:**
+
+- **`AnimState`** — a `#[derive(Component)]` enum: `Idle`, `Walk`.
+  Serializes to `u8` for wire efficiency. Extensible — future plans add
+  variants (e.g., `UseItem`, `Stagger`) without structural changes.
 
 - **`AnimationController`** — a component that maps each `AnimState` variant
   to a node index in a Bevy `AnimationGraph`. Stores the graph handle and
@@ -109,6 +123,29 @@ The `animation` module is game-agnostic. It provides:
   graph node in `AnimationController` and initiates a crossfade transition on
   the entity's `AnimationPlayer`. The system finds the `AnimationPlayer` by
   walking the entity's descendants (GLTF scenes nest it on a child).
+
+**Single-arm IK:**
+
+- **`IkChain`** — a component storing references to three bone entities
+  (root, mid, tip) forming a two-bone IK chain. Also stores the chain's
+  total length for reach validation. Populated during scene-ready
+  initialisation by finding bones by name.
+
+- **`HoldIk`** — a component on creature entities that stores: `active: bool`
+  (whether to apply IK), `target: Vec3` (local-space hold position relative
+  to creature root, e.g., `Vec3::new(0.3, 0.7, -0.3)` — in front of torso).
+
+- **`solve_ik` system** — runs in `PostUpdate`, after `drive_animation` and
+  before Bevy's `TransformPropagate`. When `HoldIk::active` is true, reads
+  the IK target in world space, solves the two-bone IK for the arm chain,
+  and writes the resulting rotations to the upper_arm and forearm bone
+  entities. This overrides the animation clip's arm pose while leaving the
+  rest of the body untouched.
+
+The two-bone IK solver is a standard geometric solution: given shoulder
+position, elbow-to-hand length, shoulder-to-elbow length, and target
+position, compute the two joint angles. The pole vector (elbow direction)
+defaults to pointing backward-down to produce a natural arm bend.
 
 The module depends only on `bevy`. It does not depend on `creatures`,
 `things`, or `network`.
@@ -137,6 +174,9 @@ system that needs to find the `AnimationPlayer` or a bone entity must wait.
 runs each frame until the player is found, then inserts a `SceneReady`
 marker. The spike will determine which approach is more reliable.
 
+**Scene-ready initialisation** also populates the `IkChain` component by
+finding the arm bone entities (upper_arm.R, forearm.R, hand.R) by name.
+
 ### HandSlot bone attachment
 
 Currently `HandSlot` spawns as a direct child of the creature entity at a
@@ -150,50 +190,46 @@ entity to be a child of that bone entity with a local transform offset of
 grip point).
 
 This replaces the hardcoded `HAND_OFFSET` constant. The constant can be
-removed or kept as fallback for non-GLTF creatures.
+removed or kept as fallback for non-GLTF creatures. When IK is active, the
+hand bone moves to the hold target and HandSlot (as a child) follows
+automatically.
 
-### Animation state replication
+### State replication
 
-Animation state rides on the existing stream 3 `StateUpdate` messages
-alongside position and velocity. This avoids ordering issues between
-separate streams and requires minimal wire overhead (1 byte per entity per
-tick).
+Animation state and hold flag ride on the existing stream 3 `StateUpdate`
+messages alongside position and velocity. This avoids ordering issues
+between separate streams and requires minimal wire overhead.
 
-**Wire format change:** `EntityState` gains an `anim_state: u8` field.
-The `u8` encoding is: 0 = Idle, 1 = Walk, 2 = Hold. Unknown values fall
-back to Idle.
+**Wire format change:** `EntityState` gains `anim_state: u8` and
+`holding: bool` fields. The `u8` encoding is: 0 = Idle, 1 = Walk. Unknown
+values fall back to Idle. `holding` maps directly to `HoldIk::active`.
 
-**Server-side:** The `compute_anim_state` system in `creatures` runs in
-`Update`. It reads `LinearVelocity` magnitude and checks whether the
-creature's hand `Container` holds an item. It writes `AnimState` to the
-creature entity. The `broadcast_state` system in `things` reads `AnimState`
-and includes it in `EntityState`.
+**Server-side:** `compute_anim_state` in `creatures` derives `AnimState`
+from `LinearVelocity` magnitude. `compute_hold_state` derives
+`HoldIk::active` from hand `Container` contents. Both run in `Update`.
+The `broadcast_state` system in `things` reads both and includes them in
+`EntityState`.
 
-**Client-side:** `handle_entity_lifecycle` reads `anim_state` from
-`StateUpdate` and writes it to the local entity's `AnimState` component.
-The `drive_animation` system in the animation module reacts to the change.
+**Client-side:** `handle_entity_lifecycle` reads `anim_state` and `holding`
+from `StateUpdate` and writes them to the local entity's `AnimState` and
+`HoldIk` components. `drive_animation` and `solve_ik` react to the changes.
 
-**Late joiners:** `EntitySpawned` includes initial `anim_state` so clients
-joining mid-round see the correct animation from the first frame.
+**Late joiners:** `EntitySpawned` includes initial `anim_state` and
+`holding` so clients joining mid-round see the correct pose from the first
+frame.
 
 ### Headless server considerations
 
-The server inserts `Headless` and does not have a renderer, but it does have
-`AssetPlugin`, `MeshPlugin`, and `ScenePlugin`. The creature visual builder
-currently runs on the server (visual builders are called unconditionally in
-`on_spawn_thing`). For primitive meshes this is harmless — handles are
-created but never rendered.
+The server inserts `Headless` and does not have a renderer. The fix is to
+skip visual builder execution when `Headless` is present — gate the
+`visual_builders` call in `on_spawn_thing` on
+`!world.contains_resource::<Headless>()`.
 
-For GLTF scenes, running the visual builder on the server would trigger
-asset loading of the `.glb` file and scene instantiation, which is wasteful.
-The visual builder already exists as a separate callback from the functional
-builder. The fix is to skip visual builder execution when `Headless` is
-present. This is a one-line change in `on_spawn_thing`: gate the
-`visual_builders` call on `!world.contains_resource::<Headless>()`.
-
-The server still needs `AnimState` (for replication) and `AnimationController`
-is not needed (no `AnimationPlayer` to drive). The `compute_anim_state`
-system reads only velocity and hand contents — no rendering components.
+The server needs `AnimState` and `HoldIk` (for replication) but not
+`AnimationController` or `IkChain` (no bones to drive). The
+`compute_anim_state` and `compute_hold_state` systems read only velocity
+and hand contents — no rendering components. The `drive_animation` and
+`solve_ik` systems are gated on `not(resource_exists::<Headless>)`.
 
 ## Spike 1: GLTF scene hierarchy and AnimationPlayer access (30 min)
 
@@ -204,13 +240,13 @@ system reads only velocity and hand contents — no rendering components.
 2. Can we find a named bone entity (e.g., `Name("hand.R")`) by walking
    descendants?
 3. How does `AnimationGraph` work in Bevy 0.18? Can we create a graph with
-   three clip nodes (idle, walk, hold), insert it as an asset, and switch
-   between them by setting the active node on `AnimationPlayer`?
+   two clip nodes (idle, walk), insert it as an asset, and switch between
+   them by setting the active node on `AnimationPlayer`?
 4. How does `SceneInstanceReady` or `SceneInstance` work for detecting when
    the scene's children are fully spawned?
 
 **Method:** Create a minimal Bevy app that loads a test `.glb` file (a
-simple rigged mesh with 2-3 animations exported from Blender), spawns it,
+simple rigged mesh with 2+ animations exported from Blender), spawns it,
 and logs the entity hierarchy. Attempt to find `AnimationPlayer`, find a
 bone by name, create an `AnimationGraph`, and drive transitions.
 
@@ -236,6 +272,31 @@ logging world transforms each frame.
 **Blocking:** HandSlot bone attachment implementation. If reparenting does
 not work, the fallback is to spawn `HandSlot` directly on the bone entity
 during scene-ready initialisation instead of reparenting.
+
+## Spike 3: Two-bone IK on animated skeleton (30 min)
+
+**Questions:**
+
+1. Can we write to bone `Transform` components after `AnimationPlayer` has
+   applied the clip pose, without the animation overwriting the IK result
+   next frame? What system ordering is required?
+2. Does a standard two-bone IK geometric solve produce correct joint
+   rotations when the bones have non-identity rest poses (as exported from
+   Blender)?
+3. Can IK and clip animation coexist on the same skeleton — e.g., walk
+   animation plays on legs while IK overrides the arm — without visual
+   artefacts or transform conflicts?
+
+**Method:** Using the same test `.glb` from Spike 1, play the walk
+animation and simultaneously apply a two-bone IK solve on the right arm
+chain to a fixed world-space target. Visually verify that the legs walk
+while the arm reaches the target. Log bone rotations to confirm IK output
+persists across frames.
+
+**Blocking:** IK implementation in the animation module. If IK conflicts
+with AnimationPlayer (e.g., animation overwrites IK every frame with no
+viable ordering), the fallback is masking specific bone tracks from the
+animation clip or using an additive animation layer.
 
 ## Post-mortem
 
