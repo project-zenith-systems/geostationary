@@ -162,14 +162,26 @@ pub fn handle_load(world: &mut World) {
             Ok(true) => info!("Editor: tiles layer loaded"),
             Ok(false) => {
                 warn!("Editor: no tiles MapLayer registered, inserting default tilemap");
+                world.insert_resource(GridSize {
+                    width: 32,
+                    height: 32,
+                });
                 world.insert_resource(super::default_editor_grid());
             }
             Err(e) => {
                 error!("Editor: failed to load tiles layer: {e}");
+                world.insert_resource(GridSize {
+                    width: 32,
+                    height: 32,
+                });
                 world.insert_resource(super::default_editor_grid());
             }
         }
     } else {
+        world.insert_resource(GridSize {
+            width: 32,
+            height: 32,
+        });
         world.insert_resource(super::default_editor_grid());
     }
 

@@ -11,14 +11,9 @@ use bevy::prelude::*;
 /// straight along the horizon) or when the intersection would be behind the
 /// camera.
 ///
-/// # Spike answers
-///
-/// * **Q2 – orthographic + XZ raycasting**: An orthographic top-down camera
-///   produces rays with direction ≈ `(0, -1, 0)`.  Intersecting with y = 0
-///   always succeeds (`dir.y ≠ 0`), giving exact sub-pixel XZ accuracy.
-///   The `round()` convention matches the existing `raycast_tiles` system in
-///   the `tiles` module, so the same tile entity can be identified by both
-///   paths — confirming **Q3** (tile entities are reusable without changes).
+/// Works with both orthographic and perspective cameras — the ray direction
+/// determines where the y=0 intersection occurs. The `round()` convention
+/// matches the existing `raycast_tiles` system in the `tiles` module.
 pub fn ray_to_grid_cell(ray: Ray3d) -> Option<(Vec3, IVec2)> {
     let dir = Vec3::from(ray.direction);
 

@@ -1,7 +1,7 @@
 //! Editor mode (`AppState::Editor`).
 //!
 //! A live Bevy world with simulation disabled, providing:
-//! - Orthographic top-down camera with pan (WASD / middle-click drag) and zoom (scroll)
+//! - Perspective orbit camera with pan (WASD / middle-click drag), zoom (scroll), and rotation (Q/E)
 //! - Tile palette: select Floor or Wall, left-click/drag to paint
 //! - Entity palette: select a template (ball, can, toolbox), click a floor tile to place a spawn marker
 //! - Spawn markers are visible overlays, not simulated entities

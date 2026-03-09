@@ -20,8 +20,8 @@ impl MapPath {
     }
 }
 
-/// Exclusive startup system that reads the `.station.ron` map file and
-/// dispatches its layers to all registered [`crate::MapLayer`] implementations.
+/// Exclusive system that reads the `.station.ron` map file and dispatches its
+/// layers to all registered [`crate::MapLayer`] implementations.
 ///
 /// # Lifecycle
 ///
@@ -38,7 +38,7 @@ impl MapPath {
 ///    without conflicting with the registry borrow.
 /// 6. On success writes [`WorldReady`]; on failure logs the error.
 ///
-/// This system runs at [`Startup`] and is registered by [`crate::WorldPlugin`].
+/// This system runs on `OnEnter(Loading)` and is registered by [`crate::WorldPlugin`].
 pub fn load_map(world: &mut World) {
     let Some(map_path) = world.get_resource::<MapPath>().map(|r| r.0.clone()) else {
         info!("WorldPlugin: no MapPath resource found, skipping map load");
