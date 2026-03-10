@@ -57,7 +57,7 @@ GLTF scene hierarchy, bone reparenting, and IK solver feasibility.
 | ----- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | L0    | **`animation` (new)**          | `AnimState` enum (Idle, Walk), `AnimationController` (maps AnimState to graph nodes), `drive_animation` system. `IkChain` component and `solve_ik` system for single-arm two-bone IK. `HoldIk` component marks entities whose arm should IK to a hold target when holding an item. Game-agnostic — knows about states, transitions, and bone chains, not creatures or items. |
 | L0    | `network`                      | Extend `EntityState` with `anim_state: u8` and `holding: bool` fields in the wire format. Keep the replication payload domain-neutral: animation state enum value plus holding flag.                                                                                                                                                                                         |
-| L1    | `things`                       | Extend `ThingsStreamMessage::EntitySpawned` with `anim_state: u8` and `holding: bool`. Broadcast both fields in `StateUpdate` and apply them on the client during entity lifecycle handling.                                                                                                                                                                                 |
+| L1    | `things`                       | Extend `ThingsStreamMessage::EntitySpawned` with `anim_state: u8` and `holding: bool`. Broadcast both fields in `StateUpdate` and apply them on the client during entity lifecycle handling. New dependency on `animation` (L0) for `AnimState` and `HoldIk` types.                                                                                                          |
 | L3    | `creatures`                    | New `compute_anim_state` system: reads `LinearVelocity` to derive `AnimState` (Idle or Walk). New `compute_hold_state` system: reads hand `Container` contents to set `HoldIk::active`. Both run on server.                                                                                                                                                                  |
 | --    | `bins/shared/src/templates.rs` | Creature visual builder changes from `Mesh3d` + `MeshMaterial3d` to `SceneRoot` loaded from GLTF. Functional builder inserts `AnimState::Idle`, `HoldIk`.                                                                                                                                                                                                                    |
 
@@ -241,8 +241,9 @@ The server still needs `AnimState` and `HoldIk` for replication, but it
 does not create `AnimationController`, `IkChain`, GLTF scene entities, or
 `AnimationPlayer` components. That keeps the `animation` module Bevy-only:
 `drive_animation` and `solve_ik` can be registered without a `Headless`
-dependency because their queries only match fully visualized client-side
+dependency because their queries only match fully visualised client-side
 entities. On the headless server they are inert by construction.
+
 
 ## Spike 1: GLTF scene hierarchy and AnimationPlayer access (30 min)
 

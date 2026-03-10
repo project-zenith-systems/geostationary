@@ -163,6 +163,8 @@ Files touched:
 - `modules/things/src/lib.rs` — `ThingsStreamMessage::EntitySpawned` gains
   the same fields; `broadcast_state` and client lifecycle handling encode
   and apply them
+- `modules/things/Cargo.toml` — add dependency on `animation` module for
+  `AnimState` and `HoldIk` types
 
 Concrete changes:
 
