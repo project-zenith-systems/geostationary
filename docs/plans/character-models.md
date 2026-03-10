@@ -224,8 +224,7 @@ bone by name, create an `AnimationGraph`, and drive transitions.
 **Blocking:** All implementation tasks. The `AnimationController` design and
 scene-ready approach depend on these answers.
 
-**Status: Complete.** Spike code in `spikes/gltf_animation/`. Regression
-tests pass (`cargo test -p gltf_animation_spike`).
+**Status: Complete.**
 
 ### Spike 1 answers
 

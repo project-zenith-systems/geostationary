@@ -19,7 +19,6 @@ members = [
     "modules/items",
     "modules/world",
     "modules/main_menu",
-    "spikes/gltf_animation",
 ]
 default-members = ["bins/server"]
 
