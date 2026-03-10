@@ -224,6 +224,58 @@ bone by name, create an `AnimationGraph`, and drive transitions.
 **Blocking:** All implementation tasks. The `AnimationController` design and
 scene-ready approach depend on these answers.
 
+**Status: Complete.** Spike code in `spikes/gltf_animation/`. Regression
+tests pass (`cargo test -p gltf_animation_spike`).
+
+### Spike 1 answers
+
+**Q1 — Entity hierarchy and AnimationPlayer location:**
+Spawning `SceneRoot(asset_server.load("model.glb#Scene0"))` produces a
+hierarchy mirroring the GLTF node tree. The `SceneRoot` entity sits at the
+top. Beneath it, Bevy creates one entity per GLTF node with `Name`,
+`Transform`, and `GlobalTransform`. `AnimationPlayer` is placed on a
+**descendant** entity (the skeleton root), **not** on the `SceneRoot`
+entity. To find it, walk `Children::iter_descendants(scene_root)` and query
+for `AnimationPlayer`. Confirmed by the official Bevy 0.18
+`animated_mesh.rs` example.
+
+**Q2 — Named bone entities:**
+Yes. Every GLTF node becomes an entity with a `Name` component. Bone nodes
+are included. Walking `Children::iter_descendants(scene_root)` and matching
+`Name("hand.R")` finds the bone entity. The plan's descendant-walk approach
+is valid.
+
+**Q3 — AnimationGraph in Bevy 0.18:**
+`AnimationGraph` is an `Asset`. Construction: `AnimationGraph::from_clips(
+[handle_idle, handle_walk])` returns `(AnimationGraph, Vec<AnimationNodeIndex>)`.
+Store the graph as an asset (`graphs.add(graph)`) and insert
+`AnimationGraphHandle(handle)` on the entity with `AnimationPlayer`. Use
+`AnimationTransitions` for crossfade: `transitions.play(&mut player,
+walk_index, Duration::from_millis(250)).repeat()`. Transitions manage blend
+weights internally. Clip handles are obtained from
+`GltfAssetLabel::Animation(n).from_asset("model.glb")`.
+
+**Q4 — Scene readiness detection:**
+Bevy 0.18 fires `SceneInstanceReady` as a **trigger** on the `SceneRoot`
+entity. The recommended pattern is an **observer**:
+`commands.spawn(SceneRoot(handle)).observe(on_scene_ready)`. The alternative
+(`Added<AnimationPlayer>` polling in Update) also works but the observer is
+more targeted. Recommendation: use the `SceneInstanceReady` observer for
+initialising `AnimationController` and `IkChain`.
+
+### Spike 1 plan impact
+
+No findings invalidate the plan. Confirmed: (a) AnimationPlayer is on a
+descendant — the plan's descendant-walk is correct; (b) named bone lookup
+works; (c) `AnimationGraph::from_clips` + `AnimationTransitions` supports
+the idle/walk crossfade design; (d) `SceneInstanceReady` observer is the
+preferred readiness mechanism; (e) both `bevy_animation` and `bevy_gltf`
+workspace features are required.
+
+One refinement: `AnimationController` should store `AnimationNodeIndex`
+values (not clip handles) and the entity that holds `AnimationPlayer` (which
+differs from the `SceneRoot` entity).
+
 ## Spike 2: Bone reparenting for HandSlot (30 min)
 
 **Questions:**
