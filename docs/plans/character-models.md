@@ -123,11 +123,13 @@ starts as soon as the scene is ready, avoiding a T-pose.
 **Single-arm IK:** `IkChain` stores three bone entity references (root, mid,
 tip) for a two-bone chain, populated at scene-ready time. `HoldIk` stores
 `active: bool` and a local-space `target: Vec3`. `solve_ik` runs in
-`PostUpdate` after `drive_animation` and before `TransformPropagate` —
-when active, it solves two-bone IK for the arm and writes rotations to the
-upper_arm and forearm bones, overriding the clip pose on those bones only.
-Standard geometric solver with a backward-down pole vector for natural arm
-bend.
+`PostUpdate` with `.after(AnimationSystems).before(TransformSystems::Propagate)` —
+this places it after the entire Bevy animation pipeline (including
+`animate_targets`) and before hierarchy propagation. When active, it reads
+world-space joint positions from `GlobalTransform`, solves two-bone IK using
+law of cosines with a backward-down pole vector, converts the result to
+local bone space, and writes `Transform.rotation` on the upper_arm and
+forearm bones, overriding the clip pose on those bones only.
 
 The module depends only on `bevy` (with `bevy_animation` feature). It does
 not depend on `creatures`, `things`, or `network`.
@@ -319,6 +321,84 @@ persists across frames.
 with AnimationPlayer (e.g., animation overwrites IK every frame with no
 viable ordering), the fallback is masking specific bone tracks from the
 animation clip or using an additive animation layer.
+
+**Status: Complete.**
+
+### Spike 3 answers
+
+**Q1 — Writing bone transforms after AnimationPlayer:**
+Yes. In Bevy 0.18, the animation system (including `animate_targets`, which
+writes bone `Transform` components from evaluated clip curves) runs in
+`PostUpdate` inside the `AnimationSystems` system set. The entire animation
+chain — `thread_animation_graphs` → `advance_transitions` →
+`advance_animations` → `animate_targets` →
+`trigger_untargeted_animation_events` → `expire_completed_transitions` — is
+ordered `.before(TransformSystems::Propagate)`. This means a custom
+`solve_ik` system scheduled in `PostUpdate` with
+`.after(AnimationSystems).before(TransformSystems::Propagate)` will execute
+after animation has written bone transforms but before hierarchy propagation.
+Animation does overwrite IK-affected bones every frame, but because
+`solve_ik` runs after `animate_targets` in the same frame, the IK result is
+what `TransformPropagate` sees and what gets rendered. Confirmed by reading
+the `AnimationPlugin::build` implementation in `bevy_animation` 0.18.1
+source: the `.chain().in_set(AnimationSystems).before(TransformSystems::Propagate)`
+ordering is explicit.
+
+**Q2 — Two-bone IK with non-identity rest poses:**
+Yes, provided the solver operates in world space and converts back to local
+space at the write step. The geometric solver reads `GlobalTransform` to
+obtain world-space positions of the three joints (root, mid, tip), computes
+the required rotation using law of cosines and a pole vector for elbow
+direction, then converts the result to local bone space:
+`local_rotation = inverse(parent_global_rotation) * desired_world_rotation`.
+Writing the resulting quaternion to `Transform.rotation` is rest-pose
+agnostic because `GlobalTransform` already incorporates the bone's rest
+orientation and all ancestor transforms. Non-identity rest poses from
+Blender exports are handled automatically. Standard reference
+implementations (ozz-animation, Unity two-bone IK) use the same
+world-solve, local-write pattern.
+
+**Q3 — IK and clip animation coexistence:**
+Yes. Two viable approaches exist:
+
+*Approach A — IK overrides after animation (plan's design):* Play the walk
+animation on all bones. `solve_ik` runs after `animate_targets` and
+overwrites only the upper-arm and forearm `Transform.rotation` values. The
+walk animation's influence on those two bones is replaced by IK every frame.
+Since the override is a clean replacement (not additive blending) and
+`TransformPropagate` runs afterwards, child bones (forearm, hand, and any
+reparented `HandSlot`) naturally follow. Legs walk, arm reaches the
+target — no visual artefacts or transform conflicts.
+
+*Approach B — Animation masks (Bevy-native):* Bevy 0.18's `AnimationGraph`
+supports `mask_groups` on a per-`AnimationTargetId` basis. Arm bones can be
+assigned to a mask group and the walk/idle clip nodes can mask that group
+out, preventing `animate_targets` from writing to arm bones when IK is
+active. This avoids wasted animation evaluation on masked bones but requires
+graph manipulation at runtime.
+
+Recommendation: use Approach A. It is simpler, requires no animation graph
+manipulation, and aligns with the plan's existing system ordering
+(`solve_ik` after `drive_animation`, before `TransformPropagate`). Approach
+B is a potential optimisation if profiling shows wasted evaluation cost.
+
+### Spike 3 plan impact
+
+No findings invalidate the plan. Confirmed: (a) `solve_ik` in `PostUpdate`
+with `.after(AnimationSystems).before(TransformSystems::Propagate)` is the
+correct ordering — the plan's design is valid; (b) the geometric solver
+handles non-identity rest poses when using `GlobalTransform` for
+world-space positions and converting back to local space; (c) IK and clip
+animation coexist without artefacts using the post-animation override
+approach.
+
+One refinement: `solve_ik` should use `AnimationSystems` (from
+`bevy::app::AnimationSystems`) as the `.after()` dependency rather than
+referencing `drive_animation` directly. This ensures the IK system runs
+after the entire Bevy animation pipeline, not just our custom
+`drive_animation` system. The plan's animation module design section should
+specify: `solve_ik` runs in `PostUpdate`,
+`.after(AnimationSystems).before(TransformSystems::Propagate)`.
 
 ## Post-mortem
 
