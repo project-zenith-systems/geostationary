@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use core::time::Duration;
+use std::collections::VecDeque;
 
 use bevy::animation::graph::AnimationNodeIndex;
 
@@ -123,7 +124,7 @@ fn find_animation_player(
     }
 
     // BFS through descendants.
-    let mut queue = std::collections::VecDeque::new();
+    let mut queue = VecDeque::new();
     if let Ok(children) = children_q.get(root) {
         for child in children.iter() {
             queue.push_back(child);
