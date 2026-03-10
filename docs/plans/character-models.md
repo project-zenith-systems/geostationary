@@ -99,6 +99,8 @@ modules/animation/            # NEW — L0
 
 modules/creatures/src/lib.rs  # compute_anim_state, compute_hold_state
 
+modules/items/src/lib.rs      # find_hand_slot_with_space, find_hand_slot_containing
+                              # updated to descendant traversal post-reparenting
 modules/network/src/protocol.rs  # EntityState wire format gains anim_state + holding
 modules/things/src/lib.rs     # EntitySpawned, StateUpdate broadcast/apply updated
 
