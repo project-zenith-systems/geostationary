@@ -295,6 +295,84 @@ logging world transforms each frame.
 not work, the fallback is to spawn `HandSlot` directly on the bone entity
 during scene-ready initialisation instead of reparenting.
 
+**Status: Complete.**
+
+### Spike 2 answers
+
+**Q1 — Reparenting to a bone entity:**
+Yes. In Bevy 0.18, inserting `ChildOf(bone_entity)` on an existing child
+entity moves it from its current parent to the bone entity. Bevy
+automatically removes the child from the old parent's `Children` list and
+adds it to the new parent's list. Because GLTF bone nodes are ordinary
+entities (with `Name`, `Transform`, `GlobalTransform`), there is no special
+restriction preventing an external entity from becoming their child. The
+reparent must happen **after** scene readiness — the bone entity does not
+exist until `SceneInstanceReady` fires.
+
+Concrete pattern in the `SceneInstanceReady` observer:
+
+```rust
+commands.entity(hand_slot_entity).insert(ChildOf(bone_entity));
+commands.entity(hand_slot_entity).insert(Transform::IDENTITY);
+```
+
+**Q2 — Transform inheritance during animation:**
+Yes. After reparenting, the child's `GlobalTransform` is recalculated by
+Bevy's transform propagation system using the full ancestor chain. The
+animation system writes to each bone's `Transform` every frame; propagation
+then combines the bone's resulting `GlobalTransform` with the child's local
+`Transform` to produce the child's `GlobalTransform`. The child therefore
+follows the bone through the entire animation cycle. There is a potential
+one-frame delay on the frame the reparent command is applied (commands are
+deferred to the end of the stage), but this is imperceptible in practice
+and only affects the single frame of reparenting.
+
+**Q3 — Scene management interference:**
+No interference during normal operation. The scene system tracks only the
+entities it originally spawned as part of the scene instance; a manually
+reparented entity is not in that tracking set, so it is not spontaneously
+despawned or duplicated by the scene system.
+
+On full creature despawn (`despawn_recursive` on the creature root), the
+`HandSlot` entity — now a descendant of the scene hierarchy — will be
+recursively despawned along with every other descendant. This is correct:
+the `HandSlot` should not outlive its creature. On respawn, the creature
+template re-creates the `HandSlot` and the scene-ready observer re-reparents
+it.
+
+Scene reloading (hot-reload of the `.glb` asset) is not a concern for this
+project: creatures are despawned and respawned, not scene-reloaded in place.
+
+### Spike 2 plan impact
+
+No findings invalidate the plan. The reparenting approach described in the
+"HandSlot bone attachment" section is confirmed viable:
+
+1. **Reparent, don't spawn-on-bone.** The plan's approach of spawning
+   `HandSlot` as a child of the creature root in the functional builder and
+   then reparenting it to the bone in the `SceneInstanceReady` observer is
+   correct. This keeps the functional builder (which runs on both server and
+   client) unaware of the GLTF hierarchy, and limits bone knowledge to the
+   client-only scene-ready path.
+
+2. **Fallback not needed.** The alternative (spawning `HandSlot` directly on
+   the bone during scene-ready) also works but is unnecessary — reparenting
+   is clean and well-supported.
+
+3. **One-frame consideration.** Between entity spawn and `SceneInstanceReady`
+   (which may be several frames while the GLTF loads), `HandSlot` sits at
+   the creature root with `HAND_OFFSET`. After reparenting, it snaps to the
+   bone. This transient offset is acceptable — the GLTF loads before the
+   creature is visible to remote clients (scene readiness gates visual
+   initialisation). If needed, `HandSlot` can be spawned with
+   `Visibility::Hidden` and revealed after reparenting.
+
+4. **Items module update confirmed.** Post-reparenting, `HandSlot` is no
+   longer a direct child of the creature entity. The items module's
+   `find_hand_slot_with_space` and `find_hand_slot_containing` must switch
+   from single-level `Children` iteration to `Children::iter_descendants`
+   (already noted in the plan).
+
 ## Spike 3: Two-bone IK on animated skeleton (30 min)
 
 **Questions:**
