@@ -47,6 +47,8 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_asset",
     "bevy_log",
     "bevy_ui",
+    "bevy_animation",
+    "bevy_gltf",
 ] }
 config = { version = "0.15", features = ["ron", "toml"] }
 ron = "0.12"
