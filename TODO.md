@@ -173,6 +173,10 @@ Concrete changes:
 - `broadcast_state` system reads `AnimState` and `HoldIk` from creature
   entities (if present) and encodes into `EntityState`; non-creature
   entities default to Idle / not holding
+- `LastBroadcast` gains `anim_state: u8` and `holding: bool` fields so the
+  delta check includes animation/hold state changes — without this,
+  stationary creatures that change animation or hold state would not trigger
+  a `StateUpdate` broadcast
 - `handle_entity_lifecycle` on client reads both fields from `StateUpdate`
   and `EntitySpawned`, inserts/updates `AnimState` and `HoldIk::active` on
   the local entity
@@ -202,10 +206,10 @@ Files touched:
 Concrete changes:
 
 - `compute_anim_state` runs in `Update`, queries `(Creature,
-LinearVelocity, &mut AnimState)`. If velocity magnitude > threshold
+  LinearVelocity, &mut AnimState)`. If velocity magnitude > threshold
   (e.g., `0.1`) → `Walk`, else → `Idle`
 - `compute_hold_state` runs in `Update`, queries `(Creature, Children,
-&mut HoldIk)`. Finds child `HandSlot` entity, checks its `Container` —
+  &mut HoldIk)`. Finds child `HandSlot` entity, checks its `Container` —
   if any item present → `active = true`, else → `active = false`
 - Both systems run on server (authoritative for replication)
 - Velocity threshold is a const to avoid flicker at rest
@@ -231,8 +235,8 @@ Files touched:
 Concrete changes:
 
 - Creature visual builder changes from `Mesh3d(capsule) +
-MeshMaterial3d(orange)` to `SceneRoot(asset_server.load(
-"models/creature.glb#Scene0"))`
+  MeshMaterial3d(orange)` to `SceneRoot(asset_server.load(
+  "models/creature.glb#Scene0"))`
 - Visual builder also inserts `AnimationController` with clip handles
   looked up from the GLTF asset's named animations (idle, walk)
 - Scene-ready initialisation: after the GLTF scene spawns its children,
@@ -246,7 +250,7 @@ MeshMaterial3d(orange)` to `SceneRoot(asset_server.load(
 - Creature functional builder unchanged: still inserts `Creature`,
   `MovementSpeed`, `InputDirection`, `RigidBody`, `Collider`, etc.
 - `AnimState::Idle` and `HoldIk { active: false, target: Vec3::new(0.3,
-0.7, -0.3) }` inserted by the functional builder (needed on both server
+  0.7, -0.3) }` inserted by the functional builder (needed on both server
   and client)
 - Capsule mesh and material assets can be removed from `TemplatesPlugin`
 
