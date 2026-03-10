@@ -59,7 +59,7 @@ GLTF scene hierarchy, bone reparenting, and IK solver feasibility.
 | L0    | `network`                      | Extend `EntityState` with `anim_state: u8` and `holding: bool` fields in the wire format. Keep the replication payload domain-neutral: animation state enum value plus holding flag.                                                                                                                                                                                         |
 | L1    | `things`                       | Extend `ThingsStreamMessage::EntitySpawned` with `anim_state: u8` and `holding: bool`. Broadcast both fields in `StateUpdate` and apply them on the client during entity lifecycle handling. New dependency on `animation` (L0) for `AnimState` and `HoldIk` types.                                                                                                          |
 | L3    | `creatures`                    | New `compute_anim_state` system: reads `LinearVelocity` to derive `AnimState` (Idle or Walk). New `compute_hold_state` system: reads hand `Container` contents to set `HoldIk::active`. Both run on server. New dependency on `items` (L2) for `Container` type.                                                                                                             |
-| --    | `bins/shared/src/templates.rs` | Creature visual builder changes from `Mesh3d` + `MeshMaterial3d` to `SceneRoot` loaded from GLTF. Functional builder inserts `AnimState::Idle`, `HoldIk`.                                                                                                                                                                                                                    |
+| —     | `bins/shared/src/templates.rs` | Creature visual builder changes from `Mesh3d` + `MeshMaterial3d` to `SceneRoot` loaded from GLTF. Functional builder inserts `AnimState::Idle`, `HoldIk`.                                                                                                                                                                                                                    |
 
 ### Not in this plan
 
@@ -122,10 +122,13 @@ The `animation` module is game-agnostic. It provides:
   spawn time — the GLTF asset may not be loaded yet when the entity spawns.
 
 - **`drive_animation` system** — runs in `PostUpdate`. When `AnimState`
-  changes (detected via `Changed<AnimState>`), it looks up the corresponding
-  graph node in `AnimationController` and initiates a crossfade transition on
-  the entity's `AnimationPlayer`. The system finds the `AnimationPlayer` by
-  walking the entity's descendants (GLTF scenes nest it on a child).
+  changes (detected via `Changed<AnimState>`) **or** when an
+  `AnimationController` is first added to the entity (detected via
+  `Added<AnimationController>`), it looks up the corresponding graph node in
+  `AnimationController` and initiates a crossfade transition on the entity's
+  `AnimationPlayer`. The system finds the `AnimationPlayer` by walking the
+  entity's descendants (GLTF scenes nest it on a child), so that the initial
+  idle animation starts automatically as soon as the GLTF scene is ready.
 
 **Single-arm IK:**
 

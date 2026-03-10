@@ -130,8 +130,10 @@ Concrete changes:
 - `AnimationController` — component storing a `Handle<AnimationGraph>` and
   a mapping from `AnimState` variant to `AnimationNodeIndex`
 - `drive_animation` system — runs in `PostUpdate`, queries entities with
-  `Changed<AnimState>` + `AnimationController`, finds the `AnimationPlayer`
-  in descendants, initiates a crossfade transition to the target graph node
+  `Changed<AnimState>` or `Added<AnimationController>`, finds the
+  `AnimationPlayer` in descendants, initiates a crossfade transition to the
+  target graph node. The `Added` filter ensures the initial idle animation
+  starts as soon as the scene is ready (avoids T-pose on first load)
 - `IkChain` — component storing root/mid/tip bone entity references and
   total chain length, for a two-bone IK chain
 - `HoldIk` — component with `active: bool` and `target: Vec3` (local-space
@@ -216,9 +218,11 @@ Concrete changes:
 - `compute_anim_state` runs in `Update`, queries `(Creature,
   LinearVelocity, &mut AnimState)`. If velocity magnitude > threshold
   (e.g., `0.1`) → `Walk`, else → `Idle`
-- `compute_hold_state` runs in `Update`, queries `(Creature, Children,
-  &mut HoldIk)`. Finds child `HandSlot` entity, checks its `Container` —
-  if any item present → `active = true`, else → `active = false`
+- `compute_hold_state` runs in `Update`, queries `(Creature, &mut HoldIk)`
+  and uses hierarchy/descendant traversal from the creature root to find the
+  `HandSlot` entity (whether it is a direct child or reparented under a hand
+  bone). It then checks that `HandSlot`'s `Container` — if any item present
+  → `active = true`, else → `active = false`
 - Both systems run on server (authoritative for replication)
 - Velocity threshold is a const to avoid flicker at rest
 
