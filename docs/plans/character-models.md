@@ -212,6 +212,16 @@ from `LinearVelocity` magnitude. `compute_hold_state` derives
 The `broadcast_state` system in `things` reads both and includes them in
 `EntityState`.
 
+**Delta tracking:** The current `broadcast_state` only sends entities whose
+position or velocity changed (tracked via `LastBroadcast`). A creature that
+transitions animation state or starts holding an item while stationary would
+not trigger a broadcast under the existing delta logic. Fix: extend
+`LastBroadcast` with `anim_state: u8` and `holding: bool` fields, and
+include them in the change check — if any of position, velocity, anim_state,
+or holding differs from the last broadcast, the entity is included in the
+`StateUpdate`. This ensures animation and hold transitions are replicated
+even for stationary creatures.
+
 **Client-side:** `handle_entity_lifecycle` reads `anim_state` and `holding`
 from `StateUpdate` and writes them to the local entity's `AnimState` and
 `HoldIk` components. `drive_animation` and `solve_ik` react to the changes.
