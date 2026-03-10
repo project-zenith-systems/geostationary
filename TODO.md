@@ -292,6 +292,8 @@ Files touched:
   initial spawn as child of root, or defer to scene-ready hook)
 - `modules/things/src/lib.rs` or new system in `bins/shared/` — scene-ready
   system that finds the hand bone and reparents `HandSlot`
+- `modules/items/src/lib.rs` — update `find_hand_slot_with_space` and
+  `find_hand_slot_containing` to use descendant traversal
 
 Concrete changes:
 
@@ -303,6 +305,11 @@ Concrete changes:
 - `HandSlot` local transform set to `Vec3::ZERO` (or small offset if
   bone origin is not at grip point, determined by spike 2)
 - `HAND_OFFSET` constant removed or marked as legacy fallback
+- `find_hand_slot_with_space` and `find_hand_slot_containing` in
+  `modules/items/src/lib.rs` currently use single-level `Children` traversal
+  to locate `HandSlot`. After reparenting, `HandSlot` is no longer a direct
+  child of the creature root — update both functions to use descendant
+  traversal so item pickup, drop, and hold interactions continue to work
 - Held items now follow the hand through walk/idle animation and IK hold
   pose — when IK positions the hand, HandSlot (as a child of the hand
   bone) follows automatically

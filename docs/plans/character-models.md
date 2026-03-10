@@ -107,94 +107,46 @@ bins/shared/src/templates.rs  # Creature visual builder rewritten for GLTF
 
 ### Animation module design (L0)
 
-The `animation` module is game-agnostic. It provides:
+The `animation` module is game-agnostic. It provides two capabilities:
 
-**Clip-driven animation:**
+**Clip-driven animation:** `AnimState` enum (`Idle`, `Walk`) serializes to
+`u8` for wire efficiency. `AnimationController` maps each variant to a node
+in a Bevy `AnimationGraph` — populated at scene-ready time (not spawn time,
+since the GLTF may not be loaded yet). `drive_animation` runs in
+`PostUpdate`, reacting to `Changed<AnimState>` or
+`Added<AnimationController>` to drive crossfade transitions on the entity's
+`AnimationPlayer`. The `Added` trigger ensures the initial idle animation
+starts as soon as the scene is ready, avoiding a T-pose.
 
-- **`AnimState`** — a `#[derive(Component)]` enum: `Idle`, `Walk`.
-  Serializes to `u8` for wire efficiency. Extensible — future plans add
-  variants (e.g., `UseItem`, `Stagger`) without structural changes.
+**Single-arm IK:** `IkChain` stores three bone entity references (root, mid,
+tip) for a two-bone chain, populated at scene-ready time. `HoldIk` stores
+`active: bool` and a local-space `target: Vec3`. `solve_ik` runs in
+`PostUpdate` after `drive_animation` and before `TransformPropagate` —
+when active, it solves two-bone IK for the arm and writes rotations to the
+upper_arm and forearm bones, overriding the clip pose on those bones only.
+Standard geometric solver with a backward-down pole vector for natural arm
+bend.
 
-- **`AnimationController`** — a component that maps each `AnimState` variant
-  to a node index in a Bevy `AnimationGraph`. Stores the graph handle and
-  the clip-to-node mapping. Populated during scene-ready initialisation
-  (after the GLTF is fully loaded and `SceneReady` is inserted), not at
-  spawn time — the GLTF asset may not be loaded yet when the entity spawns.
-
-- **`drive_animation` system** — runs in `PostUpdate`. When `AnimState`
-  changes (detected via `Changed<AnimState>`) **or** when an
-  `AnimationController` is first added to the entity (detected via
-  `Added<AnimationController>`), it looks up the corresponding graph node in
-  `AnimationController` and initiates a crossfade transition on the entity's
-  `AnimationPlayer`. The system finds the `AnimationPlayer` by walking the
-  entity's descendants (GLTF scenes nest it on a child), so that the initial
-  idle animation starts automatically as soon as the GLTF scene is ready.
-
-**Single-arm IK:**
-
-- **`IkChain`** — a component storing references to three bone entities
-  (root, mid, tip) forming a two-bone IK chain. Also stores the chain's
-  total length for reach validation. Populated during scene-ready
-  initialisation by finding bones by name.
-
-- **`HoldIk`** — a component on creature entities that stores: `active: bool`
-  (whether to apply IK), `target: Vec3` (local-space hold position relative
-  to creature root, e.g., `Vec3::new(0.3, 0.7, -0.3)` — in front of torso).
-
-- **`solve_ik` system** — runs in `PostUpdate`, after `drive_animation` and
-  before Bevy's `TransformPropagate`. When `HoldIk::active` is true, reads
-  the IK target in world space, solves the two-bone IK for the arm chain,
-  and writes the resulting rotations to the upper_arm and forearm bone
-  entities. This overrides the animation clip's arm pose while leaving the
-  rest of the body untouched.
-
-The two-bone IK solver is a standard geometric solution: given shoulder
-position, elbow-to-hand length, shoulder-to-elbow length, and target
-position, compute the two joint angles. The pole vector (elbow direction)
-defaults to pointing backward-down to produce a natural arm bend.
-
-The module depends only on `bevy` (with `bevy_animation` feature enabled).
-It does not depend on `creatures`, `things`, or `network`.
+The module depends only on `bevy` (with `bevy_animation` feature). It does
+not depend on `creatures`, `things`, or `network`.
 
 ### Dependencies
 
-The workspace `Cargo.toml` currently enables a subset of Bevy features with
-`default-features = false`. This plan requires adding `bevy_animation` to
-the workspace feature list (for `AnimationGraph`, `AnimationPlayer`,
-`AnimationNodeIndex`). `bevy_gltf` may also be needed if GLTF loading is
-not already available through `bevy_scene` or `bevy_asset` — the spike will
-confirm.
+The workspace `Cargo.toml` uses `default-features = false` for Bevy. This
+plan requires adding `bevy_animation` to the feature list (for
+`AnimationGraph`, `AnimationPlayer`, `AnimationNodeIndex`). `bevy_gltf` may
+also be needed — the spike will confirm.
 
-### GLTF loading and scene spawn
+### GLTF loading and scene readiness
 
-The creature visual builder in `templates.rs` changes from:
-
-```
-Mesh3d(capsule) + MeshMaterial3d(orange)
-```
-
-to:
-
-```
-SceneRoot(asset_server.load("models/creature.glb#Scene0"))
-```
-
-**Scene readiness problem:** When a GLTF scene spawns, the child entities
-(skeleton bones, `AnimationPlayer`, mesh nodes) are not available
-immediately — they arrive after Bevy's scene spawning system runs. Any
-system that needs to find the `AnimationPlayer` or a bone entity must wait.
-
-**Solution:** Use a `SceneInstanceReady` trigger or poll for
-`AnimationPlayer` in descendants via a one-shot initialisation system that
-runs each frame until the player is found, then inserts a `SceneReady`
-marker. The spike will determine which approach is more reliable.
-
-**Scene-ready initialisation** also populates `AnimationController` (maps
-`AnimState` variants to `AnimationGraph` node indices using the loaded
-GLTF's named animation clips) and `IkChain` (finds the arm bone entities
-upper_arm.R, forearm.R, hand.R by name). Both require the GLTF to be fully
-loaded and its scene hierarchy to exist, so they cannot be set at spawn
-time.
+The creature visual builder changes from `Mesh3d` + `MeshMaterial3d` to
+`SceneRoot(asset_server.load("models/creature.glb#Scene0"))`. GLTF scene
+children (bones, `AnimationPlayer`, mesh nodes) are not available
+immediately — a scene-ready detection mechanism (spike will determine:
+`SceneInstanceReady` trigger vs polling) inserts a `SceneReady` marker.
+Scene-ready initialisation then populates `AnimationController` (graph node
+mapping from the GLTF's named clips) and `IkChain` (arm bone references by
+name). Both require the GLTF to be fully loaded.
 
 ### HandSlot bone attachment
 
@@ -213,60 +165,39 @@ removed or kept as fallback for non-GLTF creatures. When IK is active, the
 hand bone moves to the hold target and HandSlot (as a child) follows
 automatically.
 
+**Items module impact:** The existing `find_hand_slot_with_space` and
+`find_hand_slot_containing` functions in `modules/items/src/lib.rs` use
+single-level `Children` traversal to locate `HandSlot`. After reparenting,
+`HandSlot` is no longer a direct child of the creature root — these
+functions must be updated to use descendant traversal so item pickup, drop,
+and hold interactions continue to work.
+
 ### State replication
 
-Animation state and hold flag ride on the existing stream 3 `StateUpdate`
-messages alongside position and velocity. This avoids ordering issues
-between separate streams and requires minimal wire overhead.
+Animation state and hold flag piggyback on stream 3 `StateUpdate` messages.
+`EntityState` gains `anim_state: u8` (0 = Idle, 1 = Walk) and
+`holding: bool`. `EntitySpawned` gains both fields for late joiners.
 
-**Wire format change:** `EntityState` gains `anim_state: u8` and
-`holding: bool` fields. The `u8` encoding is: 0 = Idle, 1 = Walk. Unknown
-values fall back to Idle. `holding` maps directly to `HoldIk::active`.
+**Server:** `compute_anim_state` derives `AnimState` from velocity;
+`compute_hold_state` derives `HoldIk::active` from hand `Container`
+contents (using descendant traversal to find `HandSlot` post-reparenting).
+`broadcast_state` reads both. `LastBroadcast` must also track `anim_state`
+and `holding` so stationary creatures that change state still trigger a
+broadcast.
 
-**Server-side:** `compute_anim_state` in `creatures` derives `AnimState`
-from `LinearVelocity` magnitude. `compute_hold_state` derives
-`HoldIk::active` from hand `Container` contents. Both run in `Update`.
-The `broadcast_state` system in `things` reads both and includes them in
-`EntityState`.
-
-**Delta tracking:** The current `broadcast_state` only sends entities whose
-position or velocity changed (tracked via `LastBroadcast`). A creature that
-transitions animation state or starts holding an item while stationary would
-not trigger a broadcast under the existing delta logic. Fix: extend
-`LastBroadcast` with `anim_state: u8` and `holding: bool` fields, and
-include them in the change check — if any of position, velocity, anim_state,
-or holding differs from the last broadcast, the entity is included in the
-`StateUpdate`. This ensures animation and hold transitions are replicated
-even for stationary creatures.
-
-**Client-side:** `handle_entity_lifecycle` reads `anim_state` and `holding`
-from `StateUpdate` and writes them to the local entity's `AnimState` and
-`HoldIk` components. `drive_animation` and `solve_ik` react to the changes.
-
-**Late joiners:** `EntitySpawned` includes initial `anim_state` and
-`holding` so clients joining mid-round see the correct pose from the first
-frame.
+**Client:** `handle_entity_lifecycle` writes both fields to the local
+entity's `AnimState` and `HoldIk`. `drive_animation` and `solve_ik` react.
 
 ### Headless server considerations
 
-The server inserts `Headless` and does not have a renderer. Two changes
-prevent unnecessary GLTF loading on the server:
-
-1. **Skip visual builder registration.** In `TemplatesPlugin::build()`,
-   check for `Headless` before calling `asset_server.load()` and registering
-   the GLTF-based visual builder. This prevents the server from loading the
-   `.glb` file into memory at all. Analogous to the existing
-   `Assets<StandardMaterial>` guard in `templates.rs`.
-2. **Skip visual builder execution.** Gate the `visual_builders.get(kind)`
-   call in `on_spawn_thing` on `!world.contains_resource::<Headless>()` as a
-   defence-in-depth check.
-
-The server still needs `AnimState` and `HoldIk` for replication, but it
-does not create `AnimationController`, `IkChain`, GLTF scene entities, or
-`AnimationPlayer` components. That keeps the `animation` module Bevy-only:
-`drive_animation` and `solve_ik` can be registered without a `Headless`
-dependency because their queries only match fully visualised client-side
-entities. On the headless server they are inert by construction.
+The server needs `AnimState` and `HoldIk` for replication but must not load
+GLTF assets or create visual components. Two changes achieve this:
+(1) skip visual builder *registration* in `TemplatesPlugin::build()` when
+`Headless` is present (prevents `asset_server.load()` entirely), and
+(2) gate visual builder *execution* in `on_spawn_thing` as defence-in-depth.
+`drive_animation` and `solve_ik` are inert on headless by construction —
+their queries require `AnimationController`/`IkChain` components that only
+exist on client-side entities.
 
 
 ## Spike 1: GLTF scene hierarchy and AnimationPlayer access (30 min)
