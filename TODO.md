@@ -114,7 +114,11 @@ transforms.
 
 Files created:
 
-- `modules/animation/Cargo.toml` — depends only on `bevy`
+- `modules/animation/Cargo.toml` — depends on `bevy` (workspace)
+- Root `Cargo.toml` — add `bevy_animation` to workspace `bevy` dependency
+  features (required for `AnimationGraph`, `AnimationPlayer`,
+  `AnimationNodeIndex`); add `bevy_gltf` if not already available through
+  other features (spike will confirm)
 - `modules/animation/src/lib.rs` — `AnimationPlugin`, `AnimState`,
   `AnimationController`, `drive_animation`, `IkChain`, `HoldIk`, `solve_ik`
 
@@ -140,6 +144,8 @@ Concrete changes:
   because no `AnimationController`, `IkChain`, or `AnimationPlayer`
   components are spawned
 - Add `animation` to workspace members in root `Cargo.toml`
+- Enable `bevy_animation` (and `bevy_gltf` if needed) in the workspace
+  `bevy` dependency features in root `Cargo.toml`
 
 Does not include: creature-specific logic, GLTF loading, template changes,
 or network replication. This module knows about states, transitions, and
@@ -231,29 +237,35 @@ loading. Skip visual builders on the headless server.
 Files touched:
 
 - `bins/shared/src/templates.rs` — creature visual builder rewritten
+- `bins/shared/Cargo.toml` — add dependency on `animation` module for
+  `AnimState` and `HoldIk` types
 - `modules/things/src/lib.rs` — gate visual builder execution on
   `!Headless`
 
 Concrete changes:
 
 - Creature visual builder changes from `Mesh3d(capsule) +
-  MeshMaterial3d(orange)` to `SceneRoot(asset_server.load(
-  "models/creature.glb#Scene0"))`
-- Visual builder also inserts `AnimationController` with clip handles
-  looked up from the GLTF asset's named animations (idle, walk)
+  MeshMaterial3d(orange)` to
+  `SceneRoot(asset_server.load("models/creature.glb#Scene0"))`
+- In `TemplatesPlugin::build()`, check for `Headless` before registering
+  the GLTF-based visual builder and calling `asset_server.load()` — this
+  prevents the server from loading the `.glb` file into memory at all.
+  Analogous to the existing `Assets<StandardMaterial>` guard
+- `on_spawn_thing` in things module: gate `visual_builders.get(kind)`
+  call on `!world.contains_resource::<Headless>()` as defence-in-depth
 - Scene-ready initialisation: after the GLTF scene spawns its children,
   a system detects scene readiness (method from spike 1) and inserts a
   `SceneReady` marker component
-- Scene-ready also populates `IkChain` by finding upper_arm.R, forearm.R,
-  hand.R bone entities by name in the creature's descendants
-- `on_spawn_thing` in things module: gate `visual_builders.get(kind)`
-  call on `!world.contains_resource::<Headless>()` — server skips GLTF
-  loading entirely
+- Scene-ready also populates `AnimationController` (maps `AnimState`
+  variants to `AnimationGraph` node indices using the loaded GLTF's named
+  animation clips) and `IkChain` (finds upper_arm.R, forearm.R, hand.R
+  bone entities by name). Both require the GLTF to be fully loaded, so
+  they cannot be set at spawn time
 - Creature functional builder unchanged: still inserts `Creature`,
   `MovementSpeed`, `InputDirection`, `RigidBody`, `Collider`, etc.
-- `AnimState::Idle` and `HoldIk { active: false, target: Vec3::new(0.3,
-  0.7, -0.3) }` inserted by the functional builder (needed on both server
-  and client)
+- `AnimState::Idle` and
+  `HoldIk { active: false, target: Vec3::new(0.3, 0.7, -0.3) }` inserted
+  by the functional builder (needed on both server and client)
 - Capsule mesh and material assets can be removed from `TemplatesPlugin`
 
 Does not include: HandSlot bone attachment (separate task), animation/hold
