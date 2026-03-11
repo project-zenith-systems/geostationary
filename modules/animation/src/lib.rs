@@ -112,9 +112,10 @@ fn drive_animation(
 
         // Ensure the player entity references the correct animation graph so
         // that AnimationNodeIndex values resolve to the intended clips.
+        // Only insert when missing to avoid spurious change-detection triggers.
         commands
             .entity(player_entity)
-            .insert(AnimationGraphHandle(controller.graph.clone()));
+            .insert_if_new(AnimationGraphHandle(controller.graph.clone()));
 
         if let Ok((mut player, mut transitions)) = player_q.get_mut(player_entity) {
             transitions
@@ -246,15 +247,27 @@ fn solve_ik(
             continue;
         };
 
+        // Compute the tip bone's position in creature-local space so it can
+        // be passed to the solver (even though the current implementation
+        // does not use it, this avoids a suspicious-looking Vec3::ZERO).
+        let Some((tip_pos, _)) = bone_local_data(
+            chain.tip,
+            creature_entity,
+            &transform_q,
+            &parent_q,
+        ) else {
+            continue;
+        };
+
         let upper_len = chain.upper_len;
         let lower_len = chain.lower_len;
 
         // Solve the two-bone IK in creature-local space.
         // The mid joint position (`mid_pos`) is used to establish the
-        // pole-vector / bend plane; tip_pos is unused by the solver
-        // (prefixed with `_` in solve_two_bone).
+        // pole-vector / bend plane; the tip joint position (`tip_pos`) is
+        // likewise provided in creature-local space.
         let Some((root_rot, mid_rot)) =
-            solve_two_bone(root_pos, mid_pos, Vec3::ZERO, target_local, upper_len, lower_len)
+            solve_two_bone(root_pos, mid_pos, tip_pos, target_local, upper_len, lower_len)
         else {
             continue;
         };
@@ -381,12 +394,20 @@ fn solve_two_bone(
     let mid_angle = cos_mid.acos();
 
     // Build rotations. Use the current mid position to determine the bend
-    // plane (pole vector).
+    // plane (pole vector) and the bone's rest direction.
     let dir_to_target = to_target / dist;
 
+    // Derive the upper bone's rest direction from the actual current pose
+    // instead of assuming a fixed +Y axis.
     let initial_dir = (mid_pos - root_pos).normalize_or_zero();
-    let pole_hint = if initial_dir.cross(dir_to_target).length_squared() > f32::EPSILON * f32::EPSILON {
-        initial_dir.cross(dir_to_target).normalize()
+    let rest_dir = if initial_dir.length_squared() > f32::EPSILON {
+        initial_dir
+    } else {
+        Vec3::Y
+    };
+
+    let pole_hint = if rest_dir.cross(dir_to_target).length_squared() > f32::EPSILON * f32::EPSILON {
+        rest_dir.cross(dir_to_target).normalize()
     } else {
         // Fallback: use world up or forward as a pole hint.
         let alt = if dir_to_target.dot(Vec3::Y).abs() < 0.99 {
@@ -397,9 +418,9 @@ fn solve_two_bone(
         dir_to_target.cross(alt).normalize()
     };
 
-    // Root rotation: rotate the upper bone toward the target, offset by the
-    // root angle in the bend plane.
-    let root_rot = Quat::from_rotation_arc(Vec3::Y, dir_to_target)
+    // Root rotation: rotate the upper bone from its rest direction toward
+    // the target, offset by the root angle in the bend plane.
+    let root_rot = Quat::from_rotation_arc(rest_dir, dir_to_target)
         * Quat::from_axis_angle(pole_hint, -root_angle);
 
     // Mid rotation: bend the lower bone by the interior elbow angle.
