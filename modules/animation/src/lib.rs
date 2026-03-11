@@ -93,7 +93,7 @@ const CROSSFADE_DURATION: Duration = Duration::from_millis(200);
 fn drive_animation(
     anim_q: Query<
         (Entity, &AnimState, &AnimationController),
-        Or<(Changed<AnimState>, Added<AnimationController>)>,
+        Or<(Changed<AnimState>, Added<AnimationController>, Added<AnimState>)>,
     >,
     children_q: Query<&Children>,
     mut player_q: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
@@ -231,25 +231,27 @@ fn solve_ik(
             continue;
         };
 
-        // Copy the root bone's local rotation for the pole-vector hint
-        // (borrow is released immediately so later get_mut calls are safe).
-        let root_local_rot = match transform_q.get(chain.root) {
-            Ok(tf) => tf.rotation,
-            Err(_) => continue,
+        // Compute the mid bone's position in creature-local space as well, so
+        // the IK solver can derive the correct bend plane from the actual
+        // current joint layout instead of assuming a fixed forward axis.
+        let Some((mid_pos, _mid_parent_rot)) = bone_local_data(
+            chain.mid,
+            creature_entity,
+            &transform_q,
+            &parent_q,
+        ) else {
+            continue;
         };
 
         let upper_len = chain.upper_len;
         let lower_len = chain.lower_len;
 
         // Solve the two-bone IK in creature-local space.
-        // mid_hint is used only for the pole-vector (bend plane); tip_pos is
-        // unused by the solver (prefixed with `_` in solve_two_bone).
-        // Vec3::Y is the conventional bone-forward axis for humanoid rigs.
-        let root_frame_rot = (root_parent_rot * root_local_rot).normalize();
-        let mid_hint = root_pos + root_frame_rot * (Vec3::Y * upper_len);
-
+        // The mid joint position (`mid_pos`) is used to establish the
+        // pole-vector / bend plane; tip_pos is unused by the solver
+        // (prefixed with `_` in solve_two_bone).
         let Some((root_rot, mid_rot)) =
-            solve_two_bone(root_pos, mid_hint, Vec3::ZERO, target_local, upper_len, lower_len)
+            solve_two_bone(root_pos, mid_pos, Vec3::ZERO, target_local, upper_len, lower_len)
         else {
             continue;
         };
@@ -260,10 +262,17 @@ fn solve_ik(
             root_tf.rotation = (root_parent_rot.inverse() * root_rot).normalize();
         }
 
+        // Compute the mid bone's parent rotation in creature-local space by
+        // walking the actual ChildOf chain, which may include intermediate
+        // joints between the root and mid bones.
+        let Some((_, mid_parent_rot)) =
+            bone_local_data(chain.mid, creature_entity, &transform_q, &parent_q)
+        else {
+            continue;
+        };
+
         if let Ok(mut mid_tf) = transform_q.get_mut(chain.mid) {
-            // Mid bone's parent rotation (in creature-local space) is the new
-            // root rotation.
-            mid_tf.rotation = (root_rot.inverse() * mid_rot).normalize();
+            mid_tf.rotation = (mid_parent_rot.inverse() * mid_rot).normalize();
         }
     }
 }
