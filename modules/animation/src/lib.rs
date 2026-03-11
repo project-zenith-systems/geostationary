@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::transform::TransformSystems;
 use core::time::Duration;
 use std::collections::VecDeque;
 
@@ -14,7 +15,9 @@ impl Plugin for AnimationPlugin {
             PostUpdate,
             (
                 drive_animation,
-                solve_ik.after(drive_animation),
+                solve_ik
+                    .after(drive_animation)
+                    .before(TransformSystems::Propagate),
             ),
         );
     }
@@ -111,8 +114,8 @@ fn drive_animation(
     }
 }
 
-/// Walk the entity hierarchy to find the first descendant with an
-/// [`AnimationPlayer`].
+/// Walk the entity hierarchy to find the first descendant with both an
+/// [`AnimationPlayer`] and [`AnimationTransitions`] component.
 fn find_animation_player(
     root: Entity,
     children_q: &Query<&Children>,
@@ -159,8 +162,6 @@ pub struct IkChain {
     pub mid: Entity,
     /// Tip / end-effector (e.g. hand).
     pub tip: Entity,
-    /// Total length of the chain (root-to-mid + mid-to-tip).
-    pub chain_length: f32,
 }
 
 /// Controls whether the IK chain should be actively solved.
@@ -241,7 +242,9 @@ fn solve_ik(
 }
 
 /// Analytical two-bone IK. Returns world-space rotations for the root and mid
-/// joints, or `None` if the target is unreachable (beyond the chain length).
+/// joints. Targets beyond the chain length are clamped to the maximum
+/// reachable distance and still produce a solution. Returns `None` only when
+/// the target coincides with the root position (zero-length direction).
 fn solve_two_bone(
     root_pos: Vec3,
     mid_pos: Vec3,
