@@ -234,7 +234,10 @@ fn solve_ik(
         // Compute the mid bone's position in creature-local space as well, so
         // the IK solver can derive the correct bend plane from the actual
         // current joint layout instead of assuming a fixed forward axis.
-        let Some((mid_pos, _mid_parent_rot)) = bone_local_data(
+        // NOTE: the parent rotation is intentionally discarded here; it is
+        // re-queried after the root write-back below so that it reflects the
+        // already-updated root transform.
+        let Some((mid_pos, _)) = bone_local_data(
             chain.mid,
             creature_entity,
             &transform_q,
