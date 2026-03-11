@@ -203,30 +203,28 @@ impl Default for HoldIk {
 /// solves the [`IkChain`] using the stored segment lengths and writes
 /// local-space rotations to the root and mid bone entities.
 ///
-/// Computes bone world positions by walking the [`ChildOf`] chain from each
-/// bone up to the creature entity and composing local [`Transform`]s, so it
-/// is safe to run before transform propagation (no stale `GlobalTransform`
-/// reads on intermediate bones).
+/// Operates entirely in creature-local space — [`HoldIk::target`] is already
+/// in local space, and bone positions are computed by walking the [`ChildOf`]
+/// chain and composing local [`Transform`]s. No [`GlobalTransform`] is read,
+/// so there is no one-frame lag from stale propagation data.
 fn solve_ik(
-    ik_q: Query<(Entity, &IkChain, &HoldIk, &GlobalTransform)>,
+    ik_q: Query<(Entity, &IkChain, &HoldIk)>,
     mut transform_q: Query<&mut Transform>,
     parent_q: Query<&ChildOf>,
 ) {
-    for (creature_entity, chain, hold, creature_global) in &ik_q {
+    for (creature_entity, chain, hold) in &ik_q {
         if !hold.active {
             continue;
         }
 
-        // Convert local-space target to world space.
-        let target_world = creature_global.transform_point(hold.target);
+        // Target is already in creature-local space — no conversion needed.
+        let target_local = hold.target;
 
-        // Compute the root bone's world position and its parent's world
-        // rotation by walking the ChildOf chain up to the creature entity,
-        // composing local Transforms along the way.
-        let Some((root_pos, root_parent_rot)) = bone_world_data(
+        // Compute the root bone's position and its parent's rotation in the
+        // creature's local coordinate frame by walking the ChildOf chain.
+        let Some((root_pos, root_parent_rot)) = bone_local_data(
             chain.root,
             creature_entity,
-            creature_global,
             &transform_q,
             &parent_q,
         ) else {
@@ -243,45 +241,45 @@ fn solve_ik(
         let upper_len = chain.upper_len;
         let lower_len = chain.lower_len;
 
-        // Solve the two-bone IK.
+        // Solve the two-bone IK in creature-local space.
         // mid_hint is used only for the pole-vector (bend plane); tip_pos is
         // unused by the solver (prefixed with `_` in solve_two_bone).
         // Vec3::Y is the conventional bone-forward axis for humanoid rigs.
-        let root_world_rot = (root_parent_rot * root_local_rot).normalize();
-        let mid_hint = root_pos + root_world_rot * (Vec3::Y * upper_len);
+        let root_frame_rot = (root_parent_rot * root_local_rot).normalize();
+        let mid_hint = root_pos + root_frame_rot * (Vec3::Y * upper_len);
 
         let Some((root_rot, mid_rot)) =
-            solve_two_bone(root_pos, mid_hint, Vec3::ZERO, target_world, upper_len, lower_len)
+            solve_two_bone(root_pos, mid_hint, Vec3::ZERO, target_local, upper_len, lower_len)
         else {
             continue;
         };
 
-        // Write rotations back in local space by removing the parent's world
-        // rotation contribution.
+        // Write rotations back in bone-local space by removing the parent's
+        // creature-local rotation contribution.
         if let Ok(mut root_tf) = transform_q.get_mut(chain.root) {
             root_tf.rotation = (root_parent_rot.inverse() * root_rot).normalize();
         }
 
         if let Ok(mut mid_tf) = transform_q.get_mut(chain.mid) {
-            // Mid bone's parent world rotation is the new root world rotation.
+            // Mid bone's parent rotation (in creature-local space) is the new
+            // root rotation.
             mid_tf.rotation = (root_rot.inverse() * mid_rot).normalize();
         }
     }
 }
 
-/// Compute a bone's world-space position and its parent's world-space rotation
-/// by walking the [`ChildOf`] chain from `bone` up to `ancestor` and composing
-/// local [`Transform`]s on top of the ancestor's [`GlobalTransform`].
+/// Compute a bone's position and its parent's rotation in the `ancestor`
+/// entity's local coordinate frame by walking the [`ChildOf`] chain from
+/// `bone` up to `ancestor` and composing local [`Transform`]s.
 ///
 /// Returns `None` if any entity in the chain is missing a [`Transform`] or
 /// [`ChildOf`] component, or if `ancestor` is not an ancestor of `bone`.
 ///
 /// The query type is `&Query<&mut Transform>` because the caller (`solve_ik`)
 /// needs mutable access elsewhere; this function only reads via `get()`.
-fn bone_world_data(
+fn bone_local_data(
     bone: Entity,
     ancestor: Entity,
-    ancestor_global: &GlobalTransform,
     transform_q: &Query<&mut Transform>,
     parent_q: &Query<&ChildOf>,
 ) -> Option<(Vec3, Quat)> {
@@ -294,21 +292,20 @@ fn bone_world_data(
         current = parent_q.get(current).ok()?.0;
     }
 
-    let ancestor_tf = ancestor_global.compute_transform();
-
     // Edge case: bone IS the ancestor (shouldn't occur in practice).
     if chain.is_empty() {
-        return Some((ancestor_tf.translation, ancestor_tf.rotation));
+        return Some((Vec3::ZERO, Quat::IDENTITY));
     }
 
     // Compose from the ancestor side down to the bone.
     // chain = [bone_tf, bone_parent_tf, …, ancestor_child_tf]
-    let mut pos = ancestor_tf.translation;
-    let mut rot = ancestor_tf.rotation;
-    let mut scale = ancestor_tf.scale;
+    // Start from identity (ancestor's own local frame).
+    let mut pos = Vec3::ZERO;
+    let mut rot = Quat::IDENTITY;
+    let mut scale = Vec3::ONE;
 
     // Apply all transforms EXCEPT the bone's own (chain[0]) to get the
-    // bone-parent's world transform.
+    // bone-parent's transform in the ancestor's frame.
     for tf in chain[1..].iter().rev() {
         pos += rot * (scale * tf.translation);
         rot = (rot * tf.rotation).normalize();
@@ -317,17 +314,19 @@ fn bone_world_data(
 
     let parent_rot = rot;
 
-    // Apply the bone's own transform to obtain its world position.
+    // Apply the bone's own transform to obtain its position in the
+    // ancestor's frame.
     let bone_tf = &chain[0];
     pos += rot * (scale * bone_tf.translation);
 
     Some((pos, parent_rot))
 }
 
-/// Analytical two-bone IK. Returns world-space rotations for the root and mid
-/// joints. Targets beyond the chain length are clamped to the maximum
-/// reachable distance and still produce a solution. Returns `None` only when
-/// the target coincides with the root position (zero-length direction).
+/// Analytical two-bone IK. Returns rotations (in the caller's coordinate
+/// frame) for the root and mid joints. Targets beyond the chain length are
+/// clamped to the maximum reachable distance and still produce a solution.
+/// Returns `None` when the target coincides with the root position
+/// (zero-length direction) or when either segment length is near-zero.
 fn solve_two_bone(
     root_pos: Vec3,
     mid_pos: Vec3,
@@ -336,6 +335,13 @@ fn solve_two_bone(
     upper_len: f32,
     lower_len: f32,
 ) -> Option<(Quat, Quat)> {
+    // Guard: degenerate segment lengths would cause NaN in law-of-cosines
+    // denominators (division by 2 * upper_len * dist or 2 * upper_len *
+    // lower_len).
+    if upper_len <= f32::EPSILON || lower_len <= f32::EPSILON {
+        return None;
+    }
+
     let total_len = upper_len + lower_len;
     let to_target = target - root_pos;
     let dist = to_target.length();
@@ -345,7 +351,8 @@ fn solve_two_bone(
     }
 
     // Clamp distance so the chain can always reach (fully extended or folded).
-    let dist_clamped = dist.min(total_len - f32::EPSILON);
+    // Ensure clamped value stays positive even for very short chains.
+    let dist_clamped = dist.min(total_len - f32::EPSILON).max(f32::EPSILON);
 
     // Law of cosines: angle at the root joint.
     let cos_root = ((upper_len * upper_len + dist_clamped * dist_clamped
@@ -466,5 +473,18 @@ mod tests {
 
         let result = solve_two_bone(root, mid, tip, target, 1.0, 1.0);
         assert!(result.is_none(), "IK should return None when target is at root");
+    }
+
+    #[test]
+    fn two_bone_ik_zero_segment_returns_none() {
+        let root = Vec3::ZERO;
+        let mid = Vec3::new(0.0, 1.0, 0.0);
+        let tip = Vec3::new(0.0, 2.0, 0.0);
+        let target = Vec3::new(0.0, 0.0, 1.5);
+
+        // Zero upper_len should early-return None (avoids NaN).
+        assert!(solve_two_bone(root, mid, tip, target, 0.0, 1.0).is_none());
+        // Zero lower_len likewise.
+        assert!(solve_two_bone(root, mid, tip, target, 1.0, 0.0).is_none());
     }
 }
