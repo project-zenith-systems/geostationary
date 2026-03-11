@@ -211,9 +211,9 @@ fn solve_ik(
         // creature's GlobalTransform and the root bone's local Transform.
         // (GlobalTransform of the root bone itself may be stale, but the
         // creature root's GlobalTransform is propagated before PostUpdate.)
-        let Ok([root_local, _mid_local]) =
-            transform_q.get_many([chain.root, chain.mid])
-        else {
+        // Read the root bone's local Transform to determine its current
+        // orientation for the pole-vector hint.
+        let Ok(root_local) = transform_q.get(chain.root) else {
             continue;
         };
 
@@ -225,8 +225,9 @@ fn solve_ik(
         let lower_len = chain.lower_len;
 
         // Solve the two-bone IK.
-        // We pass root_pos as mid_pos hint for the pole vector computation.
-        // The actual mid position is derived from the root's local transform.
+        // mid_hint is used only for the pole-vector (bend plane); tip_pos is
+        // unused by the solver (prefixed with `_` in solve_two_bone).
+        // Vec3::Y is the conventional bone-forward axis for humanoid rigs.
         let mid_hint = root_pos + root_local.rotation * (Vec3::Y * upper_len);
 
         let Some((root_rot, mid_rot)) =
