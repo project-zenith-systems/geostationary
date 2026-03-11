@@ -275,6 +275,9 @@ fn solve_ik(
 ///
 /// Returns `None` if any entity in the chain is missing a [`Transform`] or
 /// [`ChildOf`] component, or if `ancestor` is not an ancestor of `bone`.
+///
+/// The query type is `&Query<&mut Transform>` because the caller (`solve_ik`)
+/// needs mutable access elsewhere; this function only reads via `get()`.
 fn bone_world_data(
     bone: Entity,
     ancestor: Entity,
@@ -291,9 +294,15 @@ fn bone_world_data(
         current = parent_q.get(current).ok()?.0;
     }
 
+    let ancestor_tf = ancestor_global.compute_transform();
+
+    // Edge case: bone IS the ancestor (shouldn't occur in practice).
+    if chain.is_empty() {
+        return Some((ancestor_tf.translation, ancestor_tf.rotation));
+    }
+
     // Compose from the ancestor side down to the bone.
     // chain = [bone_tf, bone_parent_tf, …, ancestor_child_tf]
-    let ancestor_tf = ancestor_global.compute_transform();
     let mut pos = ancestor_tf.translation;
     let mut rot = ancestor_tf.rotation;
     let mut scale = ancestor_tf.scale;
@@ -309,9 +318,8 @@ fn bone_world_data(
     let parent_rot = rot;
 
     // Apply the bone's own transform to obtain its world position.
-    if let Some(bone_tf) = chain.first() {
-        pos += rot * (scale * bone_tf.translation);
-    }
+    let bone_tf = &chain[0];
+    pos += rot * (scale * bone_tf.translation);
 
     Some((pos, parent_rot))
 }
