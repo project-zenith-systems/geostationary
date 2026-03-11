@@ -85,6 +85,9 @@ const CROSSFADE_DURATION: Duration = Duration::from_millis(200);
 /// components and drives crossfade transitions on the entity's
 /// [`AnimationPlayer`] (found among descendants of the root entity).
 ///
+/// Ensures the player entity carries an [`AnimationGraphHandle`] referencing
+/// the controller's graph before initiating any transition.
+///
 /// The `Added<AnimationController>` filter ensures the initial idle animation
 /// starts as soon as the scene is ready, avoiding a T-pose on first load.
 fn drive_animation(
@@ -94,6 +97,7 @@ fn drive_animation(
     >,
     children_q: Query<&Children>,
     mut player_q: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
+    mut commands: Commands,
 ) {
     for (entity, state, controller) in &anim_q {
         let Some(node) = controller.node_for(*state) else {
@@ -105,6 +109,12 @@ fn drive_animation(
         let Some(player_entity) = find_animation_player(entity, &children_q, &player_q) else {
             continue;
         };
+
+        // Ensure the player entity references the correct animation graph so
+        // that AnimationNodeIndex values resolve to the intended clips.
+        commands
+            .entity(player_entity)
+            .insert(AnimationGraphHandle(controller.graph.clone()));
 
         if let Ok((mut player, mut transitions)) = player_q.get_mut(player_entity) {
             transitions
@@ -193,13 +203,16 @@ impl Default for HoldIk {
 /// solves the [`IkChain`] using the stored segment lengths and writes
 /// local-space rotations to the root and mid bone entities.
 ///
-/// Uses only local `Transform` data and the stored `upper_len` / `lower_len`
-/// from [`IkChain`], so it is safe to run before transform propagation.
+/// Computes bone world positions by walking the [`ChildOf`] chain from each
+/// bone up to the creature entity and composing local [`Transform`]s, so it
+/// is safe to run before transform propagation (no stale `GlobalTransform`
+/// reads on intermediate bones).
 fn solve_ik(
-    ik_q: Query<(&IkChain, &HoldIk, &GlobalTransform)>,
+    ik_q: Query<(Entity, &IkChain, &HoldIk, &GlobalTransform)>,
     mut transform_q: Query<&mut Transform>,
+    parent_q: Query<&ChildOf>,
 ) {
-    for (chain, hold, creature_global) in &ik_q {
+    for (creature_entity, chain, hold, creature_global) in &ik_q {
         if !hold.active {
             continue;
         }
@@ -207,19 +220,25 @@ fn solve_ik(
         // Convert local-space target to world space.
         let target_world = creature_global.transform_point(hold.target);
 
-        // Read the root bone's current world-space position from the
-        // creature's GlobalTransform and the root bone's local Transform.
-        // (GlobalTransform of the root bone itself may be stale, but the
-        // creature root's GlobalTransform is propagated before PostUpdate.)
-        // Read the root bone's local Transform to determine its current
-        // orientation for the pole-vector hint.
-        let Ok(root_local) = transform_q.get(chain.root) else {
+        // Compute the root bone's world position and its parent's world
+        // rotation by walking the ChildOf chain up to the creature entity,
+        // composing local Transforms along the way.
+        let Some((root_pos, root_parent_rot)) = bone_world_data(
+            chain.root,
+            creature_entity,
+            creature_global,
+            &transform_q,
+            &parent_q,
+        ) else {
             continue;
         };
 
-        // Approximate root world position from the creature global transform
-        // plus the bone's local translation.
-        let root_pos = creature_global.transform_point(root_local.translation);
+        // Copy the root bone's local rotation for the pole-vector hint
+        // (borrow is released immediately so later get_mut calls are safe).
+        let root_local_rot = match transform_q.get(chain.root) {
+            Ok(tf) => tf.rotation,
+            Err(_) => continue,
+        };
 
         let upper_len = chain.upper_len;
         let lower_len = chain.lower_len;
@@ -228,7 +247,8 @@ fn solve_ik(
         // mid_hint is used only for the pole-vector (bend plane); tip_pos is
         // unused by the solver (prefixed with `_` in solve_two_bone).
         // Vec3::Y is the conventional bone-forward axis for humanoid rigs.
-        let mid_hint = root_pos + root_local.rotation * (Vec3::Y * upper_len);
+        let root_world_rot = (root_parent_rot * root_local_rot).normalize();
+        let mid_hint = root_pos + root_world_rot * (Vec3::Y * upper_len);
 
         let Some((root_rot, mid_rot)) =
             solve_two_bone(root_pos, mid_hint, Vec3::ZERO, target_world, upper_len, lower_len)
@@ -238,11 +258,8 @@ fn solve_ik(
 
         // Write rotations back in local space by removing the parent's world
         // rotation contribution.
-        let creature_rot = creature_global.compute_transform().rotation;
-
         if let Ok(mut root_tf) = transform_q.get_mut(chain.root) {
-            // Root bone's parent is (approximately) the creature root.
-            root_tf.rotation = (creature_rot.inverse() * root_rot).normalize();
+            root_tf.rotation = (root_parent_rot.inverse() * root_rot).normalize();
         }
 
         if let Ok(mut mid_tf) = transform_q.get_mut(chain.mid) {
@@ -250,6 +267,53 @@ fn solve_ik(
             mid_tf.rotation = (root_rot.inverse() * mid_rot).normalize();
         }
     }
+}
+
+/// Compute a bone's world-space position and its parent's world-space rotation
+/// by walking the [`ChildOf`] chain from `bone` up to `ancestor` and composing
+/// local [`Transform`]s on top of the ancestor's [`GlobalTransform`].
+///
+/// Returns `None` if any entity in the chain is missing a [`Transform`] or
+/// [`ChildOf`] component, or if `ancestor` is not an ancestor of `bone`.
+fn bone_world_data(
+    bone: Entity,
+    ancestor: Entity,
+    ancestor_global: &GlobalTransform,
+    transform_q: &Query<&mut Transform>,
+    parent_q: &Query<&ChildOf>,
+) -> Option<(Vec3, Quat)> {
+    // Collect local transforms from bone up to (but not including) ancestor.
+    let mut chain: Vec<Transform> = Vec::new();
+    let mut current = bone;
+    while current != ancestor {
+        let tf = *transform_q.get(current).ok()?;
+        chain.push(tf);
+        current = parent_q.get(current).ok()?.0;
+    }
+
+    // Compose from the ancestor side down to the bone.
+    // chain = [bone_tf, bone_parent_tf, …, ancestor_child_tf]
+    let ancestor_tf = ancestor_global.compute_transform();
+    let mut pos = ancestor_tf.translation;
+    let mut rot = ancestor_tf.rotation;
+    let mut scale = ancestor_tf.scale;
+
+    // Apply all transforms EXCEPT the bone's own (chain[0]) to get the
+    // bone-parent's world transform.
+    for tf in chain[1..].iter().rev() {
+        pos += rot * (scale * tf.translation);
+        rot = (rot * tf.rotation).normalize();
+        scale *= tf.scale;
+    }
+
+    let parent_rot = rot;
+
+    // Apply the bone's own transform to obtain its world position.
+    if let Some(bone_tf) = chain.first() {
+        pos += rot * (scale * bone_tf.translation);
+    }
+
+    Some((pos, parent_rot))
 }
 
 /// Analytical two-bone IK. Returns world-space rotations for the root and mid
