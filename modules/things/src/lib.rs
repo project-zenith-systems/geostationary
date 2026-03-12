@@ -910,10 +910,13 @@ fn handle_entity_lifecycle(
                             .entity(existing)
                             .insert(ControlledByClient(owner_id));
                     }
-                    commands.entity(existing).insert((
-                        AnimState::from(anim_state),
-                        HoldIk { active: holding, ..Default::default() },
-                    ));
+                    let mut entity_cmd = commands.entity(existing);
+                    entity_cmd.insert(AnimState::from(anim_state));
+                    if holding {
+                        entity_cmd.insert(HoldIk { active: true, ..Default::default() });
+                    } else {
+                        entity_cmd.remove::<HoldIk>();
+                    }
                     continue;
                 }
 
@@ -948,10 +951,10 @@ fn handle_entity_lifecycle(
                     commands.entity(entity).insert(ControlledByClient(owner_id));
                 }
 
-                commands.entity(entity).insert((
-                    AnimState::from(anim_state),
-                    HoldIk { active: holding, ..Default::default() },
-                ));
+                commands.entity(entity).insert(AnimState::from(anim_state));
+                if holding {
+                    commands.entity(entity).insert(HoldIk { active: true, ..Default::default() });
+                }
 
                 net_id_index.0.insert(net_id, entity);
             }
@@ -987,19 +990,23 @@ fn handle_entity_lifecycle(
                                     entity_mut.insert(new_anim_state);
                                 }
 
-                                // Only update HoldIk when `active` changes; insert if missing.
-                                match entity_mut.get_mut::<HoldIk>() {
-                                    Some(mut hold_ik) => {
-                                        if hold_ik.active != holding_active {
-                                            hold_ik.active = holding_active;
+                                // Only insert/update HoldIk when holding; remove when not.
+                                if holding_active {
+                                    match entity_mut.get_mut::<HoldIk>() {
+                                        Some(mut hold_ik) => {
+                                            if !hold_ik.active {
+                                                hold_ik.active = true;
+                                            }
+                                        }
+                                        None => {
+                                            entity_mut.insert(HoldIk {
+                                                active: true,
+                                                ..Default::default()
+                                            });
                                         }
                                     }
-                                    None => {
-                                        entity_mut.insert(HoldIk {
-                                            active: holding_active,
-                                            ..Default::default()
-                                        });
-                                    }
+                                } else if entity_mut.contains::<HoldIk>() {
+                                    entity_mut.remove::<HoldIk>();
                                 }
                             }
                         });
