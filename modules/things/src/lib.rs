@@ -973,10 +973,36 @@ fn handle_entity_lifecycle(
                         && let Ok(mut transform) = entities.get_mut(entity)
                     {
                         transform.translation = Vec3::from_array(state.position);
-                        commands.entity(entity).insert((
-                            AnimState::from(state.anim_state),
-                            HoldIk { active: state.holding, ..Default::default() },
-                        ));
+
+                        let new_anim_state = AnimState::from(state.anim_state);
+                        let holding_active = state.holding;
+
+                        commands.queue(move |world: &mut World| {
+                            if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+                                // Only update AnimState if missing or actually changed.
+                                let should_update = entity_mut
+                                    .get::<AnimState>()
+                                    .map_or(true, |existing| *existing != new_anim_state);
+                                if should_update {
+                                    entity_mut.insert(new_anim_state);
+                                }
+
+                                // Only update HoldIk when `active` changes; insert if missing.
+                                match entity_mut.get_mut::<HoldIk>() {
+                                    Some(mut hold_ik) => {
+                                        if hold_ik.active != holding_active {
+                                            hold_ik.active = holding_active;
+                                        }
+                                    }
+                                    None => {
+                                        entity_mut.insert(HoldIk {
+                                            active: holding_active,
+                                            ..Default::default()
+                                        });
+                                    }
+                                }
+                            }
+                        });
                     }
                 }
             }

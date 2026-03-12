@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use animation::AnimState;
 use network::{
     Client, ClientId, ClientInputReceived, NETWORK_UPDATE_INTERVAL, NetClientSender,
     NetworkReceive, PlayerEvent, Server, StreamSender,
@@ -90,7 +91,7 @@ fn bind_soul(
             velocity: [0.0, 0.0, 0.0],
             owner: Some(*id),
             name: Some(name.clone()),
-            anim_state: 0,
+            anim_state: u8::from(AnimState::default()),
             holding: false,
         }) {
             error!(

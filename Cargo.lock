@@ -5673,6 +5673,7 @@ dependencies = [
 name = "souls"
 version = "0.1.0"
 dependencies = [
+ "animation",
  "bevy",
  "network",
  "things",
