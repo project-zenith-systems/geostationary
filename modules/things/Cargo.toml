@@ -13,3 +13,4 @@ physics = { path = "../physics" }
 network = { path = "../network" }
 input = { path = "../input" }
 world = { path = "../world" }
+animation = { path = "../animation" }

@@ -31,6 +31,8 @@ pub struct EntityState {
     pub net_id: NetId,
     pub position: [f32; 3],
     pub velocity: [f32; 3],
+    pub anim_state: u8,
+    pub holding: bool,
 }
 
 /// Messages sent from Server to clients.

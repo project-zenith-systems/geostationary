@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wincode::{SchemaRead, SchemaWrite};
 use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 
+use animation::{AnimState, HoldIk};
+
 /// System set for the things module's server-side lifecycle systems.
 /// Other modules can use this for explicit ordering relative to things systems.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -46,6 +48,8 @@ pub struct Thing {
 struct LastBroadcast {
     position: Vec3,
     velocity: Vec3,
+    anim_state: u8,
+    holding: bool,
 }
 
 /// Which hand a [`HandSlot`] anchor belongs to.
@@ -543,6 +547,10 @@ pub enum ThingsStreamMessage {
         owner: Option<ClientId>,
         /// Optional display name for the entity (e.g. player name).
         name: Option<String>,
+        /// Animation state (wire-encoded [`AnimState`] variant).
+        anim_state: u8,
+        /// Whether the entity is in a hold pose.
+        holding: bool,
     },
     /// A replicated entity was despawned.
     EntityDespawned { net_id: NetId },
@@ -878,6 +886,8 @@ fn handle_entity_lifecycle(
                 velocity: _,
                 owner,
                 name,
+                anim_state,
+                holding,
             } => {
                 let controlled = owner.is_some() && owner == client.local_id;
 
@@ -900,6 +910,12 @@ fn handle_entity_lifecycle(
                             .entity(existing)
                             .insert(ControlledByClient(owner_id));
                     }
+                    commands
+                        .entity(existing)
+                        .insert(AnimState::from(anim_state));
+                    commands
+                        .entity(existing)
+                        .insert(HoldIk { active: holding, ..Default::default() });
                     continue;
                 }
 
@@ -934,6 +950,11 @@ fn handle_entity_lifecycle(
                     commands.entity(entity).insert(ControlledByClient(owner_id));
                 }
 
+                commands.entity(entity).insert(AnimState::from(anim_state));
+                commands
+                    .entity(entity)
+                    .insert(HoldIk { active: holding, ..Default::default() });
+
                 net_id_index.0.insert(net_id, entity);
             }
             ThingsStreamMessage::EntityDespawned { net_id } => {
@@ -954,6 +975,12 @@ fn handle_entity_lifecycle(
                         && let Ok(mut transform) = entities.get_mut(entity)
                     {
                         transform.translation = Vec3::from_array(state.position);
+                        commands
+                            .entity(entity)
+                            .insert(AnimState::from(state.anim_state));
+                        commands
+                            .entity(entity)
+                            .insert(HoldIk { active: state.holding, ..Default::default() });
                     }
                 }
             }
@@ -984,6 +1011,8 @@ fn handle_client_joined(
         Option<&LinearVelocity>,
         Option<&DisplayName>,
         &Thing,
+        Option<&AnimState>,
+        Option<&HoldIk>,
     )>,
 ) {
     for event in messages.read() {
@@ -992,7 +1021,7 @@ fn handle_client_joined(
         };
 
         // Catch-up: send EntitySpawned on stream 3 for every existing Thing entity.
-        for (net_id, opt_controlled_by, transform, opt_velocity, opt_name, thing) in entities.iter()
+        for (net_id, opt_controlled_by, transform, opt_velocity, opt_name, thing, opt_anim, opt_hold) in entities.iter()
         {
             let owner = opt_controlled_by
                 .map(|c| c.0)
@@ -1000,6 +1029,8 @@ fn handle_client_joined(
             let vel = opt_velocity
                 .map(|lv| [lv.x, lv.y, lv.z])
                 .unwrap_or([0.0, 0.0, 0.0]);
+            let anim_state: u8 = opt_anim.copied().unwrap_or_default().into();
+            let holding = opt_hold.map(|h| h.active).unwrap_or(false);
             if let Err(e) = stream_sender.send_to(
                 *from,
                 &ThingsStreamMessage::EntitySpawned {
@@ -1009,6 +1040,8 @@ fn handle_client_joined(
                     velocity: vel,
                     owner,
                     name: opt_name.map(|n| n.0.clone()),
+                    anim_state,
+                    holding,
                 },
             ) {
                 error!(
@@ -1066,6 +1099,8 @@ fn broadcast_state(
             &NetId,
             &Transform,
             Option<&LinearVelocity>,
+            Option<&AnimState>,
+            Option<&HoldIk>,
             &mut LastBroadcast,
         ),
         Without<ChildOf>,
@@ -1077,24 +1112,32 @@ fn broadcast_state(
 
     let states: Vec<EntityState> = entities
         .iter_mut()
-        .filter_map(|(net_id, transform, velocity, mut last)| {
+        .filter_map(|(net_id, transform, velocity, opt_anim, opt_hold, mut last)| {
             let pos = transform.translation;
             let vel = velocity.map(|lv| lv.0).unwrap_or(Vec3::ZERO);
+            let anim_state: u8 = opt_anim.copied().unwrap_or_default().into();
+            let holding = opt_hold.map(|h| h.active).unwrap_or(false);
 
             let pos_changed = (pos - last.position).length_squared() > POSITION_EPSILON_SQ;
             let vel_changed = (vel - last.velocity).length_squared() > VELOCITY_EPSILON_SQ;
+            let anim_changed = anim_state != last.anim_state;
+            let hold_changed = holding != last.holding;
 
-            if !pos_changed && !vel_changed {
+            if !pos_changed && !vel_changed && !anim_changed && !hold_changed {
                 return None;
             }
 
             last.position = pos;
             last.velocity = vel;
+            last.anim_state = anim_state;
+            last.holding = holding;
 
             Some(EntityState {
                 net_id: *net_id,
                 position: pos.into(),
                 velocity: [vel.x, vel.y, vel.z],
+                anim_state,
+                holding,
             })
         })
         .collect();

@@ -90,6 +90,8 @@ fn bind_soul(
             velocity: [0.0, 0.0, 0.0],
             owner: Some(*id),
             name: Some(name.clone()),
+            anim_state: 0,
+            holding: false,
         }) {
             error!(
                 "Failed to broadcast EntitySpawned for NetId({}): {e}",
