@@ -29,6 +29,7 @@ impl Plugin for AnimationPlugin {
 ///
 /// Wire-encodable via `From<u8>` / `Into<u8>` for network replication.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[repr(u8)]
 pub enum AnimState {
     #[default]
     Idle = 0,
@@ -377,7 +378,7 @@ fn solve_two_bone(
 
     // Clamp distance so the chain can always reach (fully extended or folded).
     // Ensure clamped value stays positive even for very short chains.
-    let dist_clamped = dist.min(total_len - f32::EPSILON).max(f32::EPSILON);
+    let dist_clamped = dist.min(total_len).max(f32::EPSILON);
 
     // Law of cosines: angle at the root joint.
     let cos_root = ((upper_len * upper_len + dist_clamped * dist_clamped
