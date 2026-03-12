@@ -910,12 +910,10 @@ fn handle_entity_lifecycle(
                             .entity(existing)
                             .insert(ControlledByClient(owner_id));
                     }
-                    commands
-                        .entity(existing)
-                        .insert(AnimState::from(anim_state));
-                    commands
-                        .entity(existing)
-                        .insert(HoldIk { active: holding, ..Default::default() });
+                    commands.entity(existing).insert((
+                        AnimState::from(anim_state),
+                        HoldIk { active: holding, ..Default::default() },
+                    ));
                     continue;
                 }
 
@@ -950,10 +948,10 @@ fn handle_entity_lifecycle(
                     commands.entity(entity).insert(ControlledByClient(owner_id));
                 }
 
-                commands.entity(entity).insert(AnimState::from(anim_state));
-                commands
-                    .entity(entity)
-                    .insert(HoldIk { active: holding, ..Default::default() });
+                commands.entity(entity).insert((
+                    AnimState::from(anim_state),
+                    HoldIk { active: holding, ..Default::default() },
+                ));
 
                 net_id_index.0.insert(net_id, entity);
             }
@@ -975,12 +973,10 @@ fn handle_entity_lifecycle(
                         && let Ok(mut transform) = entities.get_mut(entity)
                     {
                         transform.translation = Vec3::from_array(state.position);
-                        commands
-                            .entity(entity)
-                            .insert(AnimState::from(state.anim_state));
-                        commands
-                            .entity(entity)
-                            .insert(HoldIk { active: state.holding, ..Default::default() });
+                        commands.entity(entity).insert((
+                            AnimState::from(state.anim_state),
+                            HoldIk { active: state.holding, ..Default::default() },
+                        ));
                     }
                 }
             }
