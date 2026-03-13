@@ -971,16 +971,22 @@ fn handle_entity_lifecycle(
                 if is_listen_server {
                     continue;
                 }
+                let mut anim_updates: Vec<(Entity, AnimState, bool)> = Vec::new();
                 for state in &states {
                     if let Some(&entity) = net_id_index.0.get(&state.net_id)
                         && let Ok(mut transform) = entities.get_mut(entity)
                     {
                         transform.translation = Vec3::from_array(state.position);
-
-                        let new_anim_state = AnimState::from(state.anim_state);
-                        let holding_active = state.holding;
-
-                        commands.queue(move |world: &mut World| {
+                        anim_updates.push((
+                            entity,
+                            AnimState::from(state.anim_state),
+                            state.holding,
+                        ));
+                    }
+                }
+                if !anim_updates.is_empty() {
+                    commands.queue(move |world: &mut World| {
+                        for (entity, new_anim_state, holding_active) in anim_updates {
                             if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
                                 // Only update AnimState if missing or actually changed.
                                 let should_update = entity_mut
@@ -1009,8 +1015,8 @@ fn handle_entity_lifecycle(
                                     entity_mut.remove::<HoldIk>();
                                 }
                             }
-                        });
-                    }
+                        }
+                    });
                 }
             }
         }
@@ -1393,6 +1399,108 @@ mod tests {
         named.sort_by_key(|(_, kind)| *kind);
 
         assert_eq!(named, vec![("foo", 1), ("bar", 2)]);
+    }
+
+    /// Verifies that `broadcast_state` includes a stationary entity in the
+    /// broadcast when only `AnimState` changes (position/velocity unchanged).
+    /// Without `LastBroadcast` tracking `anim_state`, such entities would be
+    /// silently skipped, breaking animation replication on the wire.
+    #[test]
+    fn broadcast_state_triggers_on_anim_state_change() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<StateBroadcastTimer>();
+
+        // Create a StreamSender via StreamRegistry so broadcast_state can run.
+        let mut registry = StreamRegistry::default();
+        let (sender, _reader) = registry.register::<ThingsStreamMessage>(StreamDef {
+            tag: 3,
+            name: "things",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+
+        // Spawn a stationary entity whose AnimState differs from LastBroadcast.
+        let pos = Vec3::new(1.0, 2.0, 3.0);
+        app.world_mut().spawn((
+            NetId(42),
+            Transform::from_translation(pos),
+            AnimState::from(1u8), // e.g. Walking
+            LastBroadcast {
+                position: pos,
+                velocity: Vec3::ZERO,
+                anim_state: 0, // was Idle
+                holding: false,
+            },
+        ));
+
+        // Replace the broadcast timer with a zero-duration timer so it fires
+        // immediately when broadcast_state ticks it.
+        app.insert_resource(StateBroadcastTimer(Timer::from_seconds(
+            0.0,
+            TimerMode::Repeating,
+        )));
+
+        // Run broadcast_state directly via a one-shot system.
+        app.add_systems(Update, broadcast_state);
+        app.update();
+
+        // After broadcast_state runs, LastBroadcast.anim_state should reflect
+        // the current AnimState, proving the delta check included this entity.
+        let mut q = app.world_mut().query::<&LastBroadcast>();
+        let last = q.single(app.world()).expect("expected exactly one entity with LastBroadcast");
+        assert_eq!(
+            last.anim_state, 1,
+            "LastBroadcast.anim_state should update when only AnimState changes"
+        );
+    }
+
+    /// Verifies that `broadcast_state` includes a stationary entity when only
+    /// `holding` changes (via `HoldIk::active`).
+    #[test]
+    fn broadcast_state_triggers_on_holding_change() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<StateBroadcastTimer>();
+
+        let mut registry = StreamRegistry::default();
+        let (sender, _reader) = registry.register::<ThingsStreamMessage>(StreamDef {
+            tag: 3,
+            name: "things",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+
+        let pos = Vec3::new(5.0, 0.0, 5.0);
+        app.world_mut().spawn((
+            NetId(99),
+            Transform::from_translation(pos),
+            HoldIk {
+                active: true,
+                ..Default::default()
+            },
+            LastBroadcast {
+                position: pos,
+                velocity: Vec3::ZERO,
+                anim_state: 0,
+                holding: false, // was not holding
+            },
+        ));
+
+        app.insert_resource(StateBroadcastTimer(Timer::from_seconds(
+            0.0,
+            TimerMode::Repeating,
+        )));
+
+        app.add_systems(Update, broadcast_state);
+        app.update();
+
+        let mut q = app.world_mut().query::<&LastBroadcast>();
+        let last = q.single(app.world()).expect("expected exactly one entity with LastBroadcast");
+        assert!(
+            last.holding,
+            "LastBroadcast.holding should update when only HoldIk::active changes"
+        );
     }
 
     #[test]
