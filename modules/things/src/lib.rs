@@ -40,10 +40,11 @@ pub struct Thing {
     pub kind: u16,
 }
 
-/// Tracks the last position and velocity that was broadcast for this entity.
-/// `broadcast_state` compares current values against these to skip unchanged
-/// entities — Bevy's `Changed<Transform>` cannot be used because the physics
-/// engine writes to `Transform` every frame even for resting bodies.
+/// Tracks the last broadcast state for this entity: position, velocity,
+/// animation state, and hold state. `broadcast_state` compares current values
+/// against these to skip unchanged entities — Bevy's `Changed<Transform>`
+/// cannot be used because the physics engine writes to `Transform` every frame
+/// even for resting bodies.
 #[derive(Component, Default)]
 struct LastBroadcast {
     position: Vec3,
@@ -867,7 +868,8 @@ fn on_spawn_thing_visual(
 ///   inserts [`DisplayName`], and tracks it in [`NetIdIndex`].
 /// - [`ThingsStreamMessage::EntityDespawned`]: despawns the entity and removes it from
 ///   the index. [`DespawnOnExit`] provides additional state-transition cleanup.
-/// - [`ThingsStreamMessage::StateUpdate`]: applies authoritative position updates.
+/// - [`ThingsStreamMessage::StateUpdate`]: applies authoritative position,
+///   animation state, and hold state updates.
 fn handle_entity_lifecycle(
     mut commands: Commands,
     mut reader: ResMut<StreamReader<ThingsStreamMessage>>,
@@ -1116,12 +1118,12 @@ fn send_stream_ready_on_join(
     }
 }
 
-/// Broadcasts authoritative position updates on stream 3 for entities whose
+/// Broadcasts authoritative state updates on stream 3 for entities whose
 /// state has changed since the last broadcast.
 ///
 /// Throttled to [`NETWORK_UPDATE_INTERVAL`] to reduce bandwidth.
-/// Compares current position/velocity against [`LastBroadcast`] to skip
-/// unchanged entities.
+/// Compares current position, velocity, animation state, and hold state
+/// against [`LastBroadcast`] to skip unchanged entities.
 const POSITION_EPSILON_SQ: f32 = 1e-6;
 const VELOCITY_EPSILON_SQ: f32 = 1e-6;
 
