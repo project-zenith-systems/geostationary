@@ -938,8 +938,10 @@ fn handle_entity_lifecycle(
                                         });
                                     }
                                 }
-                            } else if entity_mut.contains::<HoldIk>() {
-                                entity_mut.remove::<HoldIk>();
+                            } else if let Some(mut hold_ik) = entity_mut.get_mut::<HoldIk>() {
+                                if hold_ik.active {
+                                    hold_ik.active = false;
+                                }
                             }
                         }
                     });
@@ -1022,7 +1024,7 @@ fn handle_entity_lifecycle(
                                     entity_mut.insert(new_anim_state);
                                 }
 
-                                // Only insert/update HoldIk when holding; remove when not.
+                                // Toggle HoldIk.active without clobbering target.
                                 if holding_active {
                                     match entity_mut.get_mut::<HoldIk>() {
                                         Some(mut hold_ik) => {
@@ -1037,8 +1039,10 @@ fn handle_entity_lifecycle(
                                             });
                                         }
                                     }
-                                } else if entity_mut.contains::<HoldIk>() {
-                                    entity_mut.remove::<HoldIk>();
+                                } else if let Some(mut hold_ik) = entity_mut.get_mut::<HoldIk>() {
+                                    if hold_ik.active {
+                                        hold_ik.active = false;
+                                    }
                                 }
                             }
                         }
