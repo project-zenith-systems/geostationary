@@ -912,13 +912,37 @@ fn handle_entity_lifecycle(
                             .entity(existing)
                             .insert(ControlledByClient(owner_id));
                     }
-                    let mut entity_cmd = commands.entity(existing);
-                    entity_cmd.insert(AnimState::from(anim_state));
-                    if holding {
-                        entity_cmd.insert(HoldIk { active: true, ..Default::default() });
-                    } else {
-                        entity_cmd.remove::<HoldIk>();
-                    }
+                    let new_anim_state = AnimState::from(anim_state);
+                    commands.queue(move |world: &mut World| {
+                        if let Ok(mut entity_mut) = world.get_entity_mut(existing) {
+                            // Only update AnimState if missing or actually changed.
+                            let should_update = entity_mut
+                                .get::<AnimState>()
+                                .map_or(true, |existing| *existing != new_anim_state);
+                            if should_update {
+                                entity_mut.insert(new_anim_state);
+                            }
+
+                            // Toggle HoldIk.active without clobbering target.
+                            if holding {
+                                match entity_mut.get_mut::<HoldIk>() {
+                                    Some(mut hold_ik) => {
+                                        if !hold_ik.active {
+                                            hold_ik.active = true;
+                                        }
+                                    }
+                                    None => {
+                                        entity_mut.insert(HoldIk {
+                                            active: true,
+                                            ..Default::default()
+                                        });
+                                    }
+                                }
+                            } else if entity_mut.contains::<HoldIk>() {
+                                entity_mut.remove::<HoldIk>();
+                            }
+                        }
+                    });
                     continue;
                 }
 
