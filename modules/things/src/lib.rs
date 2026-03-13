@@ -1611,7 +1611,7 @@ mod tests {
         );
         let hold = world.get::<HoldIk>(entity);
         assert!(
-            hold.is_some() && hold.unwrap().active,
+            hold.map_or(false, |h| h.active),
             "HoldIk should be inserted with active=true from StateUpdate"
         );
     }
@@ -1677,7 +1677,7 @@ mod tests {
         );
         let hold = app.world().get::<HoldIk>(entity);
         assert!(
-            hold.is_some() && hold.unwrap().active,
+            hold.map_or(false, |h| h.active),
             "HoldIk should be inserted with active=true from EntitySpawned"
         );
     }
