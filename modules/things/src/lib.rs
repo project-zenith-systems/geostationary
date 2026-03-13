@@ -1004,7 +1004,12 @@ fn handle_entity_lifecycle(
                     if let Some(&entity) = net_id_index.0.get(&state.net_id)
                         && let Ok(mut transform) = entities.get_mut(entity)
                     {
-                        transform.translation = Vec3::from_array(state.position);
+                        let new_pos = Vec3::from_array(state.position);
+                        if (new_pos - transform.translation).length_squared()
+                            > POSITION_EPSILON_SQ
+                        {
+                            transform.translation = new_pos;
+                        }
                         anim_updates.push((
                             entity,
                             AnimState::from(state.anim_state),
@@ -1543,5 +1548,137 @@ mod tests {
         let named: Vec<(&str, u16)> = registry.named_templates().collect();
         assert_eq!(named.len(), 1, "only named templates should appear");
         assert_eq!(named[0], ("named", 1));
+    }
+
+    /// Verifies that `handle_entity_lifecycle` applies `AnimState` and toggles
+    /// `HoldIk.active` from a `StateUpdate` message without spurious
+    /// `Changed<Transform>` when position is unchanged.
+    #[test]
+    fn state_update_applies_anim_and_hold_state() {
+        use bytes::Bytes;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ThingRegistry>();
+        app.init_resource::<NetIdIndex>();
+        app.insert_resource(Client { local_id: None });
+        app.add_observer(on_spawn_thing);
+
+        // Register stream and keep the registry so we can inject messages.
+        let mut registry = StreamRegistry::default();
+        let (sender, reader) = registry.register::<ThingsStreamMessage>(StreamDef {
+            tag: 3,
+            name: "things",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
+
+        // Spawn a replica entity with Thing + Transform + NetId and register
+        // it in the NetIdIndex.
+        let net_id = NetId(100);
+        let entity = app
+            .world_mut()
+            .spawn((net_id, Thing { kind: 0 }, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0))))
+            .id();
+        app.world_mut()
+            .resource_mut::<NetIdIndex>()
+            .0
+            .insert(net_id, entity);
+
+        // Inject a StateUpdate message with same position but new anim/hold.
+        let msg = ThingsStreamMessage::StateUpdate {
+            entities: vec![EntityState {
+                net_id,
+                position: [1.0, 2.0, 3.0],
+                velocity: [0.0, 0.0, 0.0],
+                anim_state: 2, // e.g. some non-Idle state
+                holding: true,
+            }],
+        };
+        let encoded = Bytes::from(wincode::serialize(&msg).expect("encode"));
+        registry.route_stream_frame(3, encoded);
+
+        app.add_systems(Update, handle_entity_lifecycle);
+        app.update();
+
+        let world = app.world();
+        let anim = world.get::<AnimState>(entity);
+        assert_eq!(
+            anim,
+            Some(&AnimState::from(2u8)),
+            "AnimState should be set from StateUpdate"
+        );
+        let hold = world.get::<HoldIk>(entity);
+        assert!(
+            hold.is_some() && hold.unwrap().active,
+            "HoldIk should be inserted with active=true from StateUpdate"
+        );
+    }
+
+    /// Verifies that `handle_entity_lifecycle` correctly applies `AnimState`
+    /// and `HoldIk` from an `EntitySpawned` message for a new replica entity.
+    #[test]
+    fn entity_spawned_applies_anim_and_hold_state() {
+        use bytes::Bytes;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ThingRegistry>();
+        app.init_resource::<NetIdIndex>();
+        app.insert_resource(Client { local_id: None });
+        app.add_observer(on_spawn_thing);
+
+        // Register a simple kind builder.
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(5, |_entity, _commands| {});
+
+        // Register stream and keep the registry so we can inject messages.
+        let mut registry = StreamRegistry::default();
+        let (sender, reader) = registry.register::<ThingsStreamMessage>(StreamDef {
+            tag: 3,
+            name: "things",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
+
+        // Inject an EntitySpawned message with anim_state and holding set.
+        let net_id = NetId(200);
+        let msg = ThingsStreamMessage::EntitySpawned {
+            net_id,
+            kind: 5,
+            position: [10.0, 0.0, 10.0],
+            velocity: [0.0, 0.0, 0.0],
+            owner: None,
+            name: None,
+            anim_state: 3,
+            holding: true,
+        };
+        let encoded = Bytes::from(wincode::serialize(&msg).expect("encode"));
+        registry.route_stream_frame(3, encoded);
+
+        app.add_systems(Update, handle_entity_lifecycle);
+        app.update();
+
+        // Look up the spawned entity via NetIdIndex.
+        let index = app.world().resource::<NetIdIndex>();
+        let entity = *index
+            .0
+            .get(&net_id)
+            .expect("entity should be registered in NetIdIndex");
+
+        let anim = app.world().get::<AnimState>(entity);
+        assert_eq!(
+            anim,
+            Some(&AnimState::from(3u8)),
+            "AnimState should be set from EntitySpawned"
+        );
+        let hold = app.world().get::<HoldIk>(entity);
+        assert!(
+            hold.is_some() && hold.unwrap().active,
+            "HoldIk should be inserted with active=true from EntitySpawned"
+        );
     }
 }

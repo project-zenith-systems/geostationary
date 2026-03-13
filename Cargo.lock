@@ -5837,6 +5837,7 @@ version = "0.1.0"
 dependencies = [
  "animation",
  "bevy",
+ "bytes",
  "input",
  "network",
  "physics",
