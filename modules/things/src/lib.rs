@@ -987,10 +987,7 @@ fn handle_entity_lifecycle(
                     commands.entity(entity).insert(ControlledByClient(owner_id));
                 }
 
-                commands.entity(entity).insert(AnimState::from(anim_state));
-                if holding {
-                    commands.entity(entity).insert(HoldIk { active: true, ..Default::default() });
-                }
+                spawn_anim_updates.push((entity, AnimState::from(anim_state), holding));
 
                 net_id_index.0.insert(net_id, entity);
             }
@@ -1583,7 +1580,7 @@ mod tests {
                 net_id,
                 position: [1.0, 2.0, 3.0],
                 velocity: [0.0, 0.0, 0.0],
-                anim_state: 2, // e.g. some non-Idle state
+                anim_state: u8::from(AnimState::Walk),
                 holding: true,
             }],
         };
@@ -1597,7 +1594,7 @@ mod tests {
         let anim = world.get::<AnimState>(entity);
         assert_eq!(
             anim,
-            Some(&AnimState::from(2u8)),
+            Some(&AnimState::Walk),
             "AnimState should be set from StateUpdate"
         );
         let hold = world.get::<HoldIk>(entity);
@@ -1644,7 +1641,7 @@ mod tests {
             velocity: [0.0, 0.0, 0.0],
             owner: None,
             name: None,
-            anim_state: 3,
+            anim_state: u8::from(AnimState::Walk),
             holding: true,
         };
         let encoded = Bytes::from(wincode::serialize(&msg).expect("encode"));
@@ -1663,7 +1660,7 @@ mod tests {
         let anim = app.world().get::<AnimState>(entity);
         assert_eq!(
             anim,
-            Some(&AnimState::from(3u8)),
+            Some(&AnimState::Walk),
             "AnimState should be set from EntitySpawned"
         );
         let hold = app.world().get::<HoldIk>(entity);
