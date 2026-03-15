@@ -1185,6 +1185,12 @@ fn broadcast_state(
                 return None;
             }
 
+            // Update last broadcast state so unchanged entities are not re-broadcast.
+            last.position = pos;
+            last.velocity = vel;
+            last.anim_state = anim_state;
+            last.holding = holding;
+
             Some(EntityState {
                 net_id: *net_id,
                 position: pos.into(),
