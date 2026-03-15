@@ -31,8 +31,9 @@ impl Plugin for CreaturesPlugin {
         app.register_type::<Creature>();
         app.register_type::<MovementSpeed>();
         app.add_systems(Update, apply_input_velocity);
+        app.add_systems(Update, init_creature_state);
         app.add_systems(
-            Update,
+            PostUpdate,
             (
                 compute_anim_state.run_if(resource_exists::<Server>),
                 compute_hold_state.run_if(resource_exists::<Server>),
@@ -60,6 +61,19 @@ fn apply_input_velocity(
 /// Minimum velocity magnitude (units/s) to transition from Idle to Walk.
 /// Prevents animation flicker when the creature is nearly at rest.
 const VELOCITY_THRESHOLD: f32 = 0.1;
+
+/// Ensures every newly-spawned creature gets an [`AnimState`] and [`HoldIk`]
+/// component so the derived-state systems can operate on them.
+fn init_creature_state(
+    mut commands: Commands,
+    query: Query<Entity, (With<Creature>, Without<AnimState>)>,
+) {
+    for entity in query.iter() {
+        commands
+            .entity(entity)
+            .insert((AnimState::default(), HoldIk::default()));
+    }
+}
 
 /// Derives [`AnimState`] from [`LinearVelocity`] for every creature.
 /// Runs on the server so the authoritative state can be replicated.
@@ -122,14 +136,36 @@ mod tests {
     use super::*;
     use things::HandSide;
 
-    /// Build a minimal headless `App` with the two new systems registered
-    /// directly (no `Server` run-condition) so they always execute.
+    /// Build a minimal headless `App` with the init and compute systems
+    /// registered directly (no `Server` run-condition) so they always execute.
     fn test_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_systems(Update, (compute_anim_state, compute_hold_state));
+        app.add_systems(Update, init_creature_state);
+        app.add_systems(PostUpdate, (compute_anim_state, compute_hold_state));
         app.finish();
         app
+    }
+
+    // ── init_creature_state ──────────────────────────────────────────────
+
+    #[test]
+    fn init_creature_state_inserts_anim_and_hold() {
+        let mut app = test_app();
+        let creature = app
+            .world_mut()
+            .spawn((Creature, LinearVelocity::default()))
+            .id();
+        // Before update: no AnimState or HoldIk.
+        assert!(app.world().get::<AnimState>(creature).is_none());
+        assert!(app.world().get::<HoldIk>(creature).is_none());
+        app.update();
+        // After update: both present with defaults.
+        assert_eq!(
+            *app.world().get::<AnimState>(creature).unwrap(),
+            AnimState::Idle
+        );
+        assert!(!app.world().get::<HoldIk>(creature).unwrap().active);
     }
 
     // ── compute_anim_state ────────────────────────────────────────────────
