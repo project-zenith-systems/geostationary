@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wincode::{SchemaRead, SchemaWrite};
 use world::{MapLayer, MapLayerRegistryExt, from_layer_value, to_layer_value};
 
+use animation::{AnimState, HoldIk};
+
 /// System set for the things module's server-side lifecycle systems.
 /// Other modules can use this for explicit ordering relative to things systems.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -38,14 +40,17 @@ pub struct Thing {
     pub kind: u16,
 }
 
-/// Tracks the last position and velocity that was broadcast for this entity.
-/// `broadcast_state` compares current values against these to skip unchanged
-/// entities — Bevy's `Changed<Transform>` cannot be used because the physics
-/// engine writes to `Transform` every frame even for resting bodies.
+/// Tracks the last broadcast state for this entity: position, velocity,
+/// animation state, and hold state. `broadcast_state` compares current values
+/// against these to skip unchanged entities — Bevy's `Changed<Transform>`
+/// cannot be used because the physics engine writes to `Transform` every frame
+/// even for resting bodies.
 #[derive(Component, Default)]
 struct LastBroadcast {
     position: Vec3,
     velocity: Vec3,
+    anim_state: u8,
+    holding: bool,
 }
 
 /// Which hand a [`HandSlot`] anchor belongs to.
@@ -543,6 +548,10 @@ pub enum ThingsStreamMessage {
         owner: Option<ClientId>,
         /// Optional display name for the entity (e.g. player name).
         name: Option<String>,
+        /// Animation state (wire-encoded [`AnimState`] variant).
+        anim_state: u8,
+        /// Whether the entity is in a hold pose.
+        holding: bool,
     },
     /// A replicated entity was despawned.
     EntityDespawned { net_id: NetId },
@@ -852,6 +861,41 @@ fn on_spawn_thing_visual(
     }
 }
 
+/// Applies replicated `AnimState` and `HoldIk` to an entity via direct world access.
+///
+/// Only writes `AnimState` when the component is missing or the value differs (avoiding
+/// spurious `Changed<AnimState>`). Toggles `HoldIk::active` on an existing component
+/// without clobbering `target`; inserts a new `HoldIk` only when `holding` is true and
+/// the component is absent.
+fn apply_anim_hold(entity_mut: &mut EntityWorldMut, new_anim_state: AnimState, holding: bool) {
+    let should_update = entity_mut
+        .get::<AnimState>()
+        .map_or(true, |existing| *existing != new_anim_state);
+    if should_update {
+        entity_mut.insert(new_anim_state);
+    }
+
+    if holding {
+        match entity_mut.get_mut::<HoldIk>() {
+            Some(mut hold_ik) => {
+                if !hold_ik.active {
+                    hold_ik.active = true;
+                }
+            }
+            None => {
+                entity_mut.insert(HoldIk {
+                    active: true,
+                    ..Default::default()
+                });
+            }
+        }
+    } else if let Some(mut hold_ik) = entity_mut.get_mut::<HoldIk>() {
+        if hold_ik.active {
+            hold_ik.active = false;
+        }
+    }
+}
+
 /// Handles client-side entity lifecycle and state updates from stream 3.
 ///
 /// Processes all [`ThingsStreamMessage`] frames:
@@ -859,7 +903,8 @@ fn on_spawn_thing_visual(
 ///   inserts [`DisplayName`], and tracks it in [`NetIdIndex`].
 /// - [`ThingsStreamMessage::EntityDespawned`]: despawns the entity and removes it from
 ///   the index. [`DespawnOnExit`] provides additional state-transition cleanup.
-/// - [`ThingsStreamMessage::StateUpdate`]: applies authoritative position updates.
+/// - [`ThingsStreamMessage::StateUpdate`]: applies authoritative position,
+///   animation state, and hold state updates.
 fn handle_entity_lifecycle(
     mut commands: Commands,
     mut reader: ResMut<StreamReader<ThingsStreamMessage>>,
@@ -869,6 +914,7 @@ fn handle_entity_lifecycle(
     mut entities: Query<&mut Transform, With<Thing>>,
 ) {
     let is_listen_server = server.is_some();
+    let mut spawn_anim_updates: Vec<(Entity, AnimState, bool)> = Vec::new();
     for msg in reader.drain() {
         match msg {
             ThingsStreamMessage::EntitySpawned {
@@ -878,6 +924,8 @@ fn handle_entity_lifecycle(
                 velocity: _,
                 owner,
                 name,
+                anim_state,
+                holding,
             } => {
                 let controlled = owner.is_some() && owner == client.local_id;
 
@@ -900,6 +948,11 @@ fn handle_entity_lifecycle(
                             .entity(existing)
                             .insert(ControlledByClient(owner_id));
                     }
+                    spawn_anim_updates.push((
+                        existing,
+                        AnimState::from(anim_state),
+                        holding,
+                    ));
                     continue;
                 }
 
@@ -934,6 +987,8 @@ fn handle_entity_lifecycle(
                     commands.entity(entity).insert(ControlledByClient(owner_id));
                 }
 
+                spawn_anim_updates.push((entity, AnimState::from(anim_state), holding));
+
                 net_id_index.0.insert(net_id, entity);
             }
             ThingsStreamMessage::EntityDespawned { net_id } => {
@@ -949,15 +1004,45 @@ fn handle_entity_lifecycle(
                 if is_listen_server {
                     continue;
                 }
+                let mut anim_updates: Vec<(Entity, AnimState, bool)> =
+                    Vec::with_capacity(states.len());
                 for state in &states {
                     if let Some(&entity) = net_id_index.0.get(&state.net_id)
                         && let Ok(mut transform) = entities.get_mut(entity)
                     {
-                        transform.translation = Vec3::from_array(state.position);
+                        let new_pos = Vec3::from_array(state.position);
+                        if (new_pos - transform.translation).length_squared()
+                            > POSITION_EPSILON_SQ
+                        {
+                            transform.translation = new_pos;
+                        }
+                        anim_updates.push((
+                            entity,
+                            AnimState::from(state.anim_state),
+                            state.holding,
+                        ));
                     }
+                }
+                if !anim_updates.is_empty() {
+                    commands.queue(move |world: &mut World| {
+                        for (entity, new_anim_state, holding_active) in anim_updates {
+                            if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+                                apply_anim_hold(&mut entity_mut, new_anim_state, holding_active);
+                            }
+                        }
+                    });
                 }
             }
         }
+    }
+    if !spawn_anim_updates.is_empty() {
+        commands.queue(move |world: &mut World| {
+            for (entity, new_anim_state, holding) in spawn_anim_updates {
+                if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+                    apply_anim_hold(&mut entity_mut, new_anim_state, holding);
+                }
+            }
+        });
     }
 }
 
@@ -984,6 +1069,8 @@ fn handle_client_joined(
         Option<&LinearVelocity>,
         Option<&DisplayName>,
         &Thing,
+        Option<&AnimState>,
+        Option<&HoldIk>,
     )>,
 ) {
     for event in messages.read() {
@@ -992,14 +1079,24 @@ fn handle_client_joined(
         };
 
         // Catch-up: send EntitySpawned on stream 3 for every existing Thing entity.
-        for (net_id, opt_controlled_by, transform, opt_velocity, opt_name, thing) in entities.iter()
-        {
+        for (
+            net_id,
+            opt_controlled_by,
+            transform,
+            opt_velocity,
+            opt_name,
+            thing,
+            opt_anim,
+            opt_hold,
+        ) in entities.iter() {
             let owner = opt_controlled_by
                 .map(|c| c.0)
                 .filter(|&owner_id| owner_id == *from);
             let vel = opt_velocity
                 .map(|lv| [lv.x, lv.y, lv.z])
                 .unwrap_or([0.0, 0.0, 0.0]);
+            let anim_state: u8 = opt_anim.copied().unwrap_or_default().into();
+            let holding = opt_hold.map(|h| h.active).unwrap_or(false);
             if let Err(e) = stream_sender.send_to(
                 *from,
                 &ThingsStreamMessage::EntitySpawned {
@@ -1009,6 +1106,8 @@ fn handle_client_joined(
                     velocity: vel,
                     owner,
                     name: opt_name.map(|n| n.0.clone()),
+                    anim_state,
+                    holding,
                 },
             ) {
                 error!(
@@ -1048,12 +1147,12 @@ fn send_stream_ready_on_join(
     }
 }
 
-/// Broadcasts authoritative position updates on stream 3 for entities whose
+/// Broadcasts authoritative state updates on stream 3 for entities whose
 /// state has changed since the last broadcast.
 ///
 /// Throttled to [`NETWORK_UPDATE_INTERVAL`] to reduce bandwidth.
-/// Compares current position/velocity against [`LastBroadcast`] to skip
-/// unchanged entities.
+/// Compares current position, velocity, animation state, and hold state
+/// against [`LastBroadcast`] to skip unchanged entities.
 const POSITION_EPSILON_SQ: f32 = 1e-6;
 const VELOCITY_EPSILON_SQ: f32 = 1e-6;
 
@@ -1066,6 +1165,8 @@ fn broadcast_state(
             &NetId,
             &Transform,
             Option<&LinearVelocity>,
+            Option<&AnimState>,
+            Option<&HoldIk>,
             &mut LastBroadcast,
         ),
         Without<ChildOf>,
@@ -1077,24 +1178,33 @@ fn broadcast_state(
 
     let states: Vec<EntityState> = entities
         .iter_mut()
-        .filter_map(|(net_id, transform, velocity, mut last)| {
+        .filter_map(|(net_id, transform, velocity, opt_anim, opt_hold, mut last)| {
             let pos = transform.translation;
             let vel = velocity.map(|lv| lv.0).unwrap_or(Vec3::ZERO);
+            let anim_state: u8 = opt_anim.copied().unwrap_or_default().into();
+            let holding = opt_hold.map(|h| h.active).unwrap_or(false);
 
             let pos_changed = (pos - last.position).length_squared() > POSITION_EPSILON_SQ;
             let vel_changed = (vel - last.velocity).length_squared() > VELOCITY_EPSILON_SQ;
+            let anim_changed = anim_state != last.anim_state;
+            let hold_changed = holding != last.holding;
 
-            if !pos_changed && !vel_changed {
+            if !pos_changed && !vel_changed && !anim_changed && !hold_changed {
                 return None;
             }
 
+            // Update last broadcast state so unchanged entities are not re-broadcast.
             last.position = pos;
             last.velocity = vel;
+            last.anim_state = anim_state;
+            last.holding = holding;
 
             Some(EntityState {
                 net_id: *net_id,
                 position: pos.into(),
                 velocity: [vel.x, vel.y, vel.z],
+                anim_state,
+                holding,
             })
         })
         .collect();
@@ -1323,6 +1433,109 @@ mod tests {
         assert_eq!(named, vec![("foo", 1), ("bar", 2)]);
     }
 
+    /// Verifies that `broadcast_state` includes a stationary entity in the
+    /// broadcast when only `AnimState` changes (position/velocity unchanged).
+    /// Without `LastBroadcast` tracking `anim_state`, such entities would be
+    /// silently skipped, breaking animation replication on the wire.
+    #[test]
+    fn broadcast_state_triggers_on_anim_state_change() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<StateBroadcastTimer>();
+
+        // Create a StreamSender via StreamRegistry so broadcast_state can run.
+        let mut registry = StreamRegistry::default();
+        let (sender, _reader) = registry.register::<ThingsStreamMessage>(StreamDef {
+            tag: 3,
+            name: "things",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+
+        // Spawn a stationary entity whose AnimState differs from LastBroadcast.
+        let pos = Vec3::new(1.0, 2.0, 3.0);
+        app.world_mut().spawn((
+            NetId(42),
+            Transform::from_translation(pos),
+            AnimState::Walk, // e.g. Walking
+            LastBroadcast {
+                position: pos,
+                velocity: Vec3::ZERO,
+                anim_state: u8::from(AnimState::Idle), // was Idle
+                holding: false,
+            },
+        ));
+
+        // Replace the broadcast timer with a zero-duration timer so it fires
+        // immediately when broadcast_state ticks it.
+        app.insert_resource(StateBroadcastTimer(Timer::from_seconds(
+            0.0,
+            TimerMode::Repeating,
+        )));
+
+        // Run broadcast_state directly via a one-shot system.
+        app.add_systems(Update, broadcast_state);
+        app.update();
+
+        // After broadcast_state runs, LastBroadcast.anim_state should reflect
+        // the current AnimState, proving the delta check included this entity.
+        let mut q = app.world_mut().query::<&LastBroadcast>();
+        let last = q.single(app.world()).expect("expected exactly one entity with LastBroadcast");
+        assert_eq!(
+            last.anim_state,
+            u8::from(AnimState::Walk),
+            "LastBroadcast.anim_state should update when only AnimState changes"
+        );
+    }
+
+    /// Verifies that `broadcast_state` includes a stationary entity when only
+    /// `holding` changes (via `HoldIk::active`).
+    #[test]
+    fn broadcast_state_triggers_on_holding_change() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<StateBroadcastTimer>();
+
+        let mut registry = StreamRegistry::default();
+        let (sender, _reader) = registry.register::<ThingsStreamMessage>(StreamDef {
+            tag: 3,
+            name: "things",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+
+        let pos = Vec3::new(5.0, 0.0, 5.0);
+        app.world_mut().spawn((
+            NetId(99),
+            Transform::from_translation(pos),
+            HoldIk {
+                active: true,
+                ..Default::default()
+            },
+            LastBroadcast {
+                position: pos,
+                velocity: Vec3::ZERO,
+                anim_state: 0,
+                holding: false, // was not holding
+            },
+        ));
+
+        app.insert_resource(StateBroadcastTimer(Timer::from_seconds(
+            0.0,
+            TimerMode::Repeating,
+        )));
+
+        app.add_systems(Update, broadcast_state);
+        app.update();
+
+        let mut q = app.world_mut().query::<&LastBroadcast>();
+        let last = q.single(app.world()).expect("expected exactly one entity with LastBroadcast");
+        assert!(
+            last.holding,
+            "LastBroadcast.holding should update when only HoldIk::active changes"
+        );
+    }
+
     #[test]
     fn named_templates_excludes_unnamed_registrations() {
         let mut registry = ThingRegistry::default();
@@ -1333,5 +1546,137 @@ mod tests {
         let named: Vec<(&str, u16)> = registry.named_templates().collect();
         assert_eq!(named.len(), 1, "only named templates should appear");
         assert_eq!(named[0], ("named", 1));
+    }
+
+    /// Verifies that `handle_entity_lifecycle` applies `AnimState` and toggles
+    /// `HoldIk.active` from a `StateUpdate` message without spurious
+    /// `Changed<Transform>` when position is unchanged.
+    #[test]
+    fn state_update_applies_anim_and_hold_state() {
+        use bytes::Bytes;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ThingRegistry>();
+        app.init_resource::<NetIdIndex>();
+        app.insert_resource(Client { local_id: None });
+        app.add_observer(on_spawn_thing);
+
+        // Register stream and keep the registry so we can inject messages.
+        let mut registry = StreamRegistry::default();
+        let (sender, reader) = registry.register::<ThingsStreamMessage>(StreamDef {
+            tag: 3,
+            name: "things",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
+
+        // Spawn a replica entity with Thing + Transform + NetId and register
+        // it in the NetIdIndex.
+        let net_id = NetId(100);
+        let entity = app
+            .world_mut()
+            .spawn((net_id, Thing { kind: 0 }, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0))))
+            .id();
+        app.world_mut()
+            .resource_mut::<NetIdIndex>()
+            .0
+            .insert(net_id, entity);
+
+        // Inject a StateUpdate message with same position but new anim/hold.
+        let msg = ThingsStreamMessage::StateUpdate {
+            entities: vec![EntityState {
+                net_id,
+                position: [1.0, 2.0, 3.0],
+                velocity: [0.0, 0.0, 0.0],
+                anim_state: u8::from(AnimState::Walk),
+                holding: true,
+            }],
+        };
+        let encoded = Bytes::from(wincode::serialize(&msg).expect("encode"));
+        registry.route_stream_frame(3, encoded);
+
+        app.add_systems(Update, handle_entity_lifecycle);
+        app.update();
+
+        let world = app.world();
+        let anim = world.get::<AnimState>(entity);
+        assert_eq!(
+            anim,
+            Some(&AnimState::Walk),
+            "AnimState should be set from StateUpdate"
+        );
+        let hold = world.get::<HoldIk>(entity);
+        assert!(
+            hold.map_or(false, |h| h.active),
+            "HoldIk should be inserted with active=true from StateUpdate"
+        );
+    }
+
+    /// Verifies that `handle_entity_lifecycle` correctly applies `AnimState`
+    /// and `HoldIk` from an `EntitySpawned` message for a new replica entity.
+    #[test]
+    fn entity_spawned_applies_anim_and_hold_state() {
+        use bytes::Bytes;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ThingRegistry>();
+        app.init_resource::<NetIdIndex>();
+        app.insert_resource(Client { local_id: None });
+        app.add_observer(on_spawn_thing);
+
+        // Register a simple kind builder.
+        app.world_mut()
+            .resource_mut::<ThingRegistry>()
+            .register(5, |_entity, _commands| {});
+
+        // Register stream and keep the registry so we can inject messages.
+        let mut registry = StreamRegistry::default();
+        let (sender, reader) = registry.register::<ThingsStreamMessage>(StreamDef {
+            tag: 3,
+            name: "things",
+            direction: StreamDirection::ServerToClient,
+        });
+        app.insert_resource(sender);
+        app.insert_resource(reader);
+
+        // Inject an EntitySpawned message with anim_state and holding set.
+        let net_id = NetId(200);
+        let msg = ThingsStreamMessage::EntitySpawned {
+            net_id,
+            kind: 5,
+            position: [10.0, 0.0, 10.0],
+            velocity: [0.0, 0.0, 0.0],
+            owner: None,
+            name: None,
+            anim_state: u8::from(AnimState::Walk),
+            holding: true,
+        };
+        let encoded = Bytes::from(wincode::serialize(&msg).expect("encode"));
+        registry.route_stream_frame(3, encoded);
+
+        app.add_systems(Update, handle_entity_lifecycle);
+        app.update();
+
+        // Look up the spawned entity via NetIdIndex.
+        let index = app.world().resource::<NetIdIndex>();
+        let entity = *index
+            .0
+            .get(&net_id)
+            .expect("entity should be registered in NetIdIndex");
+
+        let anim = app.world().get::<AnimState>(entity);
+        assert_eq!(
+            anim,
+            Some(&AnimState::Walk),
+            "AnimState should be set from EntitySpawned"
+        );
+        let hold = app.world().get::<HoldIk>(entity);
+        assert!(
+            hold.map_or(false, |h| h.active),
+            "HoldIk should be inserted with active=true from EntitySpawned"
+        );
     }
 }

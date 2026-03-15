@@ -25,12 +25,15 @@ pub struct ClientId(pub u64);
 )]
 pub struct NetId(pub u64);
 
-/// Spatial state of a replicated entity, sent in authoritative updates.
+/// Replicated state of an entity, sent in authoritative updates.
+/// Includes position, velocity, animation state, and hold state.
 #[derive(Debug, Clone, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct EntityState {
     pub net_id: NetId,
     pub position: [f32; 3],
     pub velocity: [f32; 3],
+    pub anim_state: u8,
+    pub holding: bool,
 }
 
 /// Messages sent from Server to clients.
