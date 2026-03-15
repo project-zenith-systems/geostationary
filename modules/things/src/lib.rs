@@ -1448,11 +1448,11 @@ mod tests {
         app.world_mut().spawn((
             NetId(42),
             Transform::from_translation(pos),
-            AnimState::from(1u8), // e.g. Walking
+            AnimState::Walk, // e.g. Walking
             LastBroadcast {
                 position: pos,
                 velocity: Vec3::ZERO,
-                anim_state: 0, // was Idle
+                anim_state: u8::from(AnimState::Idle), // was Idle
                 holding: false,
             },
         ));
@@ -1473,7 +1473,8 @@ mod tests {
         let mut q = app.world_mut().query::<&LastBroadcast>();
         let last = q.single(app.world()).expect("expected exactly one entity with LastBroadcast");
         assert_eq!(
-            last.anim_state, 1,
+            last.anim_state,
+            u8::from(AnimState::Walk),
             "LastBroadcast.anim_state should update when only AnimState changes"
         );
     }
