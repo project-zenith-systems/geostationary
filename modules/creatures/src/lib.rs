@@ -1,6 +1,9 @@
+use animation::{AnimState, HoldIk};
 use bevy::prelude::*;
+use items::Container;
+use network::Server;
 use physics::LinearVelocity;
-use things::InputDirection;
+use things::{HandSlot, InputDirection};
 
 /// Marker component for creatures - entities that can move and act in the world.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
@@ -28,6 +31,13 @@ impl Plugin for CreaturesPlugin {
         app.register_type::<Creature>();
         app.register_type::<MovementSpeed>();
         app.add_systems(Update, apply_input_velocity);
+        app.add_systems(
+            Update,
+            (
+                compute_anim_state.run_if(resource_exists::<Server>),
+                compute_hold_state.run_if(resource_exists::<Server>),
+            ),
+        );
     }
 }
 
@@ -44,5 +54,217 @@ fn apply_input_velocity(
         };
         velocity.x = desired.x;
         velocity.z = desired.z;
+    }
+}
+
+/// Minimum velocity magnitude (units/s) to transition from Idle to Walk.
+/// Prevents animation flicker when the creature is nearly at rest.
+const VELOCITY_THRESHOLD: f32 = 0.1;
+
+/// Derives [`AnimState`] from [`LinearVelocity`] for every creature.
+/// Runs on the server so the authoritative state can be replicated.
+fn compute_anim_state(
+    mut query: Query<(&LinearVelocity, &mut AnimState), With<Creature>>,
+) {
+    for (velocity, mut anim_state) in query.iter_mut() {
+        let new_state = if velocity.length() > VELOCITY_THRESHOLD {
+            AnimState::Walk
+        } else {
+            AnimState::Idle
+        };
+        if *anim_state != new_state {
+            *anim_state = new_state;
+        }
+    }
+}
+
+/// Derives [`HoldIk::active`] from whether the creature's [`HandSlot`] holds
+/// an item. Uses descendant traversal so the system works whether the
+/// `HandSlot` is a direct child or has been reparented under a hand bone.
+fn compute_hold_state(
+    mut creatures: Query<(Entity, &mut HoldIk), With<Creature>>,
+    children_q: Query<&Children>,
+    hand_containers: Query<&Container, With<HandSlot>>,
+) {
+    for (entity, mut hold_ik) in creatures.iter_mut() {
+        let holding = has_held_item(entity, &children_q, &hand_containers);
+        if hold_ik.active != holding {
+            hold_ik.active = holding;
+        }
+    }
+}
+
+/// Recursively searches descendants of `root` for a [`HandSlot`] whose
+/// [`Container`] holds at least one item.
+fn has_held_item(
+    root: Entity,
+    children_q: &Query<&Children>,
+    hand_containers: &Query<&Container, With<HandSlot>>,
+) -> bool {
+    let Ok(children) = children_q.get(root) else {
+        return false;
+    };
+    for child in children.iter() {
+        if let Ok(container) = hand_containers.get(child) {
+            if container.slots.iter().any(|s| s.is_some()) {
+                return true;
+            }
+        }
+        if has_held_item(child, children_q, hand_containers) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use things::HandSide;
+
+    /// Build a minimal headless `App` with the two new systems registered
+    /// directly (no `Server` run-condition) so they always execute.
+    fn test_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, (compute_anim_state, compute_hold_state));
+        app.finish();
+        app
+    }
+
+    // ── compute_anim_state ────────────────────────────────────────────────
+
+    #[test]
+    fn anim_state_idle_when_stationary() {
+        let mut app = test_app();
+        app.world_mut().spawn((
+            Creature,
+            LinearVelocity::default(),
+            AnimState::Walk, // start as Walk to prove it transitions
+        ));
+        app.update();
+        let state = *app
+            .world_mut()
+            .query::<&AnimState>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(state, AnimState::Idle);
+    }
+
+    #[test]
+    fn anim_state_walk_when_moving() {
+        let mut app = test_app();
+        app.world_mut().spawn((
+            Creature,
+            LinearVelocity(Vec3::new(1.0, 0.0, 0.0)),
+            AnimState::default(),
+        ));
+        app.update();
+        let state = *app
+            .world_mut()
+            .query::<&AnimState>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(state, AnimState::Walk);
+    }
+
+    #[test]
+    fn anim_state_idle_below_threshold() {
+        let mut app = test_app();
+        // Velocity magnitude 0.05, below the 0.1 threshold.
+        app.world_mut().spawn((
+            Creature,
+            LinearVelocity(Vec3::new(0.05, 0.0, 0.0)),
+            AnimState::Walk,
+        ));
+        app.update();
+        let state = *app
+            .world_mut()
+            .query::<&AnimState>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(state, AnimState::Idle);
+    }
+
+    // ── compute_hold_state ────────────────────────────────────────────────
+
+    /// Spawn a creature with a HoldIk component and a HandSlot child.
+    /// Returns (creature_entity, hand_slot_entity).
+    fn spawn_creature_with_hand(app: &mut App) -> (Entity, Entity) {
+        let creature = app
+            .world_mut()
+            .spawn((Creature, HoldIk::default()))
+            .id();
+        let hand = app
+            .world_mut()
+            .spawn((
+                HandSlot {
+                    side: HandSide::Right,
+                },
+                Container::with_capacity(1),
+                ChildOf(creature),
+            ))
+            .id();
+        (creature, hand)
+    }
+
+    #[test]
+    fn hold_state_inactive_when_hand_empty() {
+        let mut app = test_app();
+        let (creature, _hand) = spawn_creature_with_hand(&mut app);
+        // Explicitly set active to true so we can verify it becomes false.
+        app.world_mut()
+            .entity_mut(creature)
+            .get_mut::<HoldIk>()
+            .unwrap()
+            .active = true;
+        app.update();
+        let hold = app.world().get::<HoldIk>(creature).unwrap();
+        assert!(!hold.active);
+    }
+
+    #[test]
+    fn hold_state_active_when_hand_holds_item() {
+        let mut app = test_app();
+        let (creature, hand) = spawn_creature_with_hand(&mut app);
+        // Place an item in the container.
+        let item = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .get_mut::<Container>(hand)
+            .unwrap()
+            .insert(item);
+        app.update();
+        let hold = app.world().get::<HoldIk>(creature).unwrap();
+        assert!(hold.active);
+    }
+
+    #[test]
+    fn hold_state_active_when_hand_slot_nested_under_bone() {
+        let mut app = test_app();
+        let creature = app
+            .world_mut()
+            .spawn((Creature, HoldIk::default()))
+            .id();
+        // Simulate a bone entity between the creature and the HandSlot.
+        let bone = app
+            .world_mut()
+            .spawn(ChildOf(creature))
+            .id();
+        let item = app.world_mut().spawn_empty().id();
+        let _hand = app
+            .world_mut()
+            .spawn((
+                HandSlot {
+                    side: HandSide::Right,
+                },
+                Container {
+                    slots: vec![Some(item)],
+                },
+                ChildOf(bone),
+            ))
+            .id();
+        app.update();
+        let hold = app.world().get::<HoldIk>(creature).unwrap();
+        assert!(hold.active);
     }
 }

@@ -2338,7 +2338,10 @@ dependencies = [
 name = "creatures"
 version = "0.1.0"
 dependencies = [
+ "animation",
  "bevy",
+ "items",
+ "network",
  "physics",
  "things",
 ]
