@@ -62,16 +62,21 @@ fn apply_input_velocity(
 /// Prevents animation flicker when the creature is nearly at rest.
 const VELOCITY_THRESHOLD: f32 = 0.1;
 
-/// Ensures every newly-spawned creature gets an [`AnimState`] and [`HoldIk`]
-/// component so the derived-state systems can operate on them.
+/// Squared velocity threshold for the comparison in [`compute_anim_state`].
+const VELOCITY_THRESHOLD_SQ: f32 = VELOCITY_THRESHOLD * VELOCITY_THRESHOLD;
+
+/// Ensures every creature has [`AnimState`] and [`HoldIk`] components so
+/// the derived-state systems can operate on them. Uses `insert_if_new` to
+/// avoid clobbering a component that was already set at spawn time.
 fn init_creature_state(
     mut commands: Commands,
-    query: Query<Entity, (With<Creature>, Without<AnimState>)>,
+    query: Query<Entity, (With<Creature>, Or<(Without<AnimState>, Without<HoldIk>)>)>,
 ) {
     for entity in query.iter() {
         commands
             .entity(entity)
-            .insert((AnimState::default(), HoldIk::default()));
+            .insert_if_new(AnimState::default())
+            .insert_if_new(HoldIk::default());
     }
 }
 
@@ -81,7 +86,7 @@ fn compute_anim_state(
     mut query: Query<(&LinearVelocity, &mut AnimState), With<Creature>>,
 ) {
     for (velocity, mut anim_state) in query.iter_mut() {
-        let new_state = if velocity.length() > VELOCITY_THRESHOLD {
+        let new_state = if velocity.length_squared() > VELOCITY_THRESHOLD_SQ {
             AnimState::Walk
         } else {
             AnimState::Idle
@@ -166,6 +171,61 @@ mod tests {
             AnimState::Idle
         );
         assert!(!app.world().get::<HoldIk>(creature).unwrap().active);
+    }
+
+    #[test]
+    fn init_creature_state_inserts_hold_when_anim_already_present() {
+        let mut app = test_app();
+        // Spawn with AnimState::Walk already present, but no HoldIk.
+        // Give non-zero velocity so compute_anim_state preserves Walk.
+        let creature = app
+            .world_mut()
+            .spawn((
+                Creature,
+                LinearVelocity(Vec3::new(1.0, 0.0, 0.0)),
+                AnimState::Walk,
+            ))
+            .id();
+        assert!(app.world().get::<HoldIk>(creature).is_none());
+        app.update();
+        // AnimState preserved (not clobbered), HoldIk inserted.
+        assert_eq!(
+            *app.world().get::<AnimState>(creature).unwrap(),
+            AnimState::Walk
+        );
+        assert!(!app.world().get::<HoldIk>(creature).unwrap().active);
+    }
+
+    #[test]
+    fn init_creature_state_inserts_anim_when_hold_already_present() {
+        let mut app = test_app();
+        let mut hold = HoldIk::default();
+        hold.active = true;
+        // Spawn with HoldIk already present (active=true), but no AnimState.
+        let creature = app
+            .world_mut()
+            .spawn((Creature, LinearVelocity::default(), hold))
+            .id();
+        // Give the creature a HandSlot with an item so compute_hold_state
+        // keeps active=true.
+        let item = app.world_mut().spawn_empty().id();
+        app.world_mut().spawn((
+            HandSlot {
+                side: HandSide::Right,
+            },
+            Container {
+                slots: vec![Some(item)],
+            },
+            ChildOf(creature),
+        ));
+        assert!(app.world().get::<AnimState>(creature).is_none());
+        app.update();
+        // HoldIk preserved (not clobbered), AnimState inserted.
+        assert!(app.world().get::<HoldIk>(creature).unwrap().active);
+        assert_eq!(
+            *app.world().get::<AnimState>(creature).unwrap(),
+            AnimState::Idle
+        );
     }
 
     // ── compute_anim_state ────────────────────────────────────────────────
