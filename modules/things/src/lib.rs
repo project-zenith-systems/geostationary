@@ -861,6 +861,41 @@ fn on_spawn_thing_visual(
     }
 }
 
+/// Applies replicated `AnimState` and `HoldIk` to an entity via direct world access.
+///
+/// Only writes `AnimState` when the component is missing or the value differs (avoiding
+/// spurious `Changed<AnimState>`). Toggles `HoldIk::active` on an existing component
+/// without clobbering `target`; inserts a new `HoldIk` only when `holding` is true and
+/// the component is absent.
+fn apply_anim_hold(entity_mut: &mut EntityWorldMut, new_anim_state: AnimState, holding: bool) {
+    let should_update = entity_mut
+        .get::<AnimState>()
+        .map_or(true, |existing| *existing != new_anim_state);
+    if should_update {
+        entity_mut.insert(new_anim_state);
+    }
+
+    if holding {
+        match entity_mut.get_mut::<HoldIk>() {
+            Some(mut hold_ik) => {
+                if !hold_ik.active {
+                    hold_ik.active = true;
+                }
+            }
+            None => {
+                entity_mut.insert(HoldIk {
+                    active: true,
+                    ..Default::default()
+                });
+            }
+        }
+    } else if let Some(mut hold_ik) = entity_mut.get_mut::<HoldIk>() {
+        if hold_ik.active {
+            hold_ik.active = false;
+        }
+    }
+}
+
 /// Handles client-side entity lifecycle and state updates from stream 3.
 ///
 /// Processes all [`ThingsStreamMessage`] frames:
@@ -879,6 +914,7 @@ fn handle_entity_lifecycle(
     mut entities: Query<&mut Transform, With<Thing>>,
 ) {
     let is_listen_server = server.is_some();
+    let mut spawn_anim_updates: Vec<(Entity, AnimState, bool)> = Vec::new();
     for msg in reader.drain() {
         match msg {
             ThingsStreamMessage::EntitySpawned {
@@ -912,39 +948,11 @@ fn handle_entity_lifecycle(
                             .entity(existing)
                             .insert(ControlledByClient(owner_id));
                     }
-                    let new_anim_state = AnimState::from(anim_state);
-                    commands.queue(move |world: &mut World| {
-                        if let Ok(mut entity_mut) = world.get_entity_mut(existing) {
-                            // Only update AnimState if missing or actually changed.
-                            let should_update = entity_mut
-                                .get::<AnimState>()
-                                .map_or(true, |existing| *existing != new_anim_state);
-                            if should_update {
-                                entity_mut.insert(new_anim_state);
-                            }
-
-                            // Toggle HoldIk.active without clobbering target.
-                            if holding {
-                                match entity_mut.get_mut::<HoldIk>() {
-                                    Some(mut hold_ik) => {
-                                        if !hold_ik.active {
-                                            hold_ik.active = true;
-                                        }
-                                    }
-                                    None => {
-                                        entity_mut.insert(HoldIk {
-                                            active: true,
-                                            ..Default::default()
-                                        });
-                                    }
-                                }
-                            } else if let Some(mut hold_ik) = entity_mut.get_mut::<HoldIk>() {
-                                if hold_ik.active {
-                                    hold_ik.active = false;
-                                }
-                            }
-                        }
-                    });
+                    spawn_anim_updates.push((
+                        existing,
+                        AnimState::from(anim_state),
+                        holding,
+                    ));
                     continue;
                 }
 
@@ -999,7 +1007,8 @@ fn handle_entity_lifecycle(
                 if is_listen_server {
                     continue;
                 }
-                let mut anim_updates: Vec<(Entity, AnimState, bool)> = Vec::new();
+                let mut anim_updates: Vec<(Entity, AnimState, bool)> =
+                    Vec::with_capacity(states.len());
                 for state in &states {
                     if let Some(&entity) = net_id_index.0.get(&state.net_id)
                         && let Ok(mut transform) = entities.get_mut(entity)
@@ -1021,40 +1030,22 @@ fn handle_entity_lifecycle(
                     commands.queue(move |world: &mut World| {
                         for (entity, new_anim_state, holding_active) in anim_updates {
                             if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
-                                // Only update AnimState if missing or actually changed.
-                                let should_update = entity_mut
-                                    .get::<AnimState>()
-                                    .map_or(true, |existing| *existing != new_anim_state);
-                                if should_update {
-                                    entity_mut.insert(new_anim_state);
-                                }
-
-                                // Toggle HoldIk.active without clobbering target.
-                                if holding_active {
-                                    match entity_mut.get_mut::<HoldIk>() {
-                                        Some(mut hold_ik) => {
-                                            if !hold_ik.active {
-                                                hold_ik.active = true;
-                                            }
-                                        }
-                                        None => {
-                                            entity_mut.insert(HoldIk {
-                                                active: true,
-                                                ..Default::default()
-                                            });
-                                        }
-                                    }
-                                } else if let Some(mut hold_ik) = entity_mut.get_mut::<HoldIk>() {
-                                    if hold_ik.active {
-                                        hold_ik.active = false;
-                                    }
-                                }
+                                apply_anim_hold(&mut entity_mut, new_anim_state, holding_active);
                             }
                         }
                     });
                 }
             }
         }
+    }
+    if !spawn_anim_updates.is_empty() {
+        commands.queue(move |world: &mut World| {
+            for (entity, new_anim_state, holding) in spawn_anim_updates {
+                if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+                    apply_anim_hold(&mut entity_mut, new_anim_state, holding);
+                }
+            }
+        });
     }
 }
 
