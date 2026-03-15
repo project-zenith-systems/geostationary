@@ -65,9 +65,10 @@ const VELOCITY_THRESHOLD: f32 = 0.1;
 /// Squared velocity threshold for the comparison in [`compute_anim_state`].
 const VELOCITY_THRESHOLD_SQ: f32 = VELOCITY_THRESHOLD * VELOCITY_THRESHOLD;
 
-/// Ensures every creature has [`AnimState`] and [`HoldIk`] components so
-/// the derived-state systems can operate on them. Uses `insert_if_new` to
-/// avoid clobbering a component that was already set at spawn time.
+/// Ensures every creature always has [`AnimState`] and [`HoldIk`] components
+/// so the derived-state systems can operate on them. Runs each frame and
+/// catches both newly-spawned creatures and any entity that has had a
+/// component removed. Uses `insert_if_new` to avoid clobbering existing state.
 fn init_creature_state(
     mut commands: Commands,
     query: Query<Entity, (With<Creature>, Or<(Without<AnimState>, Without<HoldIk>)>)>,
