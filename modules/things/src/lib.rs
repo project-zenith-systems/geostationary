@@ -1079,8 +1079,16 @@ fn handle_client_joined(
         };
 
         // Catch-up: send EntitySpawned on stream 3 for every existing Thing entity.
-        for (net_id, opt_controlled_by, transform, opt_velocity, opt_name, thing, opt_anim, opt_hold) in entities.iter()
-        {
+        for (
+            net_id,
+            opt_controlled_by,
+            transform,
+            opt_velocity,
+            opt_name,
+            thing,
+            opt_anim,
+            opt_hold,
+        ) in entities.iter() {
             let owner = opt_controlled_by
                 .map(|c| c.0)
                 .filter(|&owner_id| owner_id == *from);
