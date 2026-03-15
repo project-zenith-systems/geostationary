@@ -1185,11 +1185,6 @@ fn broadcast_state(
                 return None;
             }
 
-            last.position = pos;
-            last.velocity = vel;
-            last.anim_state = anim_state;
-            last.holding = holding;
-
             Some(EntityState {
                 net_id: *net_id,
                 position: pos.into(),
