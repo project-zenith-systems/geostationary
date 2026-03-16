@@ -851,6 +851,7 @@ fn on_spawn_thing_visual(
     on: On<SpawnThingVisual>,
     mut commands: Commands,
     registry: Res<ThingRegistry>,
+    headless: Option<Res<Headless>>,
 ) {
     let event = on.event();
     debug!(
@@ -862,6 +863,12 @@ fn on_spawn_thing_visual(
         Transform::from_translation(event.position),
         Thing { kind: event.kind },
     ));
+
+    // Defence-in-depth: skip visual builders on headless servers, matching
+    // the guard in `on_spawn_thing`.
+    if headless.is_some() {
+        return;
+    }
 
     if let Some(visual) = registry.visual_builders.get(&event.kind) {
         visual(event.entity, &mut commands);

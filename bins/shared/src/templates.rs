@@ -8,6 +8,10 @@ use things::{HAND_OFFSET, HandSide, HandSlot, InputDirection, ThingRegistry};
 
 pub const BALL_RADIUS: f32 = 0.3;
 
+/// Default IK target for the creature's hold pose, in creature-local space.
+/// Right-hand side, slightly forward and below the shoulder.
+pub const CREATURE_HOLD_IK_TARGET: Vec3 = Vec3::new(0.3, 0.7, -0.3);
+
 pub struct TemplatesPlugin;
 
 impl Plugin for TemplatesPlugin {
@@ -74,7 +78,7 @@ impl Plugin for TemplatesPlugin {
                     AnimState::Idle,
                     HoldIk {
                         active: false,
-                        target: Vec3::new(0.3, 0.7, -0.3),
+                        target: CREATURE_HOLD_IK_TARGET,
                     },
                     RigidBody::Dynamic,
                     Collider::capsule(0.3, 1.0),
