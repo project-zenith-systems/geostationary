@@ -251,7 +251,7 @@ fn find_named_descendant(
 ) -> Option<Entity> {
     let mut queue = std::collections::VecDeque::new();
     if let Ok(children) = children_q.get(root) {
-        for &child in children {
+        for child in children.iter() {
             queue.push_back(child);
         }
     }
@@ -262,7 +262,7 @@ fn find_named_descendant(
             }
         }
         if let Ok(children) = children_q.get(entity) {
-            for &child in children {
+            for child in children.iter() {
                 queue.push_back(child);
             }
         }
@@ -278,7 +278,7 @@ fn find_descendant_with<T: Component>(
 ) -> Option<Entity> {
     let mut queue = std::collections::VecDeque::new();
     if let Ok(children) = children_q.get(root) {
-        for &child in children {
+        for child in children.iter() {
             queue.push_back(child);
         }
     }
@@ -287,7 +287,7 @@ fn find_descendant_with<T: Component>(
             return Some(entity);
         }
         if let Ok(children) = children_q.get(entity) {
-            for &child in children {
+            for child in children.iter() {
                 queue.push_back(child);
             }
         }

@@ -607,7 +607,7 @@ fn find_hand_slot_with_space(
 ) -> Option<Entity> {
     let mut queue = std::collections::VecDeque::new();
     if let Ok(actor_children) = children.get(actor) {
-        for &child in actor_children {
+        for child in actor_children.iter() {
             queue.push_back(child);
         }
     }
@@ -619,7 +619,7 @@ fn find_hand_slot_with_space(
             return Some(entity);
         }
         if let Ok(kids) = children.get(entity) {
-            for &kid in kids {
+            for kid in kids.iter() {
                 queue.push_back(kid);
             }
         }
@@ -641,7 +641,7 @@ fn find_hand_slot_containing(
 ) -> Option<Entity> {
     let mut queue = std::collections::VecDeque::new();
     if let Ok(actor_children) = children.get(actor) {
-        for &child in actor_children {
+        for child in actor_children.iter() {
             queue.push_back(child);
         }
     }
@@ -653,7 +653,7 @@ fn find_hand_slot_containing(
             return Some(entity);
         }
         if let Ok(kids) = children.get(entity) {
-            for &kid in kids {
+            for kid in kids.iter() {
                 queue.push_back(kid);
             }
         }
@@ -2467,6 +2467,7 @@ mod tests {
     /// `broadcast_item_event` must skip the bone and find the creature.
     #[test]
     fn broadcast_item_event_pickedup_resolves_holder_via_ancestor_walk() {
+        use bevy::ecs::system::SystemState;
         use network::{NetId, StreamDef, StreamDirection, StreamRegistry};
 
         let mut app = App::new();
@@ -2502,6 +2503,19 @@ mod tests {
             ))
             .id();
         let item = app.world_mut().spawn(item_net_id).id();
+
+        // Directly verify that find_ancestor_with_net_id resolves to the creature.
+        {
+            let mut state =
+                SystemState::<(Query<&ChildOf>, Query<&NetId>)>::new(app.world_mut());
+            let (child_of_q, net_id_q) = state.get(app.world());
+            let result = find_ancestor_with_net_id(hand, &child_of_q, &net_id_q);
+            assert_eq!(
+                result,
+                Some((creature, creature_net_id)),
+                "ancestor walk from hand should resolve to creature"
+            );
+        }
 
         app.world_mut()
             .write_message(ItemActionEvent::PickedUp { item, hand });
