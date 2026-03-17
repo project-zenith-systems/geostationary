@@ -72,6 +72,11 @@ pub struct HandSlot {
 }
 
 /// Creature-local (local-space) offset from the creature origin to the hand anchor position.
+///
+/// **Legacy fallback.** After the GLTF scene is ready, `HandSlot` is
+/// reparented to the hand bone entity and this offset is replaced by the
+/// bone's own transform. Retained for the brief interval between entity
+/// spawn and scene readiness, and for non-GLTF (headless) creatures.
 pub const HAND_OFFSET: Vec3 = Vec3::new(0.4, 0.5, 0.0);
 
 /// Marker component for the entity controlled by the local player.

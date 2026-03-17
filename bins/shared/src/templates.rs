@@ -1,5 +1,6 @@
 use animation::{AnimState, HoldIk};
 use bevy::prelude::*;
+use bevy::scene::SceneInstanceReady;
 use creatures::{Creature, MovementSpeed};
 use items::{Container, Item};
 use network::Headless;
@@ -12,10 +13,22 @@ pub const BALL_RADIUS: f32 = 0.3;
 /// Right-hand side, slightly forward and below the shoulder.
 pub const CREATURE_HOLD_IK_TARGET: Vec3 = Vec3::new(0.3, 0.7, -0.3);
 
+/// The bone name in the GLTF model that the [`HandSlot`] should be reparented to.
+const HAND_BONE_NAME: &str = "hand.R";
+
+/// Marker component inserted on a creature entity after its GLTF scene has
+/// been fully loaded and scene-ready initialisation (bone reparenting, etc.)
+/// has been performed.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct SceneReady;
+
 pub struct TemplatesPlugin;
 
 impl Plugin for TemplatesPlugin {
     fn build(&self, app: &mut App) {
+        app.register_type::<SceneReady>();
+
         let headless = app.world().contains_resource::<Headless>();
 
         // Ensure material assets are available even on headless servers.
@@ -102,7 +115,10 @@ impl Plugin for TemplatesPlugin {
         if let Some(scene) = creature_scene {
             registry.register_visual(0, move |entity, commands| {
                 debug!("Template kind 0 (creature) visual: applying SceneRoot to {entity:?}");
-                commands.entity(entity).insert(SceneRoot(scene.clone()));
+                commands
+                    .entity(entity)
+                    .insert(SceneRoot(scene.clone()))
+                    .observe(on_creature_scene_ready);
             });
         }
 
@@ -173,4 +189,107 @@ impl Plugin for TemplatesPlugin {
             },
         );
     }
+}
+
+/// Observer triggered by [`SceneInstanceReady`] on a creature entity.
+///
+/// Walks the entity's descendants to find the hand bone (`Name("hand.R")`) and
+/// the existing [`HandSlot`] child, then reparents the hand slot to the bone
+/// with an identity local transform so the held item follows the bone during
+/// animation and IK.
+///
+/// Inserts the [`SceneReady`] marker on the creature entity so other systems
+/// can detect that the GLTF scene hierarchy is fully initialised.
+fn on_creature_scene_ready(
+    trigger: On<SceneInstanceReady>,
+    mut commands: Commands,
+    children_q: Query<&Children>,
+    name_q: Query<&Name>,
+    hand_slot_q: Query<Entity, With<HandSlot>>,
+) {
+    let creature = trigger.entity;
+    debug!("on_creature_scene_ready: creature {creature:?}");
+
+    commands.entity(creature).insert(SceneReady);
+
+    // Find the hand bone by walking all descendants.
+    let bone_entity = find_named_descendant(creature, HAND_BONE_NAME, &children_q, &name_q);
+
+    // Find the HandSlot among descendants (still a direct child at this point,
+    // but use descendant traversal for robustness).
+    let hand_slot_entity = find_descendant_with::<HandSlot>(creature, &children_q, &hand_slot_q);
+
+    if let (Some(bone), Some(hand_slot)) = (bone_entity, hand_slot_entity) {
+        debug!(
+            "on_creature_scene_ready: reparenting HandSlot {hand_slot:?} to bone {bone:?}"
+        );
+        commands
+            .entity(hand_slot)
+            .insert((ChildOf(bone), Transform::IDENTITY));
+    } else {
+        if bone_entity.is_none() {
+            warn!(
+                "on_creature_scene_ready: bone '{}' not found among descendants of {creature:?}",
+                HAND_BONE_NAME
+            );
+        }
+        if hand_slot_entity.is_none() {
+            warn!(
+                "on_creature_scene_ready: HandSlot not found among descendants of {creature:?}"
+            );
+        }
+    }
+}
+
+/// BFS search for a descendant entity with a [`Name`] component matching `target`.
+fn find_named_descendant(
+    root: Entity,
+    target: &str,
+    children_q: &Query<&Children>,
+    name_q: &Query<&Name>,
+) -> Option<Entity> {
+    let mut queue = std::collections::VecDeque::new();
+    if let Ok(children) = children_q.get(root) {
+        for &child in children {
+            queue.push_back(child);
+        }
+    }
+    while let Some(entity) = queue.pop_front() {
+        if let Ok(name) = name_q.get(entity) {
+            if name.as_str() == target {
+                return Some(entity);
+            }
+        }
+        if let Ok(children) = children_q.get(entity) {
+            for &child in children {
+                queue.push_back(child);
+            }
+        }
+    }
+    None
+}
+
+/// BFS search for the first descendant entity that matches the given query filter.
+fn find_descendant_with<T: Component>(
+    root: Entity,
+    children_q: &Query<&Children>,
+    filter_q: &Query<Entity, With<T>>,
+) -> Option<Entity> {
+    let mut queue = std::collections::VecDeque::new();
+    if let Ok(children) = children_q.get(root) {
+        for &child in children {
+            queue.push_back(child);
+        }
+    }
+    while let Some(entity) = queue.pop_front() {
+        if filter_q.get(entity).is_ok() {
+            return Some(entity);
+        }
+        if let Ok(children) = children_q.get(entity) {
+            for &child in children {
+                queue.push_back(child);
+            }
+        }
+    }
+    None
 }

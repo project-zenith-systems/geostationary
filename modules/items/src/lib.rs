@@ -594,30 +594,44 @@ fn handle_item_interaction(
     }
 }
 
-/// Find the first hand-slot entity that is a child of `actor`, has a
-/// [`Container`], and has at least one free slot.
+/// Find the first [`HandSlot`] entity among `actor`'s descendants that has a
+/// [`Container`] with at least one free slot.
+///
+/// Uses BFS descendant traversal so the function works whether `HandSlot` is a
+/// direct child of the actor or has been reparented under a bone entity.
 fn find_hand_slot_with_space(
     actor: Entity,
     children: &Query<&Children>,
     hand_slot_q: &Query<Entity, With<HandSlot>>,
     containers: &Query<&mut Container>,
 ) -> Option<Entity> {
-    let Ok(actor_children) = children.get(actor) else {
-        return None;
-    };
-    for &child in actor_children {
-        if hand_slot_q.get(child).is_ok()
-            && let Ok(container) = containers.get(child)
+    let mut queue = std::collections::VecDeque::new();
+    if let Ok(actor_children) = children.get(actor) {
+        for &child in actor_children {
+            queue.push_back(child);
+        }
+    }
+    while let Some(entity) = queue.pop_front() {
+        if hand_slot_q.get(entity).is_ok()
+            && let Ok(container) = containers.get(entity)
             && container.has_space()
         {
-            return Some(child);
+            return Some(entity);
+        }
+        if let Ok(kids) = children.get(entity) {
+            for &kid in kids {
+                queue.push_back(kid);
+            }
         }
     }
     None
 }
 
-/// Find the hand-slot entity that is a child of `actor` and whose [`Container`]
+/// Find the [`HandSlot`] entity among `actor`'s descendants whose [`Container`]
 /// holds `item`.
+///
+/// Uses BFS descendant traversal so the function works whether `HandSlot` is a
+/// direct child of the actor or has been reparented under a bone entity.
 fn find_hand_slot_containing(
     actor: Entity,
     item: Entity,
@@ -625,15 +639,23 @@ fn find_hand_slot_containing(
     hand_slot_q: &Query<Entity, With<HandSlot>>,
     containers: &Query<&mut Container>,
 ) -> Option<Entity> {
-    let Ok(actor_children) = children.get(actor) else {
-        return None;
-    };
-    for &child in actor_children {
-        if hand_slot_q.get(child).is_ok()
-            && let Ok(container) = containers.get(child)
+    let mut queue = std::collections::VecDeque::new();
+    if let Ok(actor_children) = children.get(actor) {
+        for &child in actor_children {
+            queue.push_back(child);
+        }
+    }
+    while let Some(entity) = queue.pop_front() {
+        if hand_slot_q.get(entity).is_ok()
+            && let Ok(container) = containers.get(entity)
             && container.contains(item)
         {
-            return Some(child);
+            return Some(entity);
+        }
+        if let Ok(kids) = children.get(entity) {
+            for &kid in kids {
+                queue.push_back(kid);
+            }
         }
     }
     None
@@ -1340,6 +1362,25 @@ mod tests {
         (actor, hand)
     }
 
+    /// Spawn a creature-like actor with a HandSlot nested under an
+    /// intermediate bone entity (simulates post-GLTF reparenting).
+    /// Returns (actor_entity, bone_entity, hand_slot_entity).
+    fn spawn_actor_with_bone(app: &mut App, pos: Vec3) -> (Entity, Entity, Entity) {
+        let actor = app.world_mut().spawn(Transform::from_translation(pos)).id();
+        let bone = app.world_mut().spawn(ChildOf(actor)).id();
+        let hand = app
+            .world_mut()
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                Transform::default(),
+                ChildOf(bone),
+            ))
+            .id();
+        (actor, bone, hand)
+    }
+
     /// Spawn an item entity with physics components at the given position.
     fn spawn_item(app: &mut App, pos: Vec3) -> Entity {
         app.world_mut()
@@ -1554,6 +1595,55 @@ mod tests {
         assert!(
             !container.contains(item),
             "non-physical item should not be picked up"
+        );
+    }
+
+    // ── Nested HandSlot (bone-reparented) ─────────────────────────────────────
+
+    #[test]
+    fn pickup_succeeds_when_hand_slot_nested_under_bone() {
+        let mut app = test_app();
+        let (actor, _bone, hand) = spawn_actor_with_bone(&mut app, Vec3::ZERO);
+        let item = spawn_item(&mut app, Vec3::new(1.0, 0.0, 0.0));
+        app.update(); // init_hand_containers
+
+        app.world_mut()
+            .write_message(ItemPickupRequest { actor, item });
+        app.update();
+
+        let container = app.world().get::<Container>(hand).unwrap();
+        assert!(
+            container.contains(item),
+            "hand container should contain item even when nested under a bone"
+        );
+    }
+
+    #[test]
+    fn drop_succeeds_when_hand_slot_nested_under_bone() {
+        let mut app = test_app();
+        let (actor, _bone, hand) = spawn_actor_with_bone(&mut app, Vec3::ZERO);
+        let item = spawn_item(&mut app, Vec3::new(1.0, 0.0, 0.0));
+        app.update();
+
+        // Pick up.
+        app.world_mut()
+            .write_message(ItemPickupRequest { actor, item });
+        app.update();
+        assert!(app.world().get::<Container>(hand).unwrap().contains(item));
+
+        // Drop.
+        let drop_pos = Vec3::new(1.5, 0.0, 0.0);
+        app.world_mut().write_message(ItemDropRequest {
+            actor,
+            item,
+            drop_position: drop_pos,
+        });
+        app.update();
+
+        let container = app.world().get::<Container>(hand).unwrap();
+        assert!(
+            !container.contains(item),
+            "hand container should be empty after drop"
         );
     }
 
