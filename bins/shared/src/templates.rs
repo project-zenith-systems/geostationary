@@ -226,18 +226,15 @@ fn on_creature_scene_ready(
         commands
             .entity(hand_slot)
             .insert((ChildOf(bone), Transform::IDENTITY));
+    } else if bone_entity.is_none() {
+        warn!(
+            "on_creature_scene_ready: bone '{}' not found among descendants of {creature:?}",
+            HAND_BONE_NAME
+        );
     } else {
-        if bone_entity.is_none() {
-            warn!(
-                "on_creature_scene_ready: bone '{}' not found among descendants of {creature:?}",
-                HAND_BONE_NAME
-            );
-        }
-        if hand_slot_entity.is_none() {
-            warn!(
-                "on_creature_scene_ready: HandSlot not found among descendants of {creature:?}"
-            );
-        }
+        warn!(
+            "on_creature_scene_ready: HandSlot not found among descendants of {creature:?}"
+        );
     }
 }
 
