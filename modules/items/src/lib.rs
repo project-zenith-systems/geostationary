@@ -661,6 +661,33 @@ fn find_hand_slot_containing(
     None
 }
 
+/// Walk the [`ChildOf`] ancestor chain from `entity` upward and return the
+/// first ancestor that has a [`NetId`] component.
+///
+/// After bone-reparenting, a [`HandSlot`]'s direct parent may be a bone entity
+/// (no [`NetId`]). This helper walks upward through intermediate parents until
+/// it reaches the creature entity that owns the [`NetId`].
+fn find_ancestor_with_net_id(
+    entity: Entity,
+    child_of_q: &Query<&ChildOf>,
+    net_ids: &Query<&NetId>,
+) -> Option<(Entity, NetId)> {
+    let mut current = entity;
+    // Bevy hierarchies are acyclic DAGs so this terminates. A depth limit
+    // guards against corruption.
+    for _ in 0..256 {
+        let Ok(child_of) = child_of_q.get(current) else {
+            return None;
+        };
+        let parent = child_of.parent();
+        if let Ok(&net_id) = net_ids.get(parent) {
+            return Some((parent, net_id));
+        }
+        current = parent;
+    }
+    None
+}
+
 // ── Client-side item event handler ───────────────────────────────────────────
 
 /// Applies [`ItemEvent`] messages that arrived on stream 5 to the local ECS state.
@@ -930,16 +957,12 @@ fn broadcast_item_event(
                     );
                     continue;
                 };
-                // holder = creature entity (parent of the HandSlot)
-                let Ok(hand_child_of) = child_of_q.get(*hand) else {
-                    warn!(
-                        "broadcast_item_event: PickedUp hand {:?} has no parent",
-                        hand
-                    );
-                    continue;
-                };
-                let Ok(&holder_net_id) = net_ids.get(hand_child_of.parent()) else {
-                    warn!("broadcast_item_event: PickedUp holder has no NetId");
+                // Walk ancestors from the HandSlot to find the creature with NetId.
+                // After bone-reparenting the direct parent may be a bone entity.
+                let Some((_, holder_net_id)) =
+                    find_ancestor_with_net_id(*hand, &child_of_q, &net_ids)
+                else {
+                    warn!("broadcast_item_event: PickedUp hand {:?} has no ancestor with NetId", hand);
                     continue;
                 };
                 ItemsStreamMessage::ItemEvent(ItemEvent::PickedUp {
@@ -979,13 +1002,12 @@ fn broadcast_item_event(
                     warn!("broadcast_item_event: Taken item {:?} has no NetId", item);
                     continue;
                 };
-                // holder = creature entity (parent of the HandSlot)
-                let Ok(hand_child_of) = child_of_q.get(*hand) else {
-                    warn!("broadcast_item_event: Taken hand {:?} has no parent", hand);
-                    continue;
-                };
-                let Ok(&holder_net_id) = net_ids.get(hand_child_of.parent()) else {
-                    warn!("broadcast_item_event: Taken holder has no NetId");
+                // Walk ancestors from the HandSlot to find the creature with NetId.
+                // After bone-reparenting the direct parent may be a bone entity.
+                let Some((_, holder_net_id)) =
+                    find_ancestor_with_net_id(*hand, &child_of_q, &net_ids)
+                else {
+                    warn!("broadcast_item_event: Taken hand {:?} has no ancestor with NetId", hand);
                     continue;
                 };
                 ItemsStreamMessage::ItemEvent(ItemEvent::Taken {
@@ -1011,8 +1033,8 @@ fn broadcast_held_on_join(
     mut player_events: MessageReader<PlayerEvent>,
     held_items_q: Query<(&NetId, &ChildOf)>,
     hand_slot_q: Query<(), With<HandSlot>>,
-    hand_parent_q: Query<&ChildOf, With<HandSlot>>,
-    creature_net_id_q: Query<&NetId, Without<HandSlot>>,
+    child_of_q: Query<&ChildOf>,
+    net_ids: Query<&NetId>,
     stream_sender: Res<StreamSender<ItemsStreamMessage>>,
 ) {
     for event in player_events.read() {
@@ -1025,12 +1047,11 @@ fn broadcast_held_on_join(
             if hand_slot_q.get(hand_entity).is_err() {
                 continue;
             }
-            // Find the creature entity (parent of the HandSlot).
-            let Ok(hand_child_of) = hand_parent_q.get(hand_entity) else {
-                continue;
-            };
-            let creature_entity = hand_child_of.parent();
-            let Ok(&holder_net_id) = creature_net_id_q.get(creature_entity) else {
+            // Walk ancestors from the HandSlot to find the creature with NetId.
+            // After bone-reparenting the direct parent may be a bone entity.
+            let Some((_, holder_net_id)) =
+                find_ancestor_with_net_id(hand_entity, &child_of_q, &net_ids)
+            else {
                 continue;
             };
             if let Err(e) = stream_sender.send_to(
@@ -2438,6 +2459,54 @@ mod tests {
         // The system must run without panicking. The sender returns
         // StreamSendError::Closed in tests because no real server is running,
         // which the system handles gracefully (logs an error and continues).
+        app.update();
+    }
+
+    /// Same as above but with the HandSlot nested under a bone entity
+    /// (simulating post-GLTF reparenting). The ancestor-walking in
+    /// `broadcast_item_event` must skip the bone and find the creature.
+    #[test]
+    fn broadcast_item_event_pickedup_resolves_holder_via_ancestor_walk() {
+        use network::{NetId, StreamDef, StreamDirection, StreamRegistry};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<StreamRegistry>();
+
+        let (sender, _reader) = app
+            .world_mut()
+            .resource_mut::<StreamRegistry>()
+            .register::<ItemsStreamMessage>(StreamDef {
+                tag: ITEMS_STREAM_TAG,
+                name: "items",
+                direction: StreamDirection::ServerToClient,
+            });
+        app.insert_resource(sender);
+
+        app.add_message::<ItemActionEvent>();
+        app.add_systems(Update, broadcast_item_event);
+
+        let creature_net_id = NetId(1);
+        let item_net_id = NetId(2);
+
+        let creature = app.world_mut().spawn(creature_net_id).id();
+        // Bone entity between creature and HandSlot — no NetId.
+        let bone = app.world_mut().spawn(ChildOf(creature)).id();
+        let hand = app
+            .world_mut()
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                ChildOf(bone),
+            ))
+            .id();
+        let item = app.world_mut().spawn(item_net_id).id();
+
+        app.world_mut()
+            .write_message(ItemActionEvent::PickedUp { item, hand });
+
+        // Must not panic — ancestor walk finds the creature entity with NetId.
         app.update();
     }
 }

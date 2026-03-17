@@ -17,8 +17,12 @@ pub const CREATURE_HOLD_IK_TARGET: Vec3 = Vec3::new(0.3, 0.7, -0.3);
 const HAND_BONE_NAME: &str = "hand.R";
 
 /// Marker component inserted on a creature entity after its GLTF scene has
-/// been fully loaded and scene-ready initialisation (bone reparenting, etc.)
-/// has been performed.
+/// been fully loaded **and** scene-ready initialisation (bone reparenting,
+/// etc.) has completed successfully.
+///
+/// Only inserted when both the hand bone and [`HandSlot`] are found and the
+/// reparenting command is issued. Downstream systems can rely on this marker
+/// to know the hierarchy is fully initialised.
 #[derive(Component, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Component)]
 pub struct SceneReady;
@@ -210,8 +214,6 @@ fn on_creature_scene_ready(
     let creature = trigger.entity;
     debug!("on_creature_scene_ready: creature {creature:?}");
 
-    commands.entity(creature).insert(SceneReady);
-
     // Find the hand bone by walking all descendants.
     let bone_entity = find_named_descendant(creature, HAND_BONE_NAME, &children_q, &name_q);
 
@@ -226,6 +228,8 @@ fn on_creature_scene_ready(
         commands
             .entity(hand_slot)
             .insert((ChildOf(bone), Transform::IDENTITY));
+        // Mark scene as fully initialised only after successful reparenting.
+        commands.entity(creature).insert(SceneReady);
     } else if bone_entity.is_none() {
         warn!(
             "on_creature_scene_ready: bone '{}' not found among descendants of {creature:?}",
