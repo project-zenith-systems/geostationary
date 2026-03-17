@@ -809,7 +809,12 @@ fn clear_net_id_index(mut net_id_index: ResMut<NetIdIndex>) {
     net_id_index.0.clear();
 }
 
-fn on_spawn_thing(on: On<SpawnThing>, mut commands: Commands, registry: Res<ThingRegistry>) {
+fn on_spawn_thing(
+    on: On<SpawnThing>,
+    mut commands: Commands,
+    registry: Res<ThingRegistry>,
+    headless: Option<Res<Headless>>,
+) {
     let event = on.event();
     debug!(
         "on_spawn_thing: kind={} entity={:?} pos={:?}",
@@ -826,9 +831,13 @@ fn on_spawn_thing(on: On<SpawnThing>, mut commands: Commands, registry: Res<Thin
     ));
 
     // Run visual builder first (meshes, materials), then functional builder
-    // (physics, gameplay components).
-    if let Some(visual) = registry.visual_builders.get(&event.kind) {
-        visual(event.entity, &mut commands);
+    // (physics, gameplay components). Skip visual builders on headless
+    // servers as defence-in-depth — the server should never load GLTF
+    // scenes or create mesh/material components.
+    if headless.is_none() {
+        if let Some(visual) = registry.visual_builders.get(&event.kind) {
+            visual(event.entity, &mut commands);
+        }
     }
 
     if let Some(builder) = registry.templates.get(&event.kind) {
@@ -842,6 +851,7 @@ fn on_spawn_thing_visual(
     on: On<SpawnThingVisual>,
     mut commands: Commands,
     registry: Res<ThingRegistry>,
+    headless: Option<Res<Headless>>,
 ) {
     let event = on.event();
     debug!(
@@ -853,6 +863,12 @@ fn on_spawn_thing_visual(
         Transform::from_translation(event.position),
         Thing { kind: event.kind },
     ));
+
+    // Defence-in-depth: skip visual builders on headless servers, matching
+    // the guard in `on_spawn_thing`.
+    if headless.is_some() {
+        return;
+    }
 
     if let Some(visual) = registry.visual_builders.get(&event.kind) {
         visual(event.entity, &mut commands);
