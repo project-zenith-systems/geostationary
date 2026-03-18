@@ -141,21 +141,34 @@ fn default_interaction(
 
 /// Returns the [`NetId`] of the first item held in any [`HandSlot`] owned by
 /// `player`, or `None` when the hands are empty.
+///
+/// Uses BFS descendant traversal so the function works whether `HandSlot` is a
+/// direct child of the player or has been reparented under a bone entity.
 fn held_item(
     player: Entity,
     children_q: &Query<&Children>,
     hand_container_q: &Query<&Container, With<HandSlot>>,
     net_id_q: &Query<&NetId>,
 ) -> Option<NetId> {
-    let children = children_q.get(player).ok()?;
-    for child in children.iter() {
-        if let Ok(container) = hand_container_q.get(child) {
+    let mut queue = std::collections::VecDeque::new();
+    if let Ok(children) = children_q.get(player) {
+        for child in children.iter() {
+            queue.push_back(child);
+        }
+    }
+    while let Some(entity) = queue.pop_front() {
+        if let Ok(container) = hand_container_q.get(entity) {
             for slot in &container.slots {
                 if let Some(item_entity) = slot
                     && let Ok(&net_id) = net_id_q.get(*item_entity)
                 {
                     return Some(net_id);
                 }
+            }
+        }
+        if let Ok(children) = children_q.get(entity) {
+            for child in children.iter() {
+                queue.push_back(child);
             }
         }
     }

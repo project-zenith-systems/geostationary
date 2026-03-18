@@ -594,30 +594,44 @@ fn handle_item_interaction(
     }
 }
 
-/// Find the first hand-slot entity that is a child of `actor`, has a
-/// [`Container`], and has at least one free slot.
+/// Find the first [`HandSlot`] entity among `actor`'s descendants that has a
+/// [`Container`] with at least one free slot.
+///
+/// Uses BFS descendant traversal so the function works whether `HandSlot` is a
+/// direct child of the actor or has been reparented under a bone entity.
 fn find_hand_slot_with_space(
     actor: Entity,
     children: &Query<&Children>,
     hand_slot_q: &Query<Entity, With<HandSlot>>,
     containers: &Query<&mut Container>,
 ) -> Option<Entity> {
-    let Ok(actor_children) = children.get(actor) else {
-        return None;
-    };
-    for &child in actor_children {
-        if hand_slot_q.get(child).is_ok()
-            && let Ok(container) = containers.get(child)
+    let mut queue = std::collections::VecDeque::new();
+    if let Ok(actor_children) = children.get(actor) {
+        for child in actor_children.iter() {
+            queue.push_back(child);
+        }
+    }
+    while let Some(entity) = queue.pop_front() {
+        if hand_slot_q.get(entity).is_ok()
+            && let Ok(container) = containers.get(entity)
             && container.has_space()
         {
-            return Some(child);
+            return Some(entity);
+        }
+        if let Ok(kids) = children.get(entity) {
+            for kid in kids.iter() {
+                queue.push_back(kid);
+            }
         }
     }
     None
 }
 
-/// Find the hand-slot entity that is a child of `actor` and whose [`Container`]
+/// Find the [`HandSlot`] entity among `actor`'s descendants whose [`Container`]
 /// holds `item`.
+///
+/// Uses BFS descendant traversal so the function works whether `HandSlot` is a
+/// direct child of the actor or has been reparented under a bone entity.
 fn find_hand_slot_containing(
     actor: Entity,
     item: Entity,
@@ -625,16 +639,51 @@ fn find_hand_slot_containing(
     hand_slot_q: &Query<Entity, With<HandSlot>>,
     containers: &Query<&mut Container>,
 ) -> Option<Entity> {
-    let Ok(actor_children) = children.get(actor) else {
-        return None;
-    };
-    for &child in actor_children {
-        if hand_slot_q.get(child).is_ok()
-            && let Ok(container) = containers.get(child)
+    let mut queue = std::collections::VecDeque::new();
+    if let Ok(actor_children) = children.get(actor) {
+        for child in actor_children.iter() {
+            queue.push_back(child);
+        }
+    }
+    while let Some(entity) = queue.pop_front() {
+        if hand_slot_q.get(entity).is_ok()
+            && let Ok(container) = containers.get(entity)
             && container.contains(item)
         {
-            return Some(child);
+            return Some(entity);
         }
+        if let Ok(kids) = children.get(entity) {
+            for kid in kids.iter() {
+                queue.push_back(kid);
+            }
+        }
+    }
+    None
+}
+
+/// Walk the [`ChildOf`] ancestor chain from `entity` upward and return the
+/// first ancestor that has a [`NetId`] component.
+///
+/// After bone-reparenting, a [`HandSlot`]'s direct parent may be a bone entity
+/// (no [`NetId`]). This helper walks upward through intermediate parents until
+/// it reaches the creature entity that owns the [`NetId`].
+fn find_ancestor_with_net_id(
+    entity: Entity,
+    child_of_q: &Query<&ChildOf>,
+    net_ids: &Query<&NetId>,
+) -> Option<(Entity, NetId)> {
+    let mut current = entity;
+    // Bevy hierarchies are acyclic DAGs so this terminates. A depth limit
+    // guards against corruption.
+    for _ in 0..256 {
+        let Ok(child_of) = child_of_q.get(current) else {
+            return None;
+        };
+        let parent = child_of.parent();
+        if let Ok(&net_id) = net_ids.get(parent) {
+            return Some((parent, net_id));
+        }
+        current = parent;
     }
     None
 }
@@ -908,16 +957,12 @@ fn broadcast_item_event(
                     );
                     continue;
                 };
-                // holder = creature entity (parent of the HandSlot)
-                let Ok(hand_child_of) = child_of_q.get(*hand) else {
-                    warn!(
-                        "broadcast_item_event: PickedUp hand {:?} has no parent",
-                        hand
-                    );
-                    continue;
-                };
-                let Ok(&holder_net_id) = net_ids.get(hand_child_of.parent()) else {
-                    warn!("broadcast_item_event: PickedUp holder has no NetId");
+                // Walk ancestors from the HandSlot to find the creature with NetId.
+                // After bone-reparenting the direct parent may be a bone entity.
+                let Some((_, holder_net_id)) =
+                    find_ancestor_with_net_id(*hand, &child_of_q, &net_ids)
+                else {
+                    warn!("broadcast_item_event: PickedUp hand {:?} has no ancestor with NetId", hand);
                     continue;
                 };
                 ItemsStreamMessage::ItemEvent(ItemEvent::PickedUp {
@@ -957,13 +1002,12 @@ fn broadcast_item_event(
                     warn!("broadcast_item_event: Taken item {:?} has no NetId", item);
                     continue;
                 };
-                // holder = creature entity (parent of the HandSlot)
-                let Ok(hand_child_of) = child_of_q.get(*hand) else {
-                    warn!("broadcast_item_event: Taken hand {:?} has no parent", hand);
-                    continue;
-                };
-                let Ok(&holder_net_id) = net_ids.get(hand_child_of.parent()) else {
-                    warn!("broadcast_item_event: Taken holder has no NetId");
+                // Walk ancestors from the HandSlot to find the creature with NetId.
+                // After bone-reparenting the direct parent may be a bone entity.
+                let Some((_, holder_net_id)) =
+                    find_ancestor_with_net_id(*hand, &child_of_q, &net_ids)
+                else {
+                    warn!("broadcast_item_event: Taken hand {:?} has no ancestor with NetId", hand);
                     continue;
                 };
                 ItemsStreamMessage::ItemEvent(ItemEvent::Taken {
@@ -989,8 +1033,8 @@ fn broadcast_held_on_join(
     mut player_events: MessageReader<PlayerEvent>,
     held_items_q: Query<(&NetId, &ChildOf)>,
     hand_slot_q: Query<(), With<HandSlot>>,
-    hand_parent_q: Query<&ChildOf, With<HandSlot>>,
-    creature_net_id_q: Query<&NetId, Without<HandSlot>>,
+    child_of_q: Query<&ChildOf>,
+    net_ids: Query<&NetId>,
     stream_sender: Res<StreamSender<ItemsStreamMessage>>,
 ) {
     for event in player_events.read() {
@@ -1003,12 +1047,11 @@ fn broadcast_held_on_join(
             if hand_slot_q.get(hand_entity).is_err() {
                 continue;
             }
-            // Find the creature entity (parent of the HandSlot).
-            let Ok(hand_child_of) = hand_parent_q.get(hand_entity) else {
-                continue;
-            };
-            let creature_entity = hand_child_of.parent();
-            let Ok(&holder_net_id) = creature_net_id_q.get(creature_entity) else {
+            // Walk ancestors from the HandSlot to find the creature with NetId.
+            // After bone-reparenting the direct parent may be a bone entity.
+            let Some((_, holder_net_id)) =
+                find_ancestor_with_net_id(hand_entity, &child_of_q, &net_ids)
+            else {
                 continue;
             };
             if let Err(e) = stream_sender.send_to(
@@ -1340,6 +1383,25 @@ mod tests {
         (actor, hand)
     }
 
+    /// Spawn a creature-like actor with a HandSlot nested under an
+    /// intermediate bone entity (simulates post-GLTF reparenting).
+    /// Returns (actor_entity, bone_entity, hand_slot_entity).
+    fn spawn_actor_with_bone(app: &mut App, pos: Vec3) -> (Entity, Entity, Entity) {
+        let actor = app.world_mut().spawn(Transform::from_translation(pos)).id();
+        let bone = app.world_mut().spawn(ChildOf(actor)).id();
+        let hand = app
+            .world_mut()
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                Transform::default(),
+                ChildOf(bone),
+            ))
+            .id();
+        (actor, bone, hand)
+    }
+
     /// Spawn an item entity with physics components at the given position.
     fn spawn_item(app: &mut App, pos: Vec3) -> Entity {
         app.world_mut()
@@ -1554,6 +1616,55 @@ mod tests {
         assert!(
             !container.contains(item),
             "non-physical item should not be picked up"
+        );
+    }
+
+    // ── Nested HandSlot (bone-reparented) ─────────────────────────────────────
+
+    #[test]
+    fn pickup_succeeds_when_hand_slot_nested_under_bone() {
+        let mut app = test_app();
+        let (actor, _bone, hand) = spawn_actor_with_bone(&mut app, Vec3::ZERO);
+        let item = spawn_item(&mut app, Vec3::new(1.0, 0.0, 0.0));
+        app.update(); // init_hand_containers
+
+        app.world_mut()
+            .write_message(ItemPickupRequest { actor, item });
+        app.update();
+
+        let container = app.world().get::<Container>(hand).unwrap();
+        assert!(
+            container.contains(item),
+            "hand container should contain item even when nested under a bone"
+        );
+    }
+
+    #[test]
+    fn drop_succeeds_when_hand_slot_nested_under_bone() {
+        let mut app = test_app();
+        let (actor, _bone, hand) = spawn_actor_with_bone(&mut app, Vec3::ZERO);
+        let item = spawn_item(&mut app, Vec3::new(1.0, 0.0, 0.0));
+        app.update();
+
+        // Pick up.
+        app.world_mut()
+            .write_message(ItemPickupRequest { actor, item });
+        app.update();
+        assert!(app.world().get::<Container>(hand).unwrap().contains(item));
+
+        // Drop.
+        let drop_pos = Vec3::new(1.5, 0.0, 0.0);
+        app.world_mut().write_message(ItemDropRequest {
+            actor,
+            item,
+            drop_position: drop_pos,
+        });
+        app.update();
+
+        let container = app.world().get::<Container>(hand).unwrap();
+        assert!(
+            !container.contains(item),
+            "hand container should be empty after drop"
         );
     }
 
@@ -2348,6 +2459,68 @@ mod tests {
         // The system must run without panicking. The sender returns
         // StreamSendError::Closed in tests because no real server is running,
         // which the system handles gracefully (logs an error and continues).
+        app.update();
+    }
+
+    /// Same as above but with the HandSlot nested under a bone entity
+    /// (simulating post-GLTF reparenting). The ancestor-walking in
+    /// `broadcast_item_event` must skip the bone and find the creature.
+    #[test]
+    fn broadcast_item_event_pickedup_resolves_holder_via_ancestor_walk() {
+        use bevy::ecs::system::SystemState;
+        use network::{NetId, StreamDef, StreamDirection, StreamRegistry};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<StreamRegistry>();
+
+        let (sender, _reader) = app
+            .world_mut()
+            .resource_mut::<StreamRegistry>()
+            .register::<ItemsStreamMessage>(StreamDef {
+                tag: ITEMS_STREAM_TAG,
+                name: "items",
+                direction: StreamDirection::ServerToClient,
+            });
+        app.insert_resource(sender);
+
+        app.add_message::<ItemActionEvent>();
+        app.add_systems(Update, broadcast_item_event);
+
+        let creature_net_id = NetId(1);
+        let item_net_id = NetId(2);
+
+        let creature = app.world_mut().spawn(creature_net_id).id();
+        // Bone entity between creature and HandSlot — no NetId.
+        let bone = app.world_mut().spawn(ChildOf(creature)).id();
+        let hand = app
+            .world_mut()
+            .spawn((
+                HandSlot {
+                    side: things::HandSide::Right,
+                },
+                ChildOf(bone),
+            ))
+            .id();
+        let item = app.world_mut().spawn(item_net_id).id();
+
+        // Directly verify that find_ancestor_with_net_id resolves to the creature.
+        {
+            let mut state =
+                SystemState::<(Query<&ChildOf>, Query<&NetId>)>::new(app.world_mut());
+            let (child_of_q, net_id_q) = state.get(app.world());
+            let result = find_ancestor_with_net_id(hand, &child_of_q, &net_id_q);
+            assert_eq!(
+                result,
+                Some((creature, creature_net_id)),
+                "ancestor walk from hand should resolve to creature"
+            );
+        }
+
+        app.world_mut()
+            .write_message(ItemActionEvent::PickedUp { item, hand });
+
+        // Must not panic — ancestor walk finds the creature entity with NetId.
         app.update();
     }
 }
